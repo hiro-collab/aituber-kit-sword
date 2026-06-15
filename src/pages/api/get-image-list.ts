@@ -1,0 +1,53 @@
+import { NextApiRequest, NextApiResponse } from 'next'
+import fs from 'fs'
+import path from 'path'
+import { isRestrictedMode } from '@/utils/restrictedMode'
+import { enforceLocalApiRequest } from '@/utils/localApiSecurity'
+import {
+  resolveInsideDirectory,
+  sanitizePathSegment,
+} from '@/utils/serverPathSecurity'
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' })
+  }
+  if (isRestrictedMode()) {
+    return res.status(200).json([])
+  }
+  if (!enforceLocalApiRequest(req, res, { feature: 'get-image-list' })) {
+    return
+  }
+
+  try {
+    const imagesDir = path.resolve(process.cwd(), 'public/images/uploaded')
+
+    if (!fs.existsSync(imagesDir)) {
+      fs.mkdirSync(imagesDir, { recursive: true })
+      return res.status(200).json([])
+    }
+
+    const files = fs.readdirSync(imagesDir)
+    const imageFiles = files
+      .filter((file) => {
+        if (!sanitizePathSegment(file)) return false
+        const extension = path.extname(file).toLowerCase()
+        return ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(extension)
+      })
+      .map((filename) => ({
+        filename,
+        path: `/images/uploaded/${filename}`,
+        uploadedAt: fs.statSync(resolveInsideDirectory(imagesDir, filename))
+          .mtime,
+      }))
+      .sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime()) // Sort by upload date, newest first
+
+    res.status(200).json(imageFiles)
+  } catch (error) {
+    console.error('Error fetching image list:', error)
+    res.status(500).json({ error: 'Failed to fetch image list' })
+  }
+}

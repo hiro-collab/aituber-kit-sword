@@ -1,0 +1,226 @@
+/* テーマカラー定義 */
+
+/* text-themeクラス定義 */
+.text-theme {
+  color: var(--color-text-base);
+}
+
+/* テーマデフォルト文字色クラス定義 */
+.text-theme-default {
+  color: var(--color-text-default);
+}
+
+/* 背景テーマクラス定義 */
+.bg-theme {
+  background-color: var(--color-base-light);
+}
+
+/* アイコンマスククラス定義 */
+.icon-mask-active {
+  background-color: var(--color-text-base);
+}
+
+.icon-mask-inactive {
+  background-color: var(--color-primary);
+}
+
+.icon-mask-default {
+  background-color: var(--color-text-default);
+}
+
+/* ベースのbody要素の色設定 */
+body {
+  color: var(--color-text-default);
+}
+
+/* 主要な要素のデフォルト色設定 */
+html {
+  color: var(--color-text-default);
+}
+
+/* 見出しや段落などの基本要素 */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+div {
+  color: inherit;
+}
+
+/* Default テーマ（デフォルト） */
+:root {
+  --color-primary: #856292;
+  --color-primary-hover: #8e76a1;
+  --color-primary-press: #988bb0;
+  --color-primary-disabled: #6f48694d;
+  --color-secondary: #ff617f;
+  --color-secondary-hover: #ff849b;
+  --color-secondary-press: #ff9eb1;
+  --color-secondary-disabled: #ff617f4d;
+  --color-text-primary: #514062;
+  --color-text-base: #ffffff;
+  --color-text-default: #2d3748;
+  --color-base-light: #fbe2ca;
+  --color-base-dark: #332d2d;
+}
+
+/* Cool テーマ（寒色） */
+[data-theme='cool'] {
+  --color-primary: #60a5fa;
+  --color-primary-hover: #3b82f6;
+  --color-primary-press: #93c5fd;
+  --color-primary-disabled: #60a5fa4d;
+  --color-secondary: #0891b2;
+  --color-secondary-hover: #0e7490;
+  --color-secondary-press: #155e75;
+  --color-secondary-disabled: #0891b24d;
+  --color-text-primary: #1e3a8a;
+  --color-text-base: #f8fafc;
+  --color-text-default: #2d3748;
+  --color-base-light: #eff6ff;
+  --color-base-dark: #0f172a;
+}
+
+/* Mono テーマ（モノクロ） */
+[data-theme='mono'] {
+  --color-primary: #6b7280;
+  --color-primary-hover: #9ca3af;
+  --color-primary-press: #d1d5db;
+  --color-primary-disabled: #6b72804d;
+  --color-secondary: #4b5563;
+  --color-secondary-hover: #6b7280;
+  --color-secondary-press: #9ca3af;
+  --color-secondary-disabled: #4b55634d;
+  --color-text-primary: #1f2937;
+  --color-text-base: #f8fafc;
+  --color-text-default: #374151;
+  --color-base-light: #d1d1d1;
+  --color-base-dark: #0f172a;
+}
+
+/* Ocean テーマ（海洋色） */
+[data-theme='ocean'] {
+  --color-primary: #0ea5e9;
+  --color-primary-hover: #0284c7;
+  --color-primary-press: #0369a1;
+  --color-primary-disabled: #0ea5e94d;
+  --color-secondary: #06b6d4;
+  --color-secondary-hover: #0891b2;
+  --color-secondary-press: #0e7490;
+  --color-secondary-disabled: #06b6d44d;
+  --color-text-primary: #0f172a;
+  --color-text-base: #f0f9ff;
+  --color-text-default: #2d3748;
+  --color-base-light: #d7eaf7;
+  --color-base-dark: #0f172a;
+}
+
+/* Forest テーマ（森林色） */
+[data-theme='forest'] {
+  --color-primary: #10b981;
+  --color-primary-hover: #059669;
+  --color-primary-press: #047857;
+  --color-primary-disabled: #10b9814d;
+  --color-secondary: #77bc0f;
+  --color-secondary-hover: #65a30d;
+  --color-secondary-press: #4d7c0f;
+  --color-secondary-disabled: #84cc164d;
+  --color-text-primary: #1f2937;
+  --color-text-base: #f0fdf4;
+  --color-text-default: #2d3748;
+  --color-base-light: #c5fcd5;
+  --color-base-dark: #1f2937;
+}
+
+/* Sunset テーマ（夕焼け色） */
+[data-theme='sunset'] {
+  --color-primary: #f59e0b;
+  --color-primary-hover: #d97706;
+  --color-primary-press: #b45309;
+  --color-primary-disabled: #f59e0b4d;
+  --color-secondary: #ee6666;
+  --color-secondary-hover: #dc2626;
+  --color-secondary-press: #b91c1c;
+  --color-secondary-disabled: #ef44444d;
+  --color-text-primary: #1f2937;
+  --color-text-base: #fffbeb;
+  --color-text-default: #48472d;
+  --color-base-light: #fff2be;
+  --color-base-dark: #1f2937;
+}
+
+/* Cyber テーマ（サイバー） */
+[data-theme='cyber'] {
+  --color-primary: #00d7ff;
+  --color-primary-hover: #2df2ff;
+  --color-primary-press: #8ff8ff;
+  --color-primary-disabled: #00d7ff4d;
+  --color-secondary: #ff2bd6;
+  --color-secondary-hover: #ff62e4;
+  --color-secondary-press: #ff9bf0;
+  --color-secondary-disabled: #ff2bd64d;
+  --color-text-primary: #7df9ff;
+  --color-text-base: #03101c;
+  --color-text-default: #d7fbff;
+  --color-base-light: #03101c;
+  --color-base-dark: #020617;
+}
+
+[data-theme='cyber'] body {
+  background-color: #020617;
+}
+
+[data-theme='cyber'] .bg-theme {
+  background-color: #020617;
+  background-image:
+    linear-gradient(rgba(0, 215, 255, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 215, 255, 0.09) 1px, transparent 1px),
+    radial-gradient(
+      circle at top right,
+      rgba(255, 43, 214, 0.18),
+      transparent 34rem
+    );
+  background-size:
+    36px 36px,
+    36px 36px,
+    100% 100%;
+}
+
+[data-theme='cyber'] .bg-white,
+[data-theme='cyber'] input.bg-white,
+[data-theme='cyber'] select.bg-white,
+[data-theme='cyber'] textarea.bg-white {
+  background-color: rgba(3, 16, 28, 0.9) !important;
+  border-color: rgba(125, 249, 255, 0.38) !important;
+  color: #d7fbff !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 215, 255, 0.12);
+}
+
+[data-theme='cyber'] .bg-white\/80 {
+  background-color: rgba(2, 6, 23, 0.78) !important;
+}
+
+[data-theme='cyber'] .bg-gray-400 {
+  background-color: rgba(3, 16, 28, 0.72) !important;
+}
+
+[data-theme='cyber'] .border-gray-300 {
+  border-color: rgba(125, 249, 255, 0.28) !important;
+}
+
+[data-theme='cyber'] .hover\:bg-gray-50:hover,
+[data-theme='cyber'] .hover\:bg-white-hover:hover {
+  background-color: rgba(0, 215, 255, 0.14) !important;
+}
+
+[data-theme='cyber'] .shadow-sm,
+[data-theme='cyber'] .shadow-lg {
+  box-shadow:
+    0 0 0 1px rgba(0, 215, 255, 0.18),
+    0 14px 40px rgba(0, 215, 255, 0.12),
+    0 0 36px rgba(255, 43, 214, 0.08) !important;
+}
