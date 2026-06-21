@@ -239,7 +239,14 @@ const EXPRESSION_VISIBLE_CHANGE = 'face_expression'
 const EXPRESSION_VISIBLE_ROI = 'avatar_face_head'
 const EXPRESSION_VISIBLE_TRACK_SCOPE = 'face_head'
 const EXPRESSION_VISIBLE_TRACK_CHANNEL = 'expression_weight'
-const EXPRESSION_VISIBLE_FRAME_WEIGHTS = { happy: 1 }
+const EXPRESSION_VISIBLE_FRAME_WEIGHTS = {
+  happy: 1,
+  relaxed: 0.75,
+  joy: 1,
+  Joy: 1,
+  fun: 0.75,
+  Fun: 0.75,
+}
 const EXPRESSION_VISIBLE_FRAME_COUNT = 30
 
 export async function receiveMotionStimulusV0(

@@ -27,6 +27,7 @@ export interface MotionRuntimeFrameRequest {
 
 export interface VRMMotionAdapterSurface {
   expressionManager?: {
+    getExpression?: (name: string) => unknown | null
     setValue: (name: string, value: number) => void
   } | null
   lookAt?: {
@@ -113,7 +114,22 @@ export class VRMMotionAdapter {
       }
     }
 
-    for (const [name, weight] of entries) {
+    const supportedEntries = entries.filter(([name]) => {
+      if (!surface.expressionManager?.getExpression) return true
+      return surface.expressionManager.getExpression(name) !== null
+    })
+
+    if (supportedEntries.length === 0) {
+      return {
+        part: 'expression',
+        result: 'degraded',
+        capability: this.capabilityProfile.expressionWeight,
+        reason_code: 'expression_weight_no_supported_channel',
+        safe_visible_state: 'no_visible_change',
+      }
+    }
+
+    for (const [name, weight] of supportedEntries) {
       surface.expressionManager.setValue(name, clamp01(weight))
     }
 

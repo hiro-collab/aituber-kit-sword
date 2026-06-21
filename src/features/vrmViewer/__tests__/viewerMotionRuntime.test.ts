@@ -268,7 +268,14 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     expect(model.queueMotionRuntimeFrame).toHaveBeenCalledWith({
       stimulusInstanceId: 'stimulus-instance-expression-visible',
       frameCount: 30,
-      expressionWeights: { happy: 1 },
+      expressionWeights: {
+        happy: 1,
+        relaxed: 0.75,
+        joy: 1,
+        Joy: 1,
+        fun: 0.75,
+        Fun: 0.75,
+      },
     })
   })
 

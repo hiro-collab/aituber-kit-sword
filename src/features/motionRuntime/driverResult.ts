@@ -116,8 +116,21 @@ function summarizeSafeVisibleState(
   if (partResults.some((partResult) => partResult.part === 'gaze')) {
     return 'gaze_target_changed'
   }
-  if (partResults.some((partResult) => partResult.part === 'expression')) {
+  if (
+    partResults.some(
+      (partResult) =>
+        partResult.part === 'expression' &&
+        partResult.safe_visible_state === 'expression_changed'
+    )
+  ) {
     return 'expression_changed'
+  }
+  if (
+    partResults.some(
+      (partResult) => partResult.safe_visible_state === 'unknown'
+    )
+  ) {
+    return 'unknown'
   }
   return 'no_visible_change'
 }

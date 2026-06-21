@@ -643,7 +643,14 @@ describe('receiveMotionStimulusV0', () => {
         stimulusInstanceId: 'stimulus-instance-expression-visible',
         requestedAtMs: Date.parse('2026-06-12T07:10:00.000Z'),
         frameCount: 30,
-        expressionWeights: { happy: 1 },
+        expressionWeights: {
+          happy: 1,
+          relaxed: 0.75,
+          joy: 1,
+          Joy: 1,
+          fun: 0.75,
+          Fun: 0.75,
+        },
         trace: expect.objectContaining({
           event_id: 'thought-event-expression-visible',
           request_id: 'expression-request-1',

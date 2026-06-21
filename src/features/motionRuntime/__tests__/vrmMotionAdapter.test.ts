@@ -41,6 +41,62 @@ describe('VRMMotionAdapter', () => {
     expect(finalized?.observed_at).toBe('post_vrm_update_pre_render')
   })
 
+  it('skips unsupported expression weights when the expression manager can report available channels', () => {
+    const adapter = new VRMMotionAdapter()
+    const setValue = jest.fn()
+    const getExpression = jest.fn((name: string) =>
+      name === 'relaxed' ? { expressionName: name } : null
+    )
+
+    const result = adapter.applyFrame(
+      { expressionManager: { getExpression, setValue } },
+      {
+        stimulusInstanceId: 'stimulus-expression-availability',
+        frameCount: 1,
+        expressionWeights: {
+          happy: 1,
+          relaxed: 0.75,
+          Fun: 0.75,
+        },
+      }
+    )
+
+    expect(getExpression).toHaveBeenCalledWith('happy')
+    expect(getExpression).toHaveBeenCalledWith('relaxed')
+    expect(getExpression).toHaveBeenCalledWith('Fun')
+    expect(setValue).toHaveBeenCalledTimes(1)
+    expect(setValue).toHaveBeenCalledWith('relaxed', 0.75)
+    expect(result?.result).toBe('applied')
+    expect(result?.safe_visible_state).toBe('expression_changed')
+  })
+
+  it('degrades expression weights when no requested channel is supported', () => {
+    const adapter = new VRMMotionAdapter()
+    const setValue = jest.fn()
+
+    const result = adapter.applyFrame(
+      { expressionManager: { getExpression: () => null, setValue } },
+      {
+        stimulusInstanceId: 'stimulus-expression-unsupported',
+        frameCount: 1,
+        expressionWeights: {
+          Fun: 0.75,
+        },
+      }
+    )
+
+    expect(setValue).not.toHaveBeenCalled()
+    expect(result?.result).toBe('degraded')
+    expect(result?.safe_visible_state).toBe('no_visible_change')
+    expect(result?.per_part_results).toEqual([
+      expect.objectContaining({
+        part: 'expression',
+        result: 'degraded',
+        reason_code: 'expression_weight_no_supported_channel',
+      }),
+    ])
+  })
+
   it('sets and restores a temporary lookAt target', () => {
     const adapter = new VRMMotionAdapter()
     const parent = new THREE.Object3D()
