@@ -52,7 +52,7 @@ export function ProjectionVisualVrmPositionControls() {
 
   return (
     <div
-      className="absolute bottom-4 left-4 z-[26] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-md border border-cyan-100/30 bg-slate-950/75 px-2 py-2 text-xs font-bold text-cyan-50 shadow-lg backdrop-blur"
+      className="projection-visual-vrm-position-controls z-[26] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-md border border-cyan-100/30 bg-slate-950/75 px-2 py-2 text-xs font-bold text-cyan-50 shadow-lg backdrop-blur"
       data-projection-visual-vrm-position-controls="true"
       data-vrm-position-fixed={String(fixedCharacterPosition)}
       aria-label="VRM display position controls"

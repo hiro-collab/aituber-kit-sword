@@ -658,6 +658,9 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(source).toContain('td-state-rail')
     expect(source).toContain('stateWordLabel')
+    expect(source).toContain('environmentRailWordLabel')
+    expect(source).toContain('const environmentRailLabel')
+    expect(source).toContain('{environmentRailLabel}')
     expect(source).toContain('environmentValueIndicators')
     expect(source).toContain('applianceIndicators')
     expect(source).not.toContain('actionReadinessIndicators')
@@ -681,9 +684,26 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).not.toContain('Vision estimate:')
     expect(source).toContain('buildEnvironmentHudUpdateSignal')
     expect(source).toContain('hudUpdateSemanticToken')
+    expect(source).toContain('type EnvironmentFreshnessLevel')
+    expect(source).toContain('type EnvironmentFreshnessVisual')
+    expect(source).toContain('environmentFreshnessVisualLevel')
+    expect(source).toContain('environmentFreshnessVisual')
+    expect(source).toContain('readFreshnessAgeMs')
+    expect(source).toContain('setInterval(() => setNowMs(Date.now()), 250)')
+    expect(source).toContain('roomLightLiveMetrics')
+    expect(source).toContain('roomLightEstimateProbabilityLabels')
+    expect(source).toContain('td-env-live-meter')
+    expect(source).toContain('data-metric={metric.id}')
+    expect(source).toContain('electricLabel')
+    expect(source).toContain('daylightLabel')
     expect(source).toContain(
       'data-update-signal={indicator.updateSignal?.target}'
     )
+    expect(source).toContain('data-freshness={indicator.freshnessVisual.level}')
+    expect(source).toContain(
+      'data-freshness-age={indicator.freshnessVisual.ageLabel}'
+    )
+    expect(source).toContain('style={indicator.freshnessVisual.style}')
     expect(source).toContain('data-update-kind={indicator.updateSignal?.kind}')
     expect(source).toContain(
       'data-update-token={indicator.updateSignal?.token}'
@@ -704,6 +724,24 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(readSource('src/styles/globals.css')).toContain(
       '.td-env-value-card[data-update-signal]'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      ".td-env-value-card[data-freshness='live']"
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      ".td-source-chip[data-freshness='stale']"
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '--td-freshness-hue'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      'transition:'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '.td-env-live-meter'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '.td-env-value-card .td-env-live-chip'
     )
     expect(readSource('src/styles/globals.css')).toContain(
       '.td-sense-metric-tile'
@@ -808,6 +846,27 @@ describe('worker-2 projection visual organ contract', () => {
       "this.model?.stopMotionRuntimeGroup('dance.sequence')"
     )
     expect(vrmViewerSource).toContain('motionStimulusAssetPathRef')
+  })
+
+  it('keeps Projection Visual VRM position controls out of the bottom input lane', () => {
+    const controlsSource = readSource(
+      'src/components/projectionVisualVrmPositionControls.tsx'
+    )
+    const stylesSource = readSource('src/styles/globals.css')
+
+    expect(controlsSource).toContain('projection-visual-vrm-position-controls')
+    expect(controlsSource).not.toContain('absolute bottom-4 left-4')
+    expect(stylesSource).toContain('--projection-visual-input-bottom-safe')
+    expect(stylesSource).toContain(
+      '--projection-visual-render-controls-bottom-safe'
+    )
+    expect(stylesSource).toContain(
+      '--projection-visual-vrm-position-controls-bottom'
+    )
+    expect(stylesSource).toContain(
+      'bottom: var(--projection-visual-vrm-position-controls-bottom)'
+    )
+    expect(stylesSource).toContain('.projection-visual .td-message-input-shell')
   })
 
   it('keeps RR-001 review helpers on canonical trailing-slash projection routes', () => {

@@ -97,6 +97,34 @@ type HudUpdateSignal = {
   ttlMs?: number
 }
 
+type EnvironmentLiveMetric = {
+  id: string
+  label: string
+  value: string
+  title: string
+}
+
+type EnvironmentFreshnessLevel =
+  | 'live'
+  | 'recent'
+  | 'aging'
+  | 'stale'
+  | 'unknown'
+
+type EnvironmentFreshnessStyle = CSSProperties & {
+  '--td-freshness-hue'?: string
+  '--td-freshness-saturation'?: string
+  '--td-freshness-lightness'?: string
+  '--td-freshness-opacity'?: string
+  '--td-freshness-glow'?: string
+}
+
+type EnvironmentFreshnessVisual = {
+  level: EnvironmentFreshnessLevel
+  ageLabel?: string
+  style: EnvironmentFreshnessStyle
+}
+
 const STATUS_URL =
   process.env.NEXT_PUBLIC_DISPLAY_RUNTIME_STATUS_URL ||
   process.env.NEXT_PUBLIC_TD_CONTROL_GUI_STATUS_URL ||
@@ -355,6 +383,19 @@ const stateWordLabel = (state: unknown): string => {
   return normalized
 }
 
+const environmentRailWordLabel = (
+  state: unknown,
+  freshnessSignals: Array<{ freshnessVisual?: EnvironmentFreshnessVisual }>
+): string => {
+  const normalized = normalizeState(state)
+  if (normalized !== 'DEGRADED') return stateWordLabel(state)
+  return freshnessSignals.some(
+    (signal) => signal.freshnessVisual?.level === 'stale'
+  )
+    ? 'Stale'
+    : 'Check'
+}
+
 const homeActionModeLabel = (status: StatusPayload | null) => {
   const rawMode = String(status?.homeActionMode?.mode ?? '')
     .trim()
@@ -487,6 +528,102 @@ const compactSourceLabel = (value: unknown, fallback: string): string => {
   return fallback
 }
 
+const readFreshnessAgeMs = (
+  source: any,
+  nowMs: number,
+  fallbackTimestamp?: string
+): number | undefined => {
+  const freshness = source?.freshness ?? {}
+  const directAge =
+    readNumericField(freshness, ['age_ms', 'ageMs']) ??
+    readNumericField(source, ['age_ms', 'ageMs', 'freshness_ms', 'freshnessMs'])
+  if (directAge !== undefined) return Math.max(0, directAge)
+
+  const timestamp =
+    readStringField(source, [
+      'observed_at',
+      'observedAt',
+      'updated_at',
+      'updatedAt',
+      'checked_at',
+      'checkedAt',
+      'timestamp',
+    ]) ?? fallbackTimestamp
+  const timestampMs = timestamp ? Date.parse(timestamp) : Number.NaN
+  if (!Number.isFinite(timestampMs) || nowMs <= 0) return undefined
+  return Math.max(0, nowMs - timestampMs)
+}
+
+const environmentFreshnessVisualLevel = (
+  signal: any,
+  nowMs: number,
+  fallbackTimestamp?: string
+): EnvironmentFreshnessLevel => {
+  if (!signal) return 'unknown'
+  const freshness = signal?.freshness ?? {}
+  const freshnessLevel = String(freshness.level ?? '').toLowerCase()
+  if (signal.stale || freshnessLevel === 'stale') return 'stale'
+
+  const ageMs = readFreshnessAgeMs(signal, nowMs, fallbackTimestamp)
+  if (ageMs === undefined) {
+    return freshnessLevel === 'fresh' || freshnessLevel === 'recent'
+      ? 'recent'
+      : 'unknown'
+  }
+
+  if (ageMs <= 2500) return 'live'
+  if (ageMs <= 6000) return 'recent'
+  if (ageMs <= 15000) return 'aging'
+  return 'stale'
+}
+
+const environmentFreshnessAgeLabel = (
+  signal: any,
+  nowMs: number,
+  fallbackTimestamp?: string
+): string | undefined => {
+  const ageMs = readFreshnessAgeMs(signal, nowMs, fallbackTimestamp)
+  return ageMs === undefined ? undefined : formatAge(ageMs)
+}
+
+const environmentFreshnessVisual = (
+  signal: any,
+  nowMs: number,
+  fallbackTimestamp?: string
+): EnvironmentFreshnessVisual => {
+  const level = environmentFreshnessVisualLevel(
+    signal,
+    nowMs,
+    fallbackTimestamp
+  )
+  const ageMs = readFreshnessAgeMs(signal, nowMs, fallbackTimestamp)
+  if (ageMs === undefined) {
+    return {
+      level,
+      style: {
+        '--td-freshness-hue': '190',
+        '--td-freshness-saturation': '18%',
+        '--td-freshness-lightness': '72%',
+        '--td-freshness-opacity': level === 'unknown' ? '0.44' : '0.62',
+        '--td-freshness-glow': '0.24',
+      },
+    }
+  }
+
+  const ratio = Math.min(1, Math.max(0, ageMs / 15000))
+  return {
+    level,
+    ageLabel: formatAge(ageMs),
+    style: {
+      '--td-freshness-hue': `${Math.round(188 - ratio * 158)}`,
+      '--td-freshness-saturation': `${Math.round(98 - ratio * 10)}%`,
+      '--td-freshness-lightness': `${Math.round(68 - ratio * 8)}%`,
+      '--td-freshness-opacity': `${(0.98 - ratio * 0.18).toFixed(2)}`,
+      '--td-freshness-glow': `${(0.72 - ratio * 0.2).toFixed(2)}`,
+    },
+  }
+}
+
 const ENVIRONMENT_VALUE_LABELS: Record<string, string> = {
   aircon: 'AC',
   camera: 'CAMERA',
@@ -605,6 +742,74 @@ const formatProbability = (value: unknown): string | null => {
   return `${Math.round(normalized)}%`
 }
 
+const roomLightEstimateProbabilityLabels = (
+  signal: any
+): {
+  electricLabel?: string
+  daylightLabel?: string
+} => {
+  const evidence = signal?.evidence ?? {}
+  const probabilities = signal?.probabilities ?? {}
+  const electricProbability =
+    readNumericField(evidence, ['electric_on_probability']) ??
+    readNumericField(probabilities, ['electric_on']) ??
+    readNumericField(signal?.electric_light, ['probability'])
+  const daylightProbability =
+    readNumericField(evidence, ['daylight_present_probability']) ??
+    readNumericField(probabilities, ['daylight_present']) ??
+    readNumericField(signal?.daylight, ['probability'])
+
+  return {
+    electricLabel: formatProbability(electricProbability) ?? undefined,
+    daylightLabel: formatProbability(daylightProbability) ?? undefined,
+  }
+}
+
+const environmentSignalAgeValueLabel = (
+  signal: any,
+  nowMs: number
+): string | undefined => {
+  return environmentFreshnessAgeLabel(signal, nowMs)
+}
+
+const roomLightLiveMetrics = (
+  signal: any,
+  nowMs: number
+): EnvironmentLiveMetric[] | undefined => {
+  if (!signal) return undefined
+  const { electricLabel, daylightLabel } =
+    roomLightEstimateProbabilityLabels(signal)
+  const ageLabel = environmentSignalAgeValueLabel(signal, nowMs)
+  const metrics: EnvironmentLiveMetric[] = []
+
+  if (ageLabel) {
+    metrics.push({
+      id: 'age',
+      label: 'age',
+      value: ageLabel,
+      title: 'Camera estimate sample age',
+    })
+  }
+  if (electricLabel) {
+    metrics.push({
+      id: 'electric',
+      label: 'E',
+      value: electricLabel,
+      title: 'Electric-light cue estimate',
+    })
+  }
+  if (daylightLabel) {
+    metrics.push({
+      id: 'daylight',
+      label: 'D',
+      value: daylightLabel,
+      title: 'Daylight cue estimate',
+    })
+  }
+
+  return metrics.length > 0 ? metrics : undefined
+}
+
 const environmentSignalDetailLabel = (
   signal: any,
   nowMs: number,
@@ -613,15 +818,8 @@ const environmentSignalDetailLabel = (
   if (!signal) return 'not reported'
 
   const evidence = signal.evidence ?? {}
-  const probabilities = signal.probabilities ?? {}
-  const electricProbability =
-    readNumericField(evidence, ['electric_on_probability']) ??
-    readNumericField(probabilities, ['electric_on']) ??
-    readNumericField(signal.electric_light, ['probability'])
-  const daylightProbability =
-    readNumericField(evidence, ['daylight_present_probability']) ??
-    readNumericField(probabilities, ['daylight_present']) ??
-    readNumericField(signal.daylight, ['probability'])
+  const { electricLabel, daylightLabel } =
+    roomLightEstimateProbabilityLabels(signal)
   const lightingType =
     readStringField(evidence, ['lighting_type']) ??
     readStringField(signal, ['lighting_type', 'label', 'daylight_state'])
@@ -631,13 +829,11 @@ const environmentSignalDetailLabel = (
   ])
   const freshness = environmentFreshnessLabel(signal, nowMs)
 
-  const daylightLabel = formatProbability(daylightProbability)
   if (lightingType && confidence) return `${lightingType} ${confidence}`
   if (lightingType && daylightLabel) return `${lightingType} ${daylightLabel}`
   if (lightingType) return lightingType
   if (daylightLabel) return `daylight ${daylightLabel}`
 
-  const electricLabel = formatProbability(electricProbability)
   if (electricLabel) return `elec cue ${electricLabel}`
 
   return freshness
@@ -685,13 +881,26 @@ const hudUpdateSemanticToken = (
     readStringField(evidence, ['lighting_type']) ??
     readStringField(signal, ['lighting_type', 'label', 'daylight_state'])
   const learningLevel = readStringField(learning, ['level', 'status'])
+  const { electricLabel, daylightLabel } =
+    roomLightEstimateProbabilityLabels(signal)
+  const snapshotId = readStringField(signal, [
+    'source_snapshot_id',
+    'sourceSnapshotId',
+    'snapshot_id',
+    'snapshotId',
+    'observation_id',
+    'observationId',
+  ])
 
   return [
     target,
     semanticState.toLowerCase(),
     confidence,
     lightingType,
+    electricLabel,
+    daylightLabel,
     learningLevel,
+    snapshotId,
   ]
     .filter(Boolean)
     .join(':')
@@ -927,6 +1136,16 @@ export const ProjectionVisualHud = ({
       return
     }
 
+    setNowMs(Date.now())
+    const timer = window.setInterval(() => setNowMs(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
     const handleStatus = (event: Event) => {
       setSttStatus((event as CustomEvent<SttStatus>).detail)
     }
@@ -957,7 +1176,6 @@ export const ProjectionVisualHud = ({
 
     const refresh = async () => {
       try {
-        setNowMs(Date.now())
         const response = await fetch(STATUS_URL, { cache: 'no-store' })
         const nextStatus = (await response.json()) as StatusPayload
         if (!stopped) {
@@ -1214,7 +1432,9 @@ export const ProjectionVisualHud = ({
       value: environmentStateValueLabel(signal.state),
       summary: compactSourceLabel(signal.source, 'HA'),
       detail: environmentSignalDetailLabel(signal, nowMs, 'HA'),
+      freshnessVisual: environmentFreshnessVisual(signal, nowMs),
       updateSignal: buildEnvironmentHudUpdateSignal(key, 'appliance', signal),
+      liveMetrics: undefined,
     }))
   const stateQueryIndicators = Object.entries(stateQueries)
     .filter((entry): entry is [string, Record<string, any>] =>
@@ -1234,7 +1454,10 @@ export const ProjectionVisualHud = ({
         'Vision'
       ),
       detail: environmentSignalDetailLabel(signal, nowMs, 'Vision'),
+      freshnessVisual: environmentFreshnessVisual(signal, nowMs),
       updateSignal: buildEnvironmentHudUpdateSignal(key, 'query', signal),
+      liveMetrics:
+        key === 'room_light' ? roomLightLiveMetrics(signal, nowMs) : undefined,
     }))
   const visionEstimateIndicators = Object.entries(visionSignals)
     .filter(
@@ -1254,7 +1477,10 @@ export const ProjectionVisualHud = ({
       value: environmentStateValueLabel(signal.state ?? signal.label),
       summary: compactSourceLabel(signal.source, 'Vision'),
       detail: environmentSignalDetailLabel(signal, nowMs, 'Vision'),
+      freshnessVisual: environmentFreshnessVisual(signal, nowMs),
       updateSignal: buildEnvironmentHudUpdateSignal(key, 'vision', signal),
+      liveMetrics:
+        key === 'room_light' ? roomLightLiveMetrics(signal, nowMs) : undefined,
     }))
   const environmentValueIndicators = [
     ...applianceIndicators,
@@ -1273,6 +1499,11 @@ export const ProjectionVisualHud = ({
         nowMs,
         status?.timestamp
       ),
+      freshnessVisual: environmentFreshnessVisual(
+        environmentStateService,
+        nowMs,
+        status?.timestamp
+      ),
     },
     {
       id: 'vision',
@@ -1283,6 +1514,11 @@ export const ProjectionVisualHud = ({
       detail: environmentSourceFreshnessLabel(
         visionSource,
         visionSnapshotService,
+        nowMs,
+        status?.timestamp
+      ),
+      freshnessVisual: environmentFreshnessVisual(
+        visionSource ?? visionSnapshotService,
         nowMs,
         status?.timestamp
       ),
@@ -1301,6 +1537,11 @@ export const ProjectionVisualHud = ({
             status?.timestamp
           )
         : `last ${formatTime(lastHomeEvent?.timestamp)}`,
+      freshnessVisual: environmentFreshnessVisual(
+        homeAssistantSource ?? homeAssistantService ?? lastHomeEvent,
+        nowMs,
+        status?.timestamp
+      ),
     },
   ]
   const environmentRailState = aggregateState(
@@ -1309,6 +1550,10 @@ export const ProjectionVisualHud = ({
       ...environmentIndicators.map((indicator) => indicator.state),
     ]
   )
+  const environmentRailLabel = environmentRailWordLabel(environmentRailState, [
+    ...environmentValueIndicators,
+    ...environmentIndicators,
+  ])
   const pipeline = status?.pipeline
   const mediapipe = status?.mediapipe
   const touchdesigner = status?.touchdesigner
@@ -1484,7 +1729,7 @@ export const ProjectionVisualHud = ({
             >
               <div className="td-state-rail-header">
                 <span>Environment State</span>
-                <strong>{stateWordLabel(environmentRailState)}</strong>
+                <strong>{environmentRailLabel}</strong>
               </div>
               <div
                 className="td-environment-values"
@@ -1494,12 +1739,15 @@ export const ProjectionVisualHud = ({
                   <div
                     className="td-env-value-card"
                     data-state={normalizeState(indicator.state)}
+                    data-freshness={indicator.freshnessVisual.level}
+                    data-freshness-age={indicator.freshnessVisual.ageLabel}
                     data-update-signal={indicator.updateSignal?.target}
                     data-update-kind={indicator.updateSignal?.kind}
                     data-update-source={indicator.updateSignal?.source}
                     data-update-observed-at={indicator.updateSignal?.observedAt}
                     data-update-snapshot-id={indicator.updateSignal?.snapshotId}
                     data-update-token={indicator.updateSignal?.token}
+                    style={indicator.freshnessVisual.style}
                     key={
                       indicator.updateSignal?.token
                         ? `${indicator.id}:${indicator.updateSignal.token}`
@@ -1511,6 +1759,24 @@ export const ProjectionVisualHud = ({
                     <em title={`${indicator.summary} / ${indicator.detail}`}>
                       {indicator.summary} {indicator.detail}
                     </em>
+                    {indicator.liveMetrics?.length ? (
+                      <div
+                        className="td-env-live-meter"
+                        aria-label={`${indicator.label} live estimate metrics`}
+                      >
+                        {indicator.liveMetrics.map((metric) => (
+                          <span
+                            className="td-env-live-chip"
+                            data-metric={metric.id}
+                            key={metric.id}
+                            title={metric.title}
+                          >
+                            <b>{metric.label}</b>
+                            <i>{metric.value}</i>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -1522,6 +1788,9 @@ export const ProjectionVisualHud = ({
                   <div
                     className="td-source-chip"
                     data-state={normalizeState(indicator.state)}
+                    data-freshness={indicator.freshnessVisual.level}
+                    data-freshness-age={indicator.freshnessVisual.ageLabel}
+                    style={indicator.freshnessVisual.style}
                     key={indicator.id}
                   >
                     <span>{indicator.label}</span>
