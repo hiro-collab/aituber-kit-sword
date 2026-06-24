@@ -16,8 +16,6 @@ type StatusPayload = {
   touchdesigner?: Record<string, any>
   environment?: {
     appliances?: Record<string, any>
-    actions?: Array<Record<string, any>>
-    action_readiness?: Record<string, any>
     state_queries?: Record<string, any>
     sources?: Record<string, any>
     vision?: Record<string, any>
@@ -495,7 +493,7 @@ const ENVIRONMENT_VALUE_LABELS: Record<string, string> = {
   door: 'DOOR',
   fan: 'FAN',
   light: 'LIGHT',
-  room_light: 'VISION LIGHT',
+  room_light: 'LIGHT EST',
 }
 
 const HUD_UPDATE_TARGETS: Record<string, string> = {
@@ -601,38 +599,6 @@ const environmentStateValueLabel = (value: unknown): string => {
   return state.replace(/_/g, ' ')
 }
 
-const environmentReadinessValueLabel = (value: unknown): string => {
-  const state = String(value ?? '').trim().toLowerCase()
-  if (state === 'test_now') return 'Testable'
-  if (state === 'do_not_test_current_config') return 'Blocked'
-  if (state === 'not_live_test_candidate') return 'No live'
-  if (!state) return 'Unknown'
-  return state.replace(/_/g, ' ')
-}
-
-const environmentActionState = (action: any): string => {
-  const readiness = String(action?.live_test_readiness ?? '').toLowerCase()
-  const proofCeiling = String(action?.proof_ceiling ?? '').toLowerCase()
-  if (readiness === 'test_now') return 'OK'
-  if (readiness === 'do_not_test_current_config') return 'DEGRADED'
-  if (proofCeiling.includes('not_home_control_appliance')) return 'DEGRADED'
-  if (action?.live_test_candidate === true) return 'DEGRADED'
-  return 'UNKNOWN'
-}
-
-const environmentActionDetailLabel = (action: any): string => {
-  const blockers = Array.isArray(action?.live_test_blockers)
-    ? action.live_test_blockers
-    : []
-  if (blockers.length > 0) {
-    return String(blockers[0]).replace(/_/g, ' ').slice(0, 28)
-  }
-  const tracking = String(
-    action?.state_tracking ?? action?.verification_mode ?? action?.proof_ceiling ?? ''
-  ).trim()
-  return tracking ? tracking.replace(/_/g, ' ').slice(0, 28) : 'readiness'
-}
-
 const formatProbability = (value: unknown): string | null => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
   const normalized = value <= 1 ? value * 100 : value
@@ -662,7 +628,7 @@ const environmentSignalDetailLabel = (
   const freshness = environmentFreshnessLabel(signal, nowMs)
 
   const electricLabel = formatProbability(electricProbability)
-  if (electricLabel) return `elec ${electricLabel}`
+  if (electricLabel) return `electric ${electricLabel}`
 
   const daylightLabel = formatProbability(daylightProbability)
   if (lightingType && daylightLabel) return `${lightingType} ${daylightLabel}`
@@ -1224,9 +1190,6 @@ export const ProjectionVisualHud = ({
   const lastHomeEvent = status?.homeActions?.lastEvent ?? events[0] ?? null
   const environmentSnapshot = status?.environment ?? {}
   const appliances = environmentSnapshot.appliances ?? {}
-  const environmentActions = Array.isArray(environmentSnapshot.actions)
-    ? environmentSnapshot.actions
-    : []
   const stateQueries = environmentSnapshot.state_queries ?? {}
   const visionSignals = environmentSnapshot.vision ?? {}
   const environmentSources = environmentSnapshot.sources ?? {}
@@ -1246,28 +1209,6 @@ export const ProjectionVisualHud = ({
       summary: compactSourceLabel(signal.source, 'HA'),
       detail: environmentSignalDetailLabel(signal, nowMs, 'HA'),
       updateSignal: buildEnvironmentHudUpdateSignal(key, 'appliance', signal),
-    }))
-  const actionReadinessIndicators = environmentActions
-    .filter(
-      (action): action is Record<string, any> =>
-        isRecordObject(action) &&
-        (action.live_test_candidate === true ||
-          Boolean(action.proof_ceiling) ||
-          Boolean(action.state_tracking))
-    )
-    .slice(0, 8)
-    .map((action) => ({
-      id: `action-${String(action.action_id ?? '')}`,
-      label: environmentValueLabel(String(action.action_id ?? 'action'), 'action'),
-      title: `Home action readiness: ${String(action.action_id ?? 'unknown')}`,
-      state: environmentActionState(action),
-      value: environmentReadinessValueLabel(action.live_test_readiness),
-      summary: String(action.state_tracking ?? action.verification_mode ?? 'action').replace(
-        /_/g,
-        ' '
-      ),
-      detail: environmentActionDetailLabel(action),
-      updateSignal: undefined as HudUpdateSignal | undefined,
     }))
   const stateQueryIndicators = Object.entries(stateQueries)
     .filter((entry): entry is [string, Record<string, any>] =>
@@ -1307,7 +1248,6 @@ export const ProjectionVisualHud = ({
     }))
   const environmentValueIndicators = [
     ...applianceIndicators,
-    ...actionReadinessIndicators,
     ...stateQueryIndicators,
     ...visionEstimateIndicators,
   ]
