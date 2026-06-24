@@ -268,6 +268,8 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     expect(model.queueMotionRuntimeFrame).toHaveBeenCalledWith({
       stimulusInstanceId: 'stimulus-instance-expression-visible',
       frameCount: 30,
+      expressionProfileRef: 'motion.runtime.vrm_expression_weights.v0',
+      expressionProfileId: 'expression_visible_default',
       expressionWeights: {
         happy: 1,
         relaxed: 0.75,
@@ -276,7 +278,58 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
         fun: 0.75,
         Fun: 0.75,
       },
+      expressionTargetWeights: {
+        happy: 1,
+        relaxed: 0.75,
+        joy: 1,
+        Joy: 1,
+        fun: 0.75,
+        Fun: 0.75,
+      },
     })
+  })
+
+  it('queues the allow-listed full-relaxed expression-visible profile with profile diagnostics', async () => {
+    const viewer = new Viewer()
+    const model = createReadyModel()
+    viewer.model = model
+    const stimulus = createExpressionVisibleStimulus()
+    stimulus.requirements.expression_profile_ref =
+      'motion.runtime.vrm_expression_weights.full_relaxed.v0'
+
+    const result = await viewer.receiveMotionStimulus(stimulus)
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        status: 'started',
+        reason_code: 'motion_runtime_expression_frame_queued',
+        safe_visible_state: 'expression_change_requested',
+      })
+    )
+    expect(model.queueMotionRuntimeFrame).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expressionProfileRef:
+          'motion.runtime.vrm_expression_weights.full_relaxed.v0',
+        expressionProfileId: 'expression_visible_full_relaxed',
+        expressionWeights: {
+          happy: 1,
+          relaxed: 1,
+          joy: 1,
+          Joy: 1,
+          fun: 1,
+          Fun: 1,
+        },
+        expressionTargetWeights: {
+          happy: 1,
+          relaxed: 1,
+          joy: 1,
+          Joy: 1,
+          fun: 1,
+          Fun: 1,
+        },
+      })
+    )
   })
 
   it('creates reader-safe Projection Visual in-page diagnostics with separated canvas and DOM surfaces', () => {
@@ -353,7 +406,15 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
       expect.objectContaining({
         expression_weight_applied: true,
         channel_names: ['happy'],
+        expression_profile_ref: 'motion.runtime.vrm_expression_weights.v0',
+        expression_profile_id: 'expression_visible_default',
         frame_applied_count: 8,
+        last_weight_count: 1,
+        last_weight_min: 0.5,
+        last_weight_max: 0.5,
+        target_weight_count: 1,
+        target_weight_min: 1,
+        target_weight_max: 1,
       })
     )
     expect(diagnostics.mixed_surface_separation).toEqual({
@@ -573,10 +634,15 @@ function createMotionRuntimeDebugSnapshot() {
     expressionValueSummary: {
       expression_weight_applied: true,
       channel_names: ['happy'],
+      expression_profile_ref: 'motion.runtime.vrm_expression_weights.v0',
+      expression_profile_id: 'expression_visible_default',
       frame_applied_count: 8,
       last_weight_count: 1,
       last_weight_min: 0.5,
       last_weight_max: 0.5,
+      target_weight_count: 1,
+      target_weight_min: 1,
+      target_weight_max: 1,
       last_driver_result_id: 'driver-result-actual-1',
       last_driver_result: 'applied',
       last_driver_reason_code: 'motion_driver_applied',

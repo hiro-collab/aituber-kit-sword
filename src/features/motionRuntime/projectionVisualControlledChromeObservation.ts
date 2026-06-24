@@ -305,6 +305,11 @@ export type ProjectionVisualControlledChromeFrameAppliedAnchor = {
   expression_weight_applied?: boolean
   expression_frame_applied_count?: number
   expression_channel_names?: string[]
+  expression_applied_channel_names?: string[]
+  expression_dropped_channel_names?: string[]
+  expression_requested_channel_count?: number
+  expression_applied_channel_count?: number
+  expression_dropped_channel_count?: number
   dance_active_instance_count?: number
   dance_active_group_keys?: string[]
   pose_humanoid_rotation_channel_count?: number
@@ -1947,6 +1952,21 @@ function buildFrameAppliedAnchor(
       expressionSummary?.frame_applied_count
     ),
     expression_channel_names: safeStringArray(expressionSummary?.channel_names),
+    expression_applied_channel_names: safeStringArray(
+      expressionSummary?.applied_channel_names
+    ),
+    expression_dropped_channel_names: safeStringArray(
+      expressionSummary?.dropped_channel_names
+    ),
+    expression_requested_channel_count: safeFiniteNumber(
+      expressionSummary?.requested_channel_count
+    ),
+    expression_applied_channel_count: safeFiniteNumber(
+      expressionSummary?.applied_channel_count
+    ),
+    expression_dropped_channel_count: safeFiniteNumber(
+      expressionSummary?.dropped_channel_count
+    ),
     dance_active_instance_count: danceInstances.length,
     dance_active_group_keys: [
       ...new Set(

@@ -642,8 +642,18 @@ describe('receiveMotionStimulusV0', () => {
         stimulusId: 'expression.visible.face',
         stimulusInstanceId: 'stimulus-instance-expression-visible',
         requestedAtMs: Date.parse('2026-06-12T07:10:00.000Z'),
+        expressionProfileRef: 'motion.runtime.vrm_expression_weights.v0',
+        expressionProfileId: 'expression_visible_default',
         frameCount: 30,
         expressionWeights: {
+          happy: 1,
+          relaxed: 0.75,
+          joy: 1,
+          Joy: 1,
+          fun: 0.75,
+          Fun: 0.75,
+        },
+        expressionTargetWeights: {
           happy: 1,
           relaxed: 0.75,
           joy: 1,
@@ -683,6 +693,135 @@ describe('receiveMotionStimulusV0', () => {
       'runtime_started',
       'result',
     ])
+  })
+
+  it('keeps the default expression-visible profile when no profile ref is provided', async () => {
+    const startExpressionVisible = jest.fn().mockReturnValue({
+      status: 'started',
+      reason_code: 'motion_runtime_expression_frame_queued',
+      runtime_result_id: 'expression-runtime-result-default-implicit',
+      safe_visible_state: 'expression_change_requested',
+    })
+    const stimulus = createExpressionVisibleStimulus()
+    delete (
+      stimulus.requirements as Partial<{
+        expression_profile_ref: string
+      }>
+    ).expression_profile_ref
+
+    const result = await receiveMotionStimulusV0(
+      stimulus,
+      {
+        startDance: jest.fn(),
+        startContextNod: jest.fn(),
+        startExpressionVisible,
+      },
+      { nowMs: () => 1_720_000_003_000 }
+    )
+
+    expect(startExpressionVisible).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expressionProfileRef: 'motion.runtime.vrm_expression_weights.v0',
+        expressionProfileId: 'expression_visible_default',
+        expressionWeights: expect.objectContaining({
+          relaxed: 0.75,
+          Fun: 0.75,
+        }),
+        expressionTargetWeights: expect.objectContaining({
+          relaxed: 0.75,
+          Fun: 0.75,
+        }),
+      })
+    )
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        runtime_result_id: 'expression-runtime-result-default-implicit',
+      })
+    )
+  })
+
+  it('routes allow-listed full-relaxed expression-visible profile weights without changing the default profile', async () => {
+    const startExpressionVisible = jest.fn().mockReturnValue({
+      status: 'started',
+      reason_code: 'motion_runtime_expression_frame_queued',
+      runtime_result_id: 'expression-runtime-result-full-relaxed',
+      safe_visible_state: 'expression_change_requested',
+    })
+    const stimulus = createExpressionVisibleStimulus()
+    stimulus.requirements.expression_profile_ref =
+      'motion.runtime.vrm_expression_weights.full_relaxed.v0'
+
+    const result = await receiveMotionStimulusV0(
+      stimulus,
+      {
+        startDance: jest.fn(),
+        startContextNod: jest.fn(),
+        startExpressionVisible,
+      },
+      { nowMs: () => 1_720_000_003_000 }
+    )
+
+    expect(startExpressionVisible).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expressionProfileRef:
+          'motion.runtime.vrm_expression_weights.full_relaxed.v0',
+        expressionProfileId: 'expression_visible_full_relaxed',
+        expressionWeights: {
+          happy: 1,
+          relaxed: 1,
+          joy: 1,
+          Joy: 1,
+          fun: 1,
+          Fun: 1,
+        },
+        expressionTargetWeights: {
+          happy: 1,
+          relaxed: 1,
+          joy: 1,
+          Joy: 1,
+          fun: 1,
+          Fun: 1,
+        },
+      })
+    )
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        status: 'started',
+        reason_code: 'motion_runtime_expression_frame_queued',
+        safe_visible_state: 'expression_change_requested',
+        runtime_result_id: 'expression-runtime-result-full-relaxed',
+      })
+    )
+  })
+
+  it('rejects unsupported expression-visible profile refs before dispatch', async () => {
+    const startExpressionVisible = jest.fn()
+    const stimulus = createExpressionVisibleStimulus()
+    stimulus.requirements.expression_profile_ref =
+      'motion.runtime.vrm_expression_weights.unreviewed.v0'
+
+    const result = await receiveMotionStimulusV0(
+      stimulus,
+      {
+        startDance: jest.fn(),
+        startContextNod: jest.fn(),
+        startExpressionVisible,
+      },
+      { nowMs: () => 1_720_000_003_000 }
+    )
+
+    expect(startExpressionVisible).not.toHaveBeenCalled()
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        status: 'unavailable',
+        reason_code: 'expression_visible_profile_ref_unsupported',
+        safe_visible_state: 'no_visible_change',
+        stimulus_id: 'expression.visible.face',
+      })
+    )
   })
 
   it('does not route expression-visible requests through context nod when markers are incomplete', async () => {

@@ -52,10 +52,20 @@ export interface MotionRuntimeDebugSnapshot {
 export interface MotionRuntimeExpressionValueSummary {
   expression_weight_applied: boolean
   channel_names: string[]
+  applied_channel_names: string[]
+  dropped_channel_names: string[]
+  expression_profile_ref: string | null
+  expression_profile_id: string | null
   frame_applied_count: number
+  requested_channel_count: number
+  applied_channel_count: number
+  dropped_channel_count: number
   last_weight_count: number
   last_weight_min: number | null
   last_weight_max: number | null
+  target_weight_count: number
+  target_weight_min: number | null
+  target_weight_max: number | null
   last_driver_result_id: string | null
   last_driver_result: MotionDriverResult['result'] | null
   last_driver_reason_code: string | null
@@ -460,10 +470,20 @@ export function createEmptyMotionRuntimeExpressionValueSummary(): MotionRuntimeE
   return {
     expression_weight_applied: false,
     channel_names: [],
+    applied_channel_names: [],
+    dropped_channel_names: [],
+    expression_profile_ref: null,
+    expression_profile_id: null,
     frame_applied_count: 0,
+    requested_channel_count: 0,
+    applied_channel_count: 0,
+    dropped_channel_count: 0,
     last_weight_count: 0,
     last_weight_min: null,
     last_weight_max: null,
+    target_weight_count: 0,
+    target_weight_min: null,
+    target_weight_max: null,
     last_driver_result_id: null,
     last_driver_result: null,
     last_driver_reason_code: null,
@@ -493,9 +513,38 @@ export function createMotionRuntimeExpressionValueSummary(
   const weightValues = weights.map(([, weight]) =>
     Math.min(1, Math.max(0, weight))
   )
+  const targetWeights = Object.entries(
+    request?.expressionTargetWeights ?? request?.expressionWeights ?? {}
+  ).filter(
+    (entry): entry is [string, number] =>
+      isSafeDiagnosticLabel(entry[0]) &&
+      typeof entry[1] === 'number' &&
+      Number.isFinite(entry[1])
+  )
+  const targetWeightValues = targetWeights.map(([, weight]) =>
+    Math.min(1, Math.max(0, weight))
+  )
   const frameAppliedCount =
     previousSummary.frame_applied_count +
     (expressionPart.result === 'applied' ? 1 : 0)
+  const appliedChannelNames = safeDiagnosticLabels(
+    expressionPart.applied_channel_names
+  )
+  const droppedChannelNames = safeDiagnosticLabels(
+    expressionPart.dropped_channel_names
+  )
+  const requestedChannelCount = safeDiagnosticCount(
+    expressionPart.requested_channel_count,
+    weights.length
+  )
+  const appliedChannelCount = safeDiagnosticCount(
+    expressionPart.applied_channel_count,
+    expressionPart.result === 'applied' ? weights.length : 0
+  )
+  const droppedChannelCount = safeDiagnosticCount(
+    expressionPart.dropped_channel_count,
+    Math.max(0, requestedChannelCount - appliedChannelCount)
+  )
 
   return {
     expression_weight_applied: expressionPart.result === 'applied',
@@ -503,10 +552,26 @@ export function createMotionRuntimeExpressionValueSummary(
       .map(([channelName]) => channelName)
       .sort()
       .slice(0, 8),
+    applied_channel_names: appliedChannelNames,
+    dropped_channel_names: droppedChannelNames,
+    expression_profile_ref:
+      safeDiagnosticLabelOrNull(request?.expressionProfileRef) ??
+      previousSummary.expression_profile_ref,
+    expression_profile_id:
+      safeDiagnosticLabelOrNull(request?.expressionProfileId) ??
+      previousSummary.expression_profile_id,
     frame_applied_count: frameAppliedCount,
+    requested_channel_count: requestedChannelCount,
+    applied_channel_count: appliedChannelCount,
+    dropped_channel_count: droppedChannelCount,
     last_weight_count: weightValues.length,
     last_weight_min: weightValues.length > 0 ? Math.min(...weightValues) : null,
     last_weight_max: weightValues.length > 0 ? Math.max(...weightValues) : null,
+    target_weight_count: targetWeightValues.length,
+    target_weight_min:
+      targetWeightValues.length > 0 ? Math.min(...targetWeightValues) : null,
+    target_weight_max:
+      targetWeightValues.length > 0 ? Math.max(...targetWeightValues) : null,
     last_driver_result_id: driverResult.driver_result_id,
     last_driver_result: driverResult.result,
     last_driver_reason_code: driverResult.reason_code,
@@ -527,6 +592,8 @@ export function createExpressionWeightFrameSequence(
   return Array.from({ length: frameCount }, (_, index) => ({
     ...request,
     frameCount,
+    expressionTargetWeights:
+      request.expressionTargetWeights ?? request.expressionWeights,
     expressionWeights: scaleExpressionWeights(
       request.expressionWeights,
       (index + 1) / frameCount
@@ -554,6 +621,30 @@ function normalizeExpressionWeightFrameCount(frameCount?: number): number {
 
 function isSafeDiagnosticLabel(value: string): boolean {
   return /^[a-zA-Z0-9._:-]{1,64}$/.test(value)
+}
+
+function safeDiagnosticLabelOrNull(value?: string): string | null {
+  return typeof value === 'string' && isSafeDiagnosticLabel(value)
+    ? value
+    : null
+}
+
+function safeDiagnosticLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(
+      (entry): entry is string =>
+        typeof entry === 'string' && isSafeDiagnosticLabel(entry)
+    )
+    .sort()
+    .slice(0, 8)
+}
+
+function safeDiagnosticCount(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value))
+  }
+  return Math.max(0, Math.floor(fallback))
 }
 
 function scaleExpressionWeights(

@@ -69,7 +69,10 @@ export interface MotionStimulusRuntimeExpressionVisibleRequest {
   stimulusId: string
   stimulusInstanceId: string
   requestedAtMs: number
+  expressionProfileRef: string
+  expressionProfileId: string
   expressionWeights: Record<string, number>
+  expressionTargetWeights: Record<string, number>
   frameCount: number
   trace: MotionStimulusTraceIds
 }
@@ -235,6 +238,8 @@ const EXPRESSION_VISIBLE_PAYLOAD_REF =
   'motion.thought_core.expression_visible.v0'
 const EXPRESSION_VISIBLE_PROFILE_REF =
   'motion.runtime.vrm_expression_weights.v0'
+const EXPRESSION_VISIBLE_FULL_RELAXED_PROFILE_REF =
+  'motion.runtime.vrm_expression_weights.full_relaxed.v0'
 const EXPRESSION_VISIBLE_CHANGE = 'face_expression'
 const EXPRESSION_VISIBLE_ROI = 'avatar_face_head'
 const EXPRESSION_VISIBLE_TRACK_SCOPE = 'face_head'
@@ -247,7 +252,34 @@ const EXPRESSION_VISIBLE_FRAME_WEIGHTS = {
   fun: 0.75,
   Fun: 0.75,
 }
+const EXPRESSION_VISIBLE_FULL_RELAXED_FRAME_WEIGHTS = {
+  happy: 1,
+  relaxed: 1,
+  joy: 1,
+  Joy: 1,
+  fun: 1,
+  Fun: 1,
+}
 const EXPRESSION_VISIBLE_FRAME_COUNT = 30
+
+type ExpressionVisibleProfile = {
+  profileRef: string
+  profileId: 'expression_visible_default' | 'expression_visible_full_relaxed'
+  expressionWeights: Record<string, number>
+}
+
+const EXPRESSION_VISIBLE_PROFILES: Record<string, ExpressionVisibleProfile> = {
+  [EXPRESSION_VISIBLE_PROFILE_REF]: {
+    profileRef: EXPRESSION_VISIBLE_PROFILE_REF,
+    profileId: 'expression_visible_default',
+    expressionWeights: EXPRESSION_VISIBLE_FRAME_WEIGHTS,
+  },
+  [EXPRESSION_VISIBLE_FULL_RELAXED_PROFILE_REF]: {
+    profileRef: EXPRESSION_VISIBLE_FULL_RELAXED_PROFILE_REF,
+    profileId: 'expression_visible_full_relaxed',
+    expressionWeights: EXPRESSION_VISIBLE_FULL_RELAXED_FRAME_WEIGHTS,
+  },
+}
 
 export async function receiveMotionStimulusV0(
   input: unknown,
@@ -288,7 +320,24 @@ export async function receiveMotionStimulusV0(
 
     return createRuntimeResult(stimulus, stopResult, nowMs())
   }
-  if (isExpressionVisibleStimulus(stimulus)) {
+  if (isExpressionVisibleContractEnvelope(stimulus)) {
+    if (!hasExpressionVisibleRequirementShape(stimulus.requirements)) {
+      return createUnavailableResult(
+        stimulus,
+        'stimulus_not_supported_by_receiver_v0',
+        issuedAtMs
+      )
+    }
+    const expressionProfile = resolveExpressionVisibleProfile(
+      stimulus.requirements
+    )
+    if (!expressionProfile) {
+      return createUnavailableResult(
+        stimulus,
+        'expression_visible_profile_ref_unsupported',
+        issuedAtMs
+      )
+    }
     if (!adapter.startExpressionVisible) {
       return createUnavailableResult(
         stimulus,
@@ -301,7 +350,10 @@ export async function receiveMotionStimulusV0(
       stimulusId: stimulus.stimulusId,
       stimulusInstanceId: stimulus.stimulusInstanceId,
       requestedAtMs: issuedAtMs,
-      expressionWeights: { ...EXPRESSION_VISIBLE_FRAME_WEIGHTS },
+      expressionProfileRef: expressionProfile.profileRef,
+      expressionProfileId: expressionProfile.profileId,
+      expressionWeights: { ...expressionProfile.expressionWeights },
+      expressionTargetWeights: { ...expressionProfile.expressionWeights },
       frameCount: EXPRESSION_VISIBLE_FRAME_COUNT,
       trace: stimulus.trace,
     })
@@ -669,14 +721,13 @@ function isSupportedDanceRequestMode(
   )
 }
 
-function isExpressionVisibleStimulus(
+function isExpressionVisibleContractEnvelope(
   stimulus: NormalizedMotionStimulus
 ): boolean {
   return (
     stimulus.kind.toLowerCase() === 'expression' &&
     stimulus.requestMode === 'apply' &&
     stimulus.payloadRef === EXPRESSION_VISIBLE_PAYLOAD_REF &&
-    hasExpressionVisibleRequirements(stimulus.requirements) &&
     hasExpressionVisibleTrackMask(stimulus.trackMask)
   )
 }
@@ -694,17 +745,24 @@ function isRepresentativeContextNodStimulus(
   )
 }
 
-function hasExpressionVisibleRequirements(
+function hasExpressionVisibleRequirementShape(
   requirements?: Record<string, unknown>
 ): boolean {
   return Boolean(
     requirements &&
-    safeString(requirements.expression_profile_ref) ===
-      EXPRESSION_VISIBLE_PROFILE_REF &&
     safeString(requirements.expected_visible_change) ===
       EXPRESSION_VISIBLE_CHANGE &&
     safeString(requirements.expected_roi) === EXPRESSION_VISIBLE_ROI
   )
+}
+
+function resolveExpressionVisibleProfile(
+  requirements?: Record<string, unknown>
+): ExpressionVisibleProfile | null {
+  const profileRef = safeString(requirements?.expression_profile_ref)
+  if (!profileRef)
+    return EXPRESSION_VISIBLE_PROFILES[EXPRESSION_VISIBLE_PROFILE_REF]
+  return EXPRESSION_VISIBLE_PROFILES[profileRef] ?? null
 }
 
 function hasExpressionVisibleTrackMask(

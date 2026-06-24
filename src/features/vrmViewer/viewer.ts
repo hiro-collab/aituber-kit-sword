@@ -400,7 +400,10 @@ export class Viewer {
     model.queueMotionRuntimeFrame({
       stimulusInstanceId: request.stimulusInstanceId,
       frameCount: request.frameCount,
+      expressionProfileRef: request.expressionProfileRef,
+      expressionProfileId: request.expressionProfileId,
       expressionWeights: request.expressionWeights,
+      expressionTargetWeights: request.expressionTargetWeights,
     })
 
     return {

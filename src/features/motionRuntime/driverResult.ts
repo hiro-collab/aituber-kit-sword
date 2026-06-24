@@ -38,6 +38,11 @@ export interface MotionDriverPartResult {
   capability: MotionCapabilityState
   reason_code: string
   safe_visible_state: SafeVisibleState
+  requested_channel_count?: number
+  applied_channel_count?: number
+  dropped_channel_count?: number
+  applied_channel_names?: string[]
+  dropped_channel_names?: string[]
 }
 
 export interface MotionDriverResult {

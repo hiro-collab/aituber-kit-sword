@@ -20,7 +20,10 @@ export interface MotionRuntimeLookAtTarget {
 export interface MotionRuntimeFrameRequest {
   stimulusInstanceId?: string
   frameCount?: number
+  expressionProfileRef?: string
+  expressionProfileId?: string
   expressionWeights?: Record<string, number | null | undefined>
+  expressionTargetWeights?: Record<string, number | null | undefined>
   lookAtTarget?: MotionRuntimeLookAtTarget
   resetToIdle?: boolean
 }
@@ -118,6 +121,8 @@ export class VRMMotionAdapter {
       if (!surface.expressionManager?.getExpression) return true
       return surface.expressionManager.getExpression(name) !== null
     })
+    const supportedNames = new Set(supportedEntries.map(([name]) => name))
+    const droppedEntries = entries.filter(([name]) => !supportedNames.has(name))
 
     if (supportedEntries.length === 0) {
       return {
@@ -126,6 +131,10 @@ export class VRMMotionAdapter {
         capability: this.capabilityProfile.expressionWeight,
         reason_code: 'expression_weight_no_supported_channel',
         safe_visible_state: 'no_visible_change',
+        requested_channel_count: entries.length,
+        applied_channel_count: 0,
+        dropped_channel_count: entries.length,
+        dropped_channel_names: entries.map(([name]) => name),
       }
     }
 
@@ -139,6 +148,11 @@ export class VRMMotionAdapter {
       capability: this.capabilityProfile.expressionWeight,
       reason_code: 'expression_weight_applied',
       safe_visible_state: 'expression_changed',
+      requested_channel_count: entries.length,
+      applied_channel_count: supportedEntries.length,
+      dropped_channel_count: droppedEntries.length,
+      applied_channel_names: supportedEntries.map(([name]) => name),
+      dropped_channel_names: droppedEntries.map(([name]) => name),
     }
   }
 
