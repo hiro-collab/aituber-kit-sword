@@ -666,13 +666,19 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).not.toContain('environmentActionState')
     expect(source).toContain('stateQueryIndicators')
     expect(source).toContain('visionEstimateIndicators')
-    expect(source).toContain("room_light: 'LIGHT EST'")
-    expect(source).toContain('electric ${electricLabel}')
+    expect(source).toContain("room_light: 'ROOM EST'")
+    expect(source).toContain('elec cue ${electricLabel}')
     expect(source).toContain('VISION_SOURCE_ONLY_KEYS')
     expect(source).toContain('type HudUpdateSignal')
     expect(source).toContain('const HUD_UPDATE_TARGETS')
-    expect(source).toContain("'query:room_light': 'environment.visionLight'")
-    expect(source).toContain("'vision:room_light': 'environment.visionLight'")
+    expect(source).toContain(
+      "'query:room_light': 'environment.roomLightEstimate'"
+    )
+    expect(source).toContain(
+      "'vision:room_light': 'environment.roomLightEstimate'"
+    )
+    expect(source).toContain('Camera room-light estimate')
+    expect(source).not.toContain('Vision estimate:')
     expect(source).toContain('buildEnvironmentHudUpdateSignal')
     expect(source).toContain('hudUpdateSemanticToken')
     expect(source).toContain(

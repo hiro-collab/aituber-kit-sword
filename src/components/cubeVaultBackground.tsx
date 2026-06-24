@@ -632,10 +632,6 @@ const buildDemoIndicatorSnapshot = (
           },
         },
         appliances: {
-          light: {
-            state: step === 0 ? 'off' : 'on',
-            stale: haWarn,
-          },
           fan: {
             state: 'on',
             stale: step >= 3,

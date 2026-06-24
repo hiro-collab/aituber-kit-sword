@@ -493,12 +493,12 @@ const ENVIRONMENT_VALUE_LABELS: Record<string, string> = {
   door: 'DOOR',
   fan: 'FAN',
   light: 'LIGHT',
-  room_light: 'LIGHT EST',
+  room_light: 'ROOM EST',
 }
 
 const HUD_UPDATE_TARGETS: Record<string, string> = {
-  'query:room_light': 'environment.visionLight',
-  'vision:room_light': 'environment.visionLight',
+  'query:room_light': 'environment.roomLightEstimate',
+  'vision:room_light': 'environment.roomLightEstimate',
 }
 
 const VISION_SOURCE_ONLY_KEYS = new Set(['camera', 'sword_sign'])
@@ -625,14 +625,20 @@ const environmentSignalDetailLabel = (
   const lightingType =
     readStringField(evidence, ['lighting_type']) ??
     readStringField(signal, ['lighting_type', 'label', 'daylight_state'])
+  const confidence = readStringField(signal, [
+    'confidence_label',
+    'confidenceLabel',
+  ])
   const freshness = environmentFreshnessLabel(signal, nowMs)
 
-  const electricLabel = formatProbability(electricProbability)
-  if (electricLabel) return `electric ${electricLabel}`
-
   const daylightLabel = formatProbability(daylightProbability)
+  if (lightingType && confidence) return `${lightingType} ${confidence}`
   if (lightingType && daylightLabel) return `${lightingType} ${daylightLabel}`
   if (lightingType) return lightingType
+  if (daylightLabel) return `daylight ${daylightLabel}`
+
+  const electricLabel = formatProbability(electricProbability)
+  if (electricLabel) return `elec cue ${electricLabel}`
 
   return freshness
 }
@@ -1217,9 +1223,10 @@ export const ProjectionVisualHud = ({
     .map(([key, signal]) => ({
       id: `state-query-${key}`,
       label: environmentValueLabel(key, 'query'),
-      title: String(
-        signal.answer_hint ?? `Environment state query: ${key}`
-      ),
+      title:
+        key === 'room_light'
+          ? 'Camera room-light estimate'
+          : String(signal.answer_hint ?? `Environment state query: ${key}`),
       state: environmentSignalState(signal, 'DEGRADED'),
       value: environmentStateValueLabel(signal.state),
       summary: compactSourceLabel(
@@ -1239,7 +1246,10 @@ export const ProjectionVisualHud = ({
     .map(([key, signal]) => ({
       id: `vision-${key}`,
       label: environmentValueLabel(key, 'vision'),
-      title: `Vision estimate: ${key}`,
+      title:
+        key === 'room_light'
+          ? 'Camera room-light estimate'
+          : `Camera estimate: ${key}`,
       state: environmentSignalState(signal, 'DEGRADED'),
       value: environmentStateValueLabel(signal.state ?? signal.label),
       summary: compactSourceLabel(signal.source, 'Vision'),
