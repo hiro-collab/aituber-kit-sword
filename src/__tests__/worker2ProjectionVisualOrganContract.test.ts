@@ -658,6 +658,8 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(source).toContain('td-state-rail')
     expect(source).toContain('stateWordLabel')
+    expect(source).toContain("return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'")
+    expect(source).toContain("if (normalized === 'UNREPORTED') return '-'")
     expect(source).toContain('environmentRailWordLabel')
     expect(source).toContain('const environmentRailLabel')
     expect(source).toContain('{environmentRailLabel}')
@@ -719,6 +721,9 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain('td-runtime-mini-grid')
     expect(readSource('src/styles/globals.css')).toContain('.td-state-rail')
     expect(readSource('src/styles/globals.css')).toContain('.td-env-value-card')
+    expect(readSource('src/styles/globals.css')).toContain(
+      ".td-cell-row[data-state='UNREPORTED'] .td-cell-dot"
+    )
     expect(readSource('src/styles/globals.css')).toContain(
       '@keyframes td-hud-update-pulse'
     )

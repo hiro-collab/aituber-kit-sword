@@ -368,6 +368,7 @@ const stateLabel = (state: unknown): string => {
   if (normalized === 'DEGRADED') return 'DEG'
   if (normalized === 'DOWN') return 'DOWN'
   if (normalized === 'ERROR') return 'ERR'
+  if (normalized === 'UNREPORTED') return '-'
   if (normalized === 'UNKNOWN') return '?'
   return normalized
 }
@@ -1380,12 +1381,12 @@ export const ProjectionVisualHud = ({
   const legacyServices = developerHudDiagnostics
     ? services.filter(isLegacyVisible)
     : []
-  const sectionState = (members: string[]) =>
-    aggregateState(
-      members
-        .map((member) => serviceByKey.get(member)?.state)
-        .filter((state) => state !== undefined)
-    )
+  const sectionState = (members: string[]) => {
+    const reportedStates = members
+      .map((member) => serviceByKey.get(member)?.state)
+      .filter((state) => state !== undefined)
+    return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'
+  }
   const events = [...(status?.homeActions?.events ?? [])].reverse().slice(0, 2)
   const difyEvents = status?.difyChat?.events ?? []
   const lastDifyEvent =
