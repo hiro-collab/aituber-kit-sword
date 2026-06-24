@@ -612,21 +612,20 @@ describe('worker-2 projection visual organ contract', () => {
     expect(cssSource).toContain('overflow-wrap: anywhere')
   })
 
-  it('keeps normal HUD focused on Thought Core while legacy Dify stays developer-only', () => {
+  it('keeps normal HUD focused on Thought Core without legacy Dify display grouping', () => {
     const source = readSource('src/components/projectionVisualHud.tsx')
 
-    expect(source).toContain("dify: 'Dify compatibility'")
     expect(source).toContain(
       "touchdesigner_control_gui: 'display / projection'"
     )
-    expect(source).toContain("const LEGACY_SERVICE_KEYS = new Set(['dify'])")
+    expect(source).not.toContain("dify: 'Dify compatibility'")
+    expect(source).not.toContain('LEGACY_SERVICE_KEYS')
+    expect(source).not.toContain('legacyServices')
+    expect(source).not.toContain('td-services-legacy')
     expect(source).toContain('readDeveloperHudDiagnosticsFlag')
     expect(source).toContain("['debug', 'developer', 'hudDebug']")
     expect(source).toContain('const [developerHudDiagnostics]')
-    expect(source).toContain('const legacyServices = developerHudDiagnostics')
-    expect(source).toContain('developerHudDiagnostics && lastDifyEvent')
     expect(source).toContain("source === 'thought-core'")
-    expect(source).toContain("source === 'dify'")
     expect(source).toContain("source: 'thought-core'")
     expect(source).toContain('projection-visual-stt-status')
     expect(source).toContain('projection-visual-stt-diagnostic')
@@ -719,6 +718,22 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain('td-environment-source-strip')
     expect(source).toContain('td-sense-metric-grid')
     expect(source).toContain('td-runtime-mini-grid')
+    expect(source).toContain("kicker=\"INPUT / TURN STATUS\"")
+    expect(source).toContain('Current Step')
+    expect(source).toContain('td-turn-stage-summary')
+    expect(source).toContain("label: 'SENSE'")
+    expect(source).toContain("label: 'CHECK'")
+    expect(source).toContain("label: 'SEND'")
+    expect(source).toContain("label: 'REPLY'")
+    expect(source).toContain("label: 'CAM FPS'")
+    expect(source).toContain("label: 'CAM AGE'")
+    expect(source).toContain("label: 'INPUT GATE'")
+    expect(source).toContain("label: 'DISPLAY LINK'")
+    expect(source).toContain("label: 'VOICE ENGINE'")
+    expect(source).toContain("label: 'AVATAR VIEW'")
+    expect(source).toContain("label: 'ROOM STATE'")
+    expect(source).toContain("return `updated ${directAge}`")
+    expect(source).toContain("pipelineStage.includes('PREVIEW')")
     expect(readSource('src/styles/globals.css')).toContain('.td-state-rail')
     expect(readSource('src/styles/globals.css')).toContain('.td-env-value-card')
     expect(readSource('src/styles/globals.css')).toContain(
@@ -753,6 +768,15 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(readSource('src/styles/globals.css')).toContain(
       '.td-runtime-mini-card'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '.td-turn-stage-summary'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      'grid-template-columns: repeat(4, minmax(0, 1fr))'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      'font-size: max(8px, 0.66em)'
     )
     expect(readSource('src/styles/globals.css')).toContain(
       '.td-render-controls-frame'

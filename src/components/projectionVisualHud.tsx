@@ -30,10 +30,6 @@ type StatusPayload = {
     events?: Array<Record<string, any>>
     lastEvent?: Record<string, any> | null
   }
-  difyChat?: {
-    events?: Array<Record<string, any>>
-    lastEvent?: Record<string, any> | null
-  }
   thoughtCoreChat?: {
     events?: Array<Record<string, any>>
     lastEvent?: Record<string, any> | null
@@ -154,7 +150,6 @@ const SERVICE_LABELS: Record<string, string> = {
   aituber_kit: 'Expression runtime',
   td_control_gui: 'Display runtime',
   touchdesigner_control_gui: 'Display runtime',
-  dify: 'Dify compatibility',
   thought_core_api: 'Thought Core API',
   thought_core_watcher: 'Thought Core watcher',
   voicevox: 'VOICEVOX speech',
@@ -169,7 +164,6 @@ const SERVICE_LAYERS: Record<string, string> = {
   aituber_kit: 'expression / avatar',
   td_control_gui: 'display / projection',
   touchdesigner_control_gui: 'display / projection',
-  dify: 'compatibility runtime',
   thought_core_api: 'conscious / thought',
   thought_core_watcher: 'conscious bridge',
   voicevox: 'speech / voice',
@@ -187,10 +181,7 @@ const SERVICE_ORDER = [
   'td_control_gui',
   'touchdesigner_control_gui',
   'voicevox',
-  'dify',
 ]
-
-const LEGACY_SERVICE_KEYS = new Set(['dify'])
 
 const SYSTEM_SECTIONS = [
   {
@@ -237,10 +228,30 @@ const SYSTEM_SECTIONS = [
 ]
 
 const SYSTEM_CALLS = [
-  { id: 'observe', label: 'observe', detail: 'Environment' },
-  { id: 'preview', label: 'preview', detail: 'Action Boundary' },
-  { id: 'execute', label: 'execute', detail: 'Action Boundary' },
-  { id: 'respond', label: 'respond', detail: 'Expression' },
+  {
+    id: 'observe',
+    label: 'SENSE',
+    detail: 'read env',
+    summary: 'Reading environment/context',
+  },
+  {
+    id: 'preview',
+    label: 'CHECK',
+    detail: 'safe plan',
+    summary: 'Checking an action before send',
+  },
+  {
+    id: 'execute',
+    label: 'SEND',
+    detail: 'request only',
+    summary: 'Sending request; proof is elsewhere',
+  },
+  {
+    id: 'respond',
+    label: 'REPLY',
+    detail: 'avatar / voice',
+    summary: 'Showing reply through expression',
+  },
 ]
 
 const formatAge = (ageMs: unknown): string => {
@@ -261,22 +272,6 @@ const formatTime = (value: unknown): string => {
   })
 }
 
-const latestEventByTimestamp = (
-  ...events: Array<Record<string, any> | null | undefined>
-): Record<string, any> | null => {
-  const sortedEvents = events
-    .filter((event): event is Record<string, any> => Boolean(event))
-    .map((event) => ({
-      event,
-      timestampMs: Date.parse(String(event.timestamp ?? '')),
-    }))
-    .filter(({ timestampMs }) => Number.isFinite(timestampMs))
-    .sort((left, right) => left.timestampMs - right.timestampMs)
-  return sortedEvents.length > 0
-    ? sortedEvents[sortedEvents.length - 1].event
-    : null
-}
-
 const readDeveloperHudDiagnosticsFlag = (): boolean => {
   if (typeof window === 'undefined') return false
   const params = new URLSearchParams(window.location.search)
@@ -292,7 +287,6 @@ const aiSourceLabel = (event: Record<string, any> | null): string => {
     .trim()
     .toLowerCase()
   if (source === 'thought-core') return 'Thought Core'
-  if (source === 'dify') return 'Dify compatibility'
   return source ? source.replace(/[-_]/g, ' ') : 'AI'
 }
 
@@ -490,7 +484,7 @@ const serviceFreshnessLabel = (
   ])
   const directAge = formatAge(ageMs)
   if (directAge !== '-') {
-    return `age ${directAge}`
+    return `updated ${directAge}`
   }
 
   const timestamp = readStringField(service, [
@@ -502,10 +496,10 @@ const serviceFreshnessLabel = (
   ]) ?? fallbackTimestamp
   const timestampMs = timestamp ? Date.parse(timestamp) : NaN
   if (nowMs > 0 && Number.isFinite(timestampMs)) {
-    return `age ${formatAge(nowMs - timestampMs)}`
+    return `updated ${formatAge(nowMs - timestampMs)}`
   }
 
-  return 'age ?'
+  return 'updated ?'
 }
 
 const formatDurationCompact = (ageMs: unknown): string => {
@@ -786,7 +780,7 @@ const roomLightLiveMetrics = (
   if (ageLabel) {
     metrics.push({
       id: 'age',
-      label: 'age',
+      label: 'sample age',
       value: ageLabel,
       title: 'Camera estimate sample age',
     })
@@ -938,12 +932,6 @@ const buildEnvironmentHudUpdateSignal = (
     token: hudUpdateSemanticToken(target, signal),
     ttlMs: 1800,
   }
-}
-
-const isLegacyVisible = (service: any): boolean => {
-  const key = serviceKey(service)
-  if (!LEGACY_SERVICE_KEYS.has(key)) return false
-  return normalizeState(service.state) !== 'DOWN'
 }
 
 const TdPanel = ({
@@ -1378,9 +1366,6 @@ export const ProjectionVisualHud = ({
     serviceByKey.get('td_control_gui') ??
     serviceByKey.get('touchdesigner_control_gui')
   const voicevoxService = serviceByKey.get('voicevox')
-  const legacyServices = developerHudDiagnostics
-    ? services.filter(isLegacyVisible)
-    : []
   const sectionState = (members: string[]) => {
     const reportedStates = members
       .map((member) => serviceByKey.get(member)?.state)
@@ -1388,9 +1373,6 @@ export const ProjectionVisualHud = ({
     return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'
   }
   const events = [...(status?.homeActions?.events ?? [])].reverse().slice(0, 2)
-  const difyEvents = status?.difyChat?.events ?? []
-  const lastDifyEvent =
-    status?.difyChat?.lastEvent ?? difyEvents[difyEvents.length - 1] ?? null
   const thoughtCoreEvents = status?.thoughtCoreChat?.events ?? []
   const conversationEntries = status?.conversationLog?.entries ?? []
   const visibleConversationEntries = conversationEntries.slice(-1)
@@ -1398,20 +1380,10 @@ export const ProjectionVisualHud = ({
     status?.thoughtCoreChat?.lastEvent ??
     thoughtCoreEvents[thoughtCoreEvents.length - 1] ??
     null
-  const lastAiChatEvent =
-    !developerHudDiagnostics &&
-    String(status?.aiChat?.lastEvent?.source ?? '').toLowerCase() === 'dify'
-      ? null
-      : status?.aiChat?.lastEvent ?? null
   const lastAiEvent =
     (lastThoughtCoreEvent ? { ...lastThoughtCoreEvent, source: 'thought-core' } : null) ??
-    lastAiChatEvent ??
-    latestEventByTimestamp(
-      developerHudDiagnostics && lastDifyEvent
-        ? { ...lastDifyEvent, source: 'dify' }
-        : null,
-      null
-    )
+    status?.aiChat?.lastEvent ??
+    null
   const lastHomeEvent = status?.homeActions?.lastEvent ?? events[0] ?? null
   const environmentSnapshot = status?.environment ?? {}
   const appliances = environmentSnapshot.appliances ?? {}
@@ -1491,10 +1463,10 @@ export const ProjectionVisualHud = ({
   const environmentIndicators = [
     {
       id: 'environment',
-      label: 'ENV',
+      label: 'ROOM STATE',
       title: 'Environment State',
       state: environmentStateService?.state,
-      summary: 'Room state',
+      summary: 'Environment API',
       detail: serviceFreshnessLabel(
         environmentStateService,
         nowMs,
@@ -1508,10 +1480,10 @@ export const ProjectionVisualHud = ({
     },
     {
       id: 'vision',
-      label: 'VISION',
+      label: 'CAMERA VIEW',
       title: 'Camera/Vision',
       state: environmentSourceState(visionSource, visionSnapshotService?.state),
-      summary: 'Camera input',
+      summary: 'Vision source',
       detail: environmentSourceFreshnessLabel(
         visionSource,
         visionSnapshotService,
@@ -1526,7 +1498,7 @@ export const ProjectionVisualHud = ({
     },
     {
       id: 'device',
-      label: 'DEVICE',
+      label: 'HOME DEVICE',
       title: 'Home Device',
       state: environmentSourceState(homeAssistantSource, homeAssistantService?.state),
       summary: 'Home Assistant',
@@ -1562,7 +1534,7 @@ export const ProjectionVisualHud = ({
   const outputRuntimeIndicators = [
     {
       id: 'display-link',
-      label: 'LINK',
+      label: 'DISPLAY LINK',
       title: 'Display runtime bridge link',
       state: touchdesignerState.includes('READY')
         ? 'OK'
@@ -1577,7 +1549,7 @@ export const ProjectionVisualHud = ({
     },
     {
       id: 'speech',
-      label: 'VOICE',
+      label: 'VOICE ENGINE',
       title: 'Speech runtime',
       state: voicevoxService?.state,
       value: stateWordLabel(voicevoxService?.state),
@@ -1585,7 +1557,7 @@ export const ProjectionVisualHud = ({
     },
     {
       id: 'expression',
-      label: 'EXP',
+      label: 'AVATAR VIEW',
       title: 'Expression runtime: face/speech path, not dance proof',
       state: expressionRuntimeService?.state,
       value: stateWordLabel(expressionRuntimeService?.state),
@@ -1601,11 +1573,17 @@ export const ProjectionVisualHud = ({
   const activeCallId =
     pipelineStage.includes('HOME_ACTION') || magicActive
       ? 'execute'
+      : pipelineStage.includes('PREVIEW')
+        ? 'preview'
       : pipelineStage.includes('THOUGHT_CORE')
         ? 'respond'
         : pipelineStage.includes('WAITING')
           ? ''
           : 'observe'
+  const activeCallIndex = SYSTEM_CALLS.findIndex(
+    (call) => call.id === activeCallId
+  )
+  const activeCall = activeCallIndex >= 0 ? SYSTEM_CALLS[activeCallIndex] : null
   const sttUpdatedAge =
     sttStatus?.updatedAt !== undefined && nowMs > 0
       ? nowMs - Date.parse(sttStatus.updatedAt)
@@ -1633,21 +1611,21 @@ export const ProjectionVisualHud = ({
   const speechStatusTiles = [
     {
       id: 'mode',
-      label: 'STT',
+      label: 'INPUT MODE',
       value: `${(sttStatus?.mode ?? 'pending').toUpperCase()}`,
       detail: String(sttStatus?.state ?? '-'),
       state: sttStatus?.listening ? 'OK' : 'DEGRADED',
     },
     {
       id: 'gate',
-      label: 'GATE',
+      label: 'INPUT GATE',
       value: sttGateLabel,
-      detail: `age ${formatAge(sttUpdatedAge)}`,
+      detail: `updated ${formatAge(sttUpdatedAge)}`,
       state: sttStatus?.speaking || sttStatus?.chatProcessing ? 'DEGRADED' : 'OK',
     },
     {
       id: 'phase',
-      label: 'PHASE',
+      label: 'LISTEN STEP',
       value: compactSpeechPhaseLabel(
         browserSttDiagnostic?.phase ?? browserSttDiagnostic?.event ?? '-'
       ),
@@ -1656,48 +1634,48 @@ export const ProjectionVisualHud = ({
     },
     {
       id: 'audio',
-      label: 'AUDIO',
+      label: 'AUDIO INPUT',
       value: speechAudioLabel,
-      detail: `diag ${formatAge(browserSttDiagnosticAge)}`,
+      detail: `diag updated ${formatAge(browserSttDiagnosticAge)}`,
       state: browserSttDiagnostic?.error ? 'ERROR' : compactMetricState(speechAudioLabel),
     },
   ]
   const reflexMetricTiles = [
     {
       id: 'capture',
-      label: 'CAP',
+      label: 'CAM CAPTURE',
       value: compactHudValue('Capture', mediapipe?.capture),
-      detail: 'capture',
+      detail: 'camera frame',
     },
     {
       id: 'websocket',
-      label: 'WS',
+      label: 'CAM HUB',
       value: compactHudValue('WebSocket', mediapipe?.websocket),
-      detail: 'camera hub',
+      detail: 'websocket',
     },
     {
       id: 'fps',
-      label: 'FPS',
+      label: 'CAM FPS',
       value: String(mediapipe?.fps ?? '-'),
-      detail: 'camera',
+      detail: 'camera frames/sec',
     },
     {
       id: 'primary',
-      label: 'GEST',
+      label: 'GESTURE',
       value: String(mediapipe?.primary_gesture ?? '-'),
-      detail: 'primary',
+      detail: 'primary gesture',
     },
     {
       id: 'stable',
-      label: 'GATE',
+      label: 'GESTURE GATE',
       value: String(mediapipe?.stable_state ?? '-'),
-      detail: 'stable',
+      detail: 'stability',
     },
     {
       id: 'age',
-      label: 'AGE',
+      label: 'CAM AGE',
       value: formatAge(mediapipe?.age_ms),
-      detail: 'updated',
+      detail: 'last camera update',
     },
   ]
 
@@ -1848,27 +1826,6 @@ export const ProjectionVisualHud = ({
               <span>memory</span>
               <span>policy</span>
             </div>
-            {legacyServices.length > 0 ? (
-              <>
-                <div className="td-panel-subtitle">Compatibility External</div>
-                <div className="td-services td-services-legacy">
-                  {legacyServices.map((service: any) => (
-                    <div
-                      className="td-service"
-                      data-state={service.state}
-                      key={serviceKey(service)}
-                    >
-                      <span className="td-service-dot" />
-                      <span className="td-service-title">
-                        <b>{serviceLabel(service)}</b>
-                        <small>{serviceLayer(service)}</small>
-                      </span>
-                      <em>{service.state}</em>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
           </TdPanel>
 
         </div>
@@ -1876,7 +1833,7 @@ export const ProjectionVisualHud = ({
         <div className="td-panel-column td-panel-column-right">
           <TdPanel
             title="Reflex + Thought"
-            kicker="INPUT / TURN KERNEL"
+            kicker="INPUT / TURN STATUS"
             className="td-top-right td-reflex-thought-panel"
           >
             <div className="td-sense-metric-grid" aria-label="Reflex state tiles">
@@ -1918,12 +1875,25 @@ export const ProjectionVisualHud = ({
                     : latestBridgeDiagnostic.detail ?? '-'}
               </div>
             ) : null}
-            <div className="td-panel-subtitle">Turn Kernel</div>
-            <div className="td-call-chain">
-              {SYSTEM_CALLS.map((call) => (
+            <div className="td-panel-subtitle">Current Step</div>
+            <div
+              className="td-turn-stage-summary"
+              data-state={activeCall ? 'ACTIVE' : 'IDLE'}
+            >
+              <span>
+                {activeCall
+                  ? `STEP ${activeCallIndex + 1}/${SYSTEM_CALLS.length}`
+                  : 'WAITING'}
+              </span>
+              <strong>{activeCall?.label ?? 'IDLE'}</strong>
+              <em>{activeCall?.summary ?? 'No active turn step'}</em>
+            </div>
+            <div className="td-call-chain" aria-label="Turn step progression">
+              {SYSTEM_CALLS.map((call, index) => (
                 <div
                   className="td-call"
                   data-state={activeCallId === call.id ? 'ACTIVE' : 'IDLE'}
+                  data-step={index + 1}
                   key={call.id}
                 >
                   <b>{call.label}</b>
@@ -1932,9 +1902,10 @@ export const ProjectionVisualHud = ({
               ))}
             </div>
             <div className={`td-magic ${magicActive ? 'td-magic-active' : ''}`}>
-              {magicActive
-                ? `ACTION ${status?.magic?.lastActionId ?? ''}`
-                : 'IDLE'}
+              <span>Action</span>
+              <strong>
+                {magicActive ? status?.magic?.lastActionId ?? 'running' : 'idle'}
+              </strong>
             </div>
             <div className="td-panel-subtitle">Turn Trace</div>
             <div className="td-pipeline" data-state={pipelineStage}>
