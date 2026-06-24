@@ -701,9 +701,6 @@ describe('worker-2 projection visual organ contract', () => {
       'data-update-signal={indicator.updateSignal?.target}'
     )
     expect(source).toContain('data-freshness={indicator.freshnessVisual.level}')
-    expect(source).toContain(
-      'data-freshness-age={indicator.freshnessVisual.ageLabel}'
-    )
     expect(source).toContain('style={indicator.freshnessVisual.style}')
     expect(source).toContain('data-update-kind={indicator.updateSignal?.kind}')
     expect(source).toContain(
@@ -726,13 +723,25 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain("label: 'SEND'")
     expect(source).toContain("label: 'REPLY'")
     expect(source).toContain("label: 'CAM FPS'")
-    expect(source).toContain("label: 'CAM AGE'")
+    expect(source).toContain("label: 'CAM FRESH'")
+    expect(source).not.toContain('data-freshness-age')
+    expect(source).not.toContain('ageLabel')
+    expect(source).not.toContain('formatAge')
     expect(source).toContain("label: 'INPUT GATE'")
     expect(source).toContain("label: 'DISPLAY LINK'")
     expect(source).toContain("label: 'VOICE ENGINE'")
     expect(source).toContain("label: 'AVATAR VIEW'")
     expect(source).toContain("label: 'ROOM STATE'")
-    expect(source).toContain("return `updated ${directAge}`")
+    expect(source).toContain('freshnessDetailLabel')
+    expect(source).toContain('freshnessVisualFromAgeMs')
+    expect(source).toContain('serviceFreshnessVisual')
+    expect(source).toContain('normalRatio')
+    expect(source).toContain('staleRatio')
+    expect(source).toContain('data-freshness={tile.freshnessVisual?.level}')
+    expect(source).toContain('style={tile.freshnessVisual?.style}')
+    expect(source).toContain(
+      'data-freshness={indicator.freshnessVisual?.level}'
+    )
     expect(source).toContain("pipelineStage.includes('PREVIEW')")
     expect(readSource('src/styles/globals.css')).toContain('.td-state-rail')
     expect(readSource('src/styles/globals.css')).toContain('.td-env-value-card')
@@ -750,6 +759,15 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(readSource('src/styles/globals.css')).toContain(
       ".td-source-chip[data-freshness='stale']"
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '.td-sense-metric-tile[data-freshness]'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '.td-stt-mini-card[data-freshness]'
+    )
+    expect(readSource('src/styles/globals.css')).toContain(
+      '.td-runtime-mini-card[data-freshness]'
     )
     expect(readSource('src/styles/globals.css')).toContain(
       '--td-freshness-hue'

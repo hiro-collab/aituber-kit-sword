@@ -440,6 +440,12 @@ body {
   }
 
   .td-sense-metric-tile {
+    --td-freshness-glow: 0.42;
+    --td-freshness-hue: 190;
+    --td-freshness-lightness: 68%;
+    --td-freshness-opacity: 0.58;
+    --td-freshness-saturation: 80%;
+    position: relative;
     display: grid;
     gap: 1px;
     min-width: 0;
@@ -588,6 +594,12 @@ body {
   }
 
   .td-stt-mini-card {
+    --td-freshness-glow: 0.42;
+    --td-freshness-hue: 190;
+    --td-freshness-lightness: 68%;
+    --td-freshness-opacity: 0.58;
+    --td-freshness-saturation: 80%;
+    position: relative;
     display: grid;
     gap: 1px;
     min-width: 0;
@@ -817,7 +829,10 @@ body {
   }
 
   .td-env-value-card::before,
-  .td-source-chip::before {
+  .td-source-chip::before,
+  .td-sense-metric-tile[data-freshness]::before,
+  .td-stt-mini-card[data-freshness]::before,
+  .td-runtime-mini-card[data-freshness]::before {
     position: absolute;
     top: 5px;
     bottom: 5px;
@@ -841,7 +856,10 @@ body {
   }
 
   .td-env-value-card::after,
-  .td-source-chip::after {
+  .td-source-chip::after,
+  .td-sense-metric-tile[data-freshness]::after,
+  .td-stt-mini-card[data-freshness]::after,
+  .td-runtime-mini-card[data-freshness]::after {
     position: absolute;
     top: 5px;
     right: 5px;
@@ -866,7 +884,10 @@ body {
   }
 
   .td-env-value-card[data-freshness='live'],
-  .td-source-chip[data-freshness='live'] {
+  .td-source-chip[data-freshness='live'],
+  .td-sense-metric-tile[data-freshness='live'],
+  .td-stt-mini-card[data-freshness='live'],
+  .td-runtime-mini-card[data-freshness='live'] {
     --td-freshness-hue: 188;
     --td-freshness-lightness: 68%;
     --td-freshness-opacity: 0.98;
@@ -874,7 +895,10 @@ body {
   }
 
   .td-env-value-card[data-freshness='recent'],
-  .td-source-chip[data-freshness='recent'] {
+  .td-source-chip[data-freshness='recent'],
+  .td-sense-metric-tile[data-freshness='recent'],
+  .td-stt-mini-card[data-freshness='recent'],
+  .td-runtime-mini-card[data-freshness='recent'] {
     --td-freshness-hue: 150;
     --td-freshness-lightness: 66%;
     --td-freshness-opacity: 0.66;
@@ -882,7 +906,10 @@ body {
   }
 
   .td-env-value-card[data-freshness='aging'],
-  .td-source-chip[data-freshness='aging'] {
+  .td-source-chip[data-freshness='aging'],
+  .td-sense-metric-tile[data-freshness='aging'],
+  .td-stt-mini-card[data-freshness='aging'],
+  .td-runtime-mini-card[data-freshness='aging'] {
     --td-freshness-hue: 72;
     --td-freshness-lightness: 64%;
     --td-freshness-opacity: 0.76;
@@ -890,7 +917,10 @@ body {
   }
 
   .td-env-value-card[data-freshness='stale'],
-  .td-source-chip[data-freshness='stale'] {
+  .td-source-chip[data-freshness='stale'],
+  .td-sense-metric-tile[data-freshness='stale'],
+  .td-stt-mini-card[data-freshness='stale'],
+  .td-runtime-mini-card[data-freshness='stale'] {
     --td-freshness-hue: 30;
     --td-freshness-lightness: 60%;
     --td-freshness-opacity: 0.9;
@@ -898,7 +928,10 @@ body {
   }
 
   .td-env-value-card[data-freshness='unknown'],
-  .td-source-chip[data-freshness='unknown'] {
+  .td-source-chip[data-freshness='unknown'],
+  .td-sense-metric-tile[data-freshness='unknown'],
+  .td-stt-mini-card[data-freshness='unknown'],
+  .td-runtime-mini-card[data-freshness='unknown'] {
     --td-freshness-hue: 190;
     --td-freshness-lightness: 72%;
     --td-freshness-opacity: 0.46;
@@ -1455,6 +1488,12 @@ body {
   }
 
   .td-runtime-mini-card {
+    --td-freshness-glow: 0.42;
+    --td-freshness-hue: 190;
+    --td-freshness-lightness: 68%;
+    --td-freshness-opacity: 0.58;
+    --td-freshness-saturation: 80%;
+    position: relative;
     display: grid;
     gap: 1px;
     min-width: 0;

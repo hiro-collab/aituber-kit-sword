@@ -117,7 +117,6 @@ type EnvironmentFreshnessStyle = CSSProperties & {
 
 type EnvironmentFreshnessVisual = {
   level: EnvironmentFreshnessLevel
-  ageLabel?: string
   style: EnvironmentFreshnessStyle
 }
 
@@ -253,13 +252,6 @@ const SYSTEM_CALLS = [
     summary: 'Showing reply through expression',
   },
 ]
-
-const formatAge = (ageMs: unknown): string => {
-  if (typeof ageMs !== 'number' || !Number.isFinite(ageMs)) return '-'
-  return ageMs < 1000
-    ? `${Math.max(0, Math.round(ageMs))}ms`
-    : `${(ageMs / 1000).toFixed(1)}s`
-}
 
 const formatTime = (value: unknown): string => {
   if (typeof value !== 'string') return '-'
@@ -471,50 +463,6 @@ const readStringField = (
   return undefined
 }
 
-const serviceFreshnessLabel = (
-  service: any,
-  nowMs: number,
-  fallbackTimestamp?: string
-): string => {
-  const ageMs = readNumericField(service, [
-    'age_ms',
-    'ageMs',
-    'freshness_ms',
-    'freshnessMs',
-  ])
-  const directAge = formatAge(ageMs)
-  if (directAge !== '-') {
-    return `updated ${directAge}`
-  }
-
-  const timestamp = readStringField(service, [
-    'updated_at',
-    'updatedAt',
-    'checked_at',
-    'checkedAt',
-    'timestamp',
-  ]) ?? fallbackTimestamp
-  const timestampMs = timestamp ? Date.parse(timestamp) : NaN
-  if (nowMs > 0 && Number.isFinite(timestampMs)) {
-    return `updated ${formatAge(nowMs - timestampMs)}`
-  }
-
-  return 'updated ?'
-}
-
-const formatDurationCompact = (ageMs: unknown): string => {
-  if (typeof ageMs !== 'number' || !Number.isFinite(ageMs)) return '-'
-  const positiveAge = Math.max(0, ageMs)
-  if (positiveAge < 1000) return `${Math.round(positiveAge)}ms`
-  const seconds = positiveAge / 1000
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
-  const minutes = seconds / 60
-  if (minutes < 60) return `${minutes.toFixed(1)}m`
-  const hours = minutes / 60
-  if (hours < 48) return `${hours.toFixed(1)}h`
-  return `${(hours / 24).toFixed(1)}d`
-}
-
 const compactSourceLabel = (value: unknown, fallback: string): string => {
   const source = String(value ?? '').toLowerCase()
   if (source.includes('home_assistant')) return 'HA'
@@ -572,15 +520,6 @@ const environmentFreshnessVisualLevel = (
   return 'stale'
 }
 
-const environmentFreshnessAgeLabel = (
-  signal: any,
-  nowMs: number,
-  fallbackTimestamp?: string
-): string | undefined => {
-  const ageMs = readFreshnessAgeMs(signal, nowMs, fallbackTimestamp)
-  return ageMs === undefined ? undefined : formatAge(ageMs)
-}
-
 const environmentFreshnessVisual = (
   signal: any,
   nowMs: number,
@@ -605,18 +544,48 @@ const environmentFreshnessVisual = (
     }
   }
 
-  const ratio = Math.min(1, Math.max(0, ageMs / 15000))
+  const normalRatio = Math.min(1, Math.max(0, ageMs / 8000))
+  const staleRatio = Math.min(1, Math.max(0, (ageMs - 8000) / 7000))
+  const hue = Math.round(188 - normalRatio * 92 - staleRatio * 66)
   return {
     level,
-    ageLabel: formatAge(ageMs),
     style: {
-      '--td-freshness-hue': `${Math.round(188 - ratio * 158)}`,
-      '--td-freshness-saturation': `${Math.round(98 - ratio * 10)}%`,
-      '--td-freshness-lightness': `${Math.round(68 - ratio * 8)}%`,
-      '--td-freshness-opacity': `${(0.98 - ratio * 0.18).toFixed(2)}`,
-      '--td-freshness-glow': `${(0.72 - ratio * 0.2).toFixed(2)}`,
+      '--td-freshness-hue': `${hue}`,
+      '--td-freshness-saturation': `${Math.round(98 - staleRatio * 10)}%`,
+      '--td-freshness-lightness': `${Math.round(68 - staleRatio * 8)}%`,
+      '--td-freshness-opacity': `${(0.98 - normalRatio * 0.14).toFixed(2)}`,
+      '--td-freshness-glow': `${(0.72 - normalRatio * 0.18).toFixed(2)}`,
     },
   }
+}
+
+const freshnessDetailLabel = (
+  visual?: EnvironmentFreshnessVisual
+): string => {
+  if (!visual) return 'age unknown'
+  if (visual.level === 'live') return 'fresh signal'
+  if (visual.level === 'recent') return 'recent signal'
+  if (visual.level === 'aging') return 'aging signal'
+  if (visual.level === 'stale') return 'stale signal'
+  return 'age unknown'
+}
+
+const freshnessVisualFromAgeMs = (
+  ageMs: unknown
+): EnvironmentFreshnessVisual => {
+  const numericAge =
+    typeof ageMs === 'number' ? ageMs : Number.parseFloat(String(ageMs ?? ''))
+  return Number.isFinite(numericAge)
+    ? environmentFreshnessVisual({ age_ms: numericAge }, 0)
+    : environmentFreshnessVisual(null, 0)
+}
+
+const serviceFreshnessVisual = (
+  service: any,
+  nowMs: number,
+  fallbackTimestamp?: string
+): EnvironmentFreshnessVisual => {
+  return environmentFreshnessVisual(service, nowMs, fallbackTimestamp)
 }
 
 const ENVIRONMENT_VALUE_LABELS: Record<string, string> = {
@@ -653,34 +622,6 @@ const environmentValueLabel = (key: string, source: string): string => {
     : baseLabel.slice(0, 14)
 }
 
-const environmentFreshnessLabel = (signal: any, nowMs: number): string => {
-  const freshness = signal?.freshness ?? {}
-  const level = String(
-    freshness.level ?? (signal?.stale ? 'stale' : 'fresh')
-  ).toLowerCase()
-  const directAge = readNumericField(freshness, ['age_ms', 'ageMs'])
-  const signalAge = readNumericField(signal, ['age_ms', 'ageMs'])
-  let ageLabel = formatDurationCompact(directAge ?? signalAge)
-  const timestamp = readStringField(signal, [
-    'updated_at',
-    'updatedAt',
-    'observed_at',
-    'observedAt',
-  ])
-  const timestampMs = timestamp ? Date.parse(timestamp) : NaN
-  if (ageLabel === '-' && nowMs > 0 && Number.isFinite(timestampMs)) {
-    ageLabel = formatDurationCompact(nowMs - timestampMs)
-  }
-
-  const levelLabel =
-    level === 'fresh' || level === 'recent' || level === 'stale'
-      ? level
-      : signal?.stale
-        ? 'stale'
-        : 'fresh'
-  return ageLabel === '-' ? levelLabel : `${levelLabel} ${ageLabel}`
-}
-
 const environmentSignalState = (
   signal: any,
   unknownState: string = 'UNKNOWN'
@@ -715,8 +656,10 @@ const environmentSourceFreshnessLabel = (
   nowMs: number,
   fallbackTimestamp?: string
 ): string => {
-  if (source) return environmentFreshnessLabel(source, nowMs)
-  return serviceFreshnessLabel(service, nowMs, fallbackTimestamp)
+  if (source) return freshnessDetailLabel(environmentFreshnessVisual(source, nowMs))
+  return freshnessDetailLabel(
+    serviceFreshnessVisual(service, nowMs, fallbackTimestamp)
+  )
 }
 
 const environmentStateValueLabel = (value: unknown): string => {
@@ -760,11 +703,11 @@ const roomLightEstimateProbabilityLabels = (
   }
 }
 
-const environmentSignalAgeValueLabel = (
+const environmentSignalSampleFreshnessLabel = (
   signal: any,
   nowMs: number
 ): string | undefined => {
-  return environmentFreshnessAgeLabel(signal, nowMs)
+  return freshnessDetailLabel(environmentFreshnessVisual(signal, nowMs))
 }
 
 const roomLightLiveMetrics = (
@@ -774,15 +717,15 @@ const roomLightLiveMetrics = (
   if (!signal) return undefined
   const { electricLabel, daylightLabel } =
     roomLightEstimateProbabilityLabels(signal)
-  const ageLabel = environmentSignalAgeValueLabel(signal, nowMs)
+  const sampleFreshnessLabel = environmentSignalSampleFreshnessLabel(signal, nowMs)
   const metrics: EnvironmentLiveMetric[] = []
 
-  if (ageLabel) {
+  if (sampleFreshnessLabel) {
     metrics.push({
-      id: 'age',
-      label: 'sample age',
-      value: ageLabel,
-      title: 'Camera estimate sample age',
+      id: 'freshness',
+      label: 'SAMPLE',
+      value: sampleFreshnessLabel,
+      title: 'Camera estimate sample freshness',
     })
   }
   if (electricLabel) {
@@ -822,7 +765,6 @@ const environmentSignalDetailLabel = (
     'confidence_label',
     'confidenceLabel',
   ])
-  const freshness = environmentFreshnessLabel(signal, nowMs)
 
   if (lightingType && confidence) return `${lightingType} ${confidence}`
   if (lightingType && daylightLabel) return `${lightingType} ${daylightLabel}`
@@ -831,7 +773,7 @@ const environmentSignalDetailLabel = (
 
   if (electricLabel) return `elec cue ${electricLabel}`
 
-  return freshness
+  return freshnessDetailLabel(environmentFreshnessVisual(signal, nowMs))
 }
 
 const hudUpdateSignalSource = (
@@ -1460,6 +1402,21 @@ export const ProjectionVisualHud = ({
     ...stateQueryIndicators,
     ...visionEstimateIndicators,
   ]
+  const environmentStateFreshness = serviceFreshnessVisual(
+    environmentStateService,
+    nowMs,
+    status?.timestamp
+  )
+  const visionSourceFreshness = environmentFreshnessVisual(
+    visionSource ?? visionSnapshotService,
+    nowMs,
+    status?.timestamp
+  )
+  const homeDeviceFreshness = environmentFreshnessVisual(
+    homeAssistantSource ?? homeAssistantService ?? lastHomeEvent,
+    nowMs,
+    status?.timestamp
+  )
   const environmentIndicators = [
     {
       id: 'environment',
@@ -1467,16 +1424,8 @@ export const ProjectionVisualHud = ({
       title: 'Environment State',
       state: environmentStateService?.state,
       summary: 'Environment API',
-      detail: serviceFreshnessLabel(
-        environmentStateService,
-        nowMs,
-        status?.timestamp
-      ),
-      freshnessVisual: environmentFreshnessVisual(
-        environmentStateService,
-        nowMs,
-        status?.timestamp
-      ),
+      detail: freshnessDetailLabel(environmentStateFreshness),
+      freshnessVisual: environmentStateFreshness,
     },
     {
       id: 'vision',
@@ -1490,11 +1439,7 @@ export const ProjectionVisualHud = ({
         nowMs,
         status?.timestamp
       ),
-      freshnessVisual: environmentFreshnessVisual(
-        visionSource ?? visionSnapshotService,
-        nowMs,
-        status?.timestamp
-      ),
+      freshnessVisual: visionSourceFreshness,
     },
     {
       id: 'device',
@@ -1509,12 +1454,8 @@ export const ProjectionVisualHud = ({
             nowMs,
             status?.timestamp
           )
-        : `last ${formatTime(lastHomeEvent?.timestamp)}`,
-      freshnessVisual: environmentFreshnessVisual(
-        homeAssistantSource ?? homeAssistantService ?? lastHomeEvent,
-        nowMs,
-        status?.timestamp
-      ),
+        : freshnessDetailLabel(homeDeviceFreshness),
+      freshnessVisual: homeDeviceFreshness,
     },
   ]
   const environmentRailState = aggregateState(
@@ -1531,6 +1472,21 @@ export const ProjectionVisualHud = ({
   const mediapipe = status?.mediapipe
   const touchdesigner = status?.touchdesigner
   const touchdesignerState = String(touchdesigner?.state ?? '')
+  const displayRuntimeFreshness = serviceFreshnessVisual(
+    displayRuntimeService,
+    nowMs,
+    status?.timestamp
+  )
+  const voiceFreshness = serviceFreshnessVisual(
+    voicevoxService,
+    nowMs,
+    status?.timestamp
+  )
+  const expressionFreshness = serviceFreshnessVisual(
+    expressionRuntimeService,
+    nowMs,
+    status?.timestamp
+  )
   const outputRuntimeIndicators = [
     {
       id: 'display-link',
@@ -1545,7 +1501,8 @@ export const ProjectionVisualHud = ({
       detail:
         touchdesigner?.udpHost && touchdesigner?.udpPort
           ? `${touchdesigner.udpHost}:${touchdesigner.udpPort}`
-          : serviceFreshnessLabel(displayRuntimeService, nowMs, status?.timestamp),
+          : freshnessDetailLabel(displayRuntimeFreshness),
+      freshnessVisual: displayRuntimeFreshness,
     },
     {
       id: 'speech',
@@ -1553,7 +1510,8 @@ export const ProjectionVisualHud = ({
       title: 'Speech runtime',
       state: voicevoxService?.state,
       value: stateWordLabel(voicevoxService?.state),
-      detail: serviceFreshnessLabel(voicevoxService, nowMs, status?.timestamp),
+      detail: freshnessDetailLabel(voiceFreshness),
+      freshnessVisual: voiceFreshness,
     },
     {
       id: 'expression',
@@ -1561,11 +1519,8 @@ export const ProjectionVisualHud = ({
       title: 'Expression runtime: face/speech path, not dance proof',
       state: expressionRuntimeService?.state,
       value: stateWordLabel(expressionRuntimeService?.state),
-      detail: serviceFreshnessLabel(
-        expressionRuntimeService,
-        nowMs,
-        status?.timestamp
-      ),
+      detail: freshnessDetailLabel(expressionFreshness),
+      freshnessVisual: expressionFreshness,
     },
   ]
   const magicActive = Boolean(status?.magic?.active)
@@ -1608,6 +1563,10 @@ export const ProjectionVisualHud = ({
     : browserSttDiagnostic?.recognitionActive
       ? 'listening'
       : 'idle'
+  const sttGateFreshness = freshnessVisualFromAgeMs(sttUpdatedAge)
+  const browserDiagnosticFreshness =
+    freshnessVisualFromAgeMs(browserSttDiagnosticAge)
+  const mediapipeFreshness = freshnessVisualFromAgeMs(mediapipe?.age_ms)
   const speechStatusTiles = [
     {
       id: 'mode',
@@ -1615,13 +1574,15 @@ export const ProjectionVisualHud = ({
       value: `${(sttStatus?.mode ?? 'pending').toUpperCase()}`,
       detail: String(sttStatus?.state ?? '-'),
       state: sttStatus?.listening ? 'OK' : 'DEGRADED',
+      freshnessVisual: sttGateFreshness,
     },
     {
       id: 'gate',
       label: 'INPUT GATE',
       value: sttGateLabel,
-      detail: `updated ${formatAge(sttUpdatedAge)}`,
+      detail: freshnessDetailLabel(sttGateFreshness),
       state: sttStatus?.speaking || sttStatus?.chatProcessing ? 'DEGRADED' : 'OK',
+      freshnessVisual: sttGateFreshness,
     },
     {
       id: 'phase',
@@ -1631,13 +1592,15 @@ export const ProjectionVisualHud = ({
       ),
       detail: `retry ${browserSttDiagnostic?.attempt ?? 0}`,
       state: browserSttDiagnostic?.error ? 'ERROR' : 'OK',
+      freshnessVisual: browserDiagnosticFreshness,
     },
     {
       id: 'audio',
       label: 'AUDIO INPUT',
       value: speechAudioLabel,
-      detail: `diag updated ${formatAge(browserSttDiagnosticAge)}`,
+      detail: `diag ${freshnessDetailLabel(browserDiagnosticFreshness)}`,
       state: browserSttDiagnostic?.error ? 'ERROR' : compactMetricState(speechAudioLabel),
+      freshnessVisual: browserDiagnosticFreshness,
     },
   ]
   const reflexMetricTiles = [
@@ -1646,36 +1609,42 @@ export const ProjectionVisualHud = ({
       label: 'CAM CAPTURE',
       value: compactHudValue('Capture', mediapipe?.capture),
       detail: 'camera frame',
+      freshnessVisual: mediapipeFreshness,
     },
     {
       id: 'websocket',
       label: 'CAM HUB',
       value: compactHudValue('WebSocket', mediapipe?.websocket),
       detail: 'websocket',
+      freshnessVisual: mediapipeFreshness,
     },
     {
       id: 'fps',
       label: 'CAM FPS',
       value: String(mediapipe?.fps ?? '-'),
       detail: 'camera frames/sec',
+      freshnessVisual: mediapipeFreshness,
     },
     {
       id: 'primary',
       label: 'GESTURE',
       value: String(mediapipe?.primary_gesture ?? '-'),
       detail: 'primary gesture',
+      freshnessVisual: mediapipeFreshness,
     },
     {
       id: 'stable',
       label: 'GESTURE GATE',
       value: String(mediapipe?.stable_state ?? '-'),
       detail: 'stability',
+      freshnessVisual: mediapipeFreshness,
     },
     {
-      id: 'age',
-      label: 'CAM AGE',
-      value: formatAge(mediapipe?.age_ms),
-      detail: 'last camera update',
+      id: 'freshness',
+      label: 'CAM FRESH',
+      value: freshnessDetailLabel(mediapipeFreshness),
+      detail: 'camera freshness',
+      freshnessVisual: mediapipeFreshness,
     },
   ]
 
@@ -1719,7 +1688,6 @@ export const ProjectionVisualHud = ({
                     className="td-env-value-card"
                     data-state={normalizeState(indicator.state)}
                     data-freshness={indicator.freshnessVisual.level}
-                    data-freshness-age={indicator.freshnessVisual.ageLabel}
                     data-update-signal={indicator.updateSignal?.target}
                     data-update-kind={indicator.updateSignal?.kind}
                     data-update-source={indicator.updateSignal?.source}
@@ -1768,7 +1736,6 @@ export const ProjectionVisualHud = ({
                     className="td-source-chip"
                     data-state={normalizeState(indicator.state)}
                     data-freshness={indicator.freshnessVisual.level}
-                    data-freshness-age={indicator.freshnessVisual.ageLabel}
                     style={indicator.freshnessVisual.style}
                     key={indicator.id}
                   >
@@ -1841,6 +1808,8 @@ export const ProjectionVisualHud = ({
                 <div
                   className="td-sense-metric-tile"
                   data-state={compactMetricState(tile.value)}
+                  data-freshness={tile.freshnessVisual?.level}
+                  style={tile.freshnessVisual?.style}
                   key={tile.id}
                 >
                   <span>{tile.label}</span>
@@ -1855,6 +1824,8 @@ export const ProjectionVisualHud = ({
                 <div
                   className="td-stt-mini-card"
                   data-state={normalizeState(tile.state)}
+                  data-freshness={tile.freshnessVisual?.level}
+                  style={tile.freshnessVisual?.style}
                   key={tile.id}
                 >
                   <span>{tile.label}</span>
@@ -1977,6 +1948,8 @@ export const ProjectionVisualHud = ({
                 <div
                   className="td-runtime-mini-card"
                   data-state={normalizeState(indicator.state)}
+                  data-freshness={indicator.freshnessVisual?.level}
+                  style={indicator.freshnessVisual?.style}
                   key={indicator.id}
                 >
                   <span>{indicator.label}</span>
