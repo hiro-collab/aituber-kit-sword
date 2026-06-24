@@ -3,6 +3,8 @@ describe('settingsStore persistence', () => {
   const originalSelectedVrmPath = process.env.NEXT_PUBLIC_SELECTED_VRM_PATH
   const originalAlwaysOverride =
     process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_WITH_ENV_VARIABLES
+  const originalAlwaysOverrideSelectedVrmPath =
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH
   const originalSystemCellAIService =
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE
   const originalSelectAIService = process.env.NEXT_PUBLIC_SELECT_AI_SERVICE
@@ -30,6 +32,10 @@ describe('settingsStore persistence', () => {
     restoreEnv(
       'NEXT_PUBLIC_ALWAYS_OVERRIDE_WITH_ENV_VARIABLES',
       originalAlwaysOverride
+    )
+    restoreEnv(
+      'NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH',
+      originalAlwaysOverrideSelectedVrmPath
     )
     restoreEnv(
       'NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE',
@@ -83,6 +89,41 @@ describe('settingsStore persistence', () => {
     expect(settingsStore.getState().selectedVrmPath).toBe(
       '/vrm/nikechan_v1.vrm'
     )
+  })
+
+  it('can force only the selected VRM path while preserving persisted camera position', () => {
+    process.env.NEXT_PUBLIC_SELECTED_VRM_PATH = '/vrm/custom_model.vrm'
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_WITH_ENV_VARIABLES = 'false'
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH = 'true'
+
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        state: {
+          selectedVrmPath: '/vrm/nikechan_v1.vrm',
+          fixedCharacterPosition: true,
+          characterPosition: { x: 0.2, y: 1.45, z: 1.9, scale: 1 },
+          characterRotation: { x: 0, y: 1.42, z: 0 },
+        },
+        version: 0,
+      })
+    )
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().selectedVrmPath).toBe('/vrm/custom_model.vrm')
+    expect(settingsStore.getState().fixedCharacterPosition).toBe(true)
+    expect(settingsStore.getState().characterPosition).toEqual({
+      x: 0.2,
+      y: 1.45,
+      z: 1.9,
+      scale: 1,
+    })
+    expect(settingsStore.getState().characterRotation).toEqual({
+      x: 0,
+      y: 1.42,
+      z: 0,
+    })
   })
 
   it('uses the configured System Cell AI service over persisted provider state', () => {

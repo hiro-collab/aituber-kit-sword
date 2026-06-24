@@ -935,6 +935,13 @@ const mergePersistedSettings = (
     return envState
   }
 
+  if (
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH === 'true' &&
+    process.env.NEXT_PUBLIC_SELECTED_VRM_PATH
+  ) {
+    mergedState.selectedVrmPath = getInitialValuesFromEnv().selectedVrmPath
+  }
+
   return mergedState
 }
 

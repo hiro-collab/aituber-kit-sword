@@ -140,7 +140,7 @@ export class Viewer {
     this._clock.start()
   }
 
-  public loadVrm(url: string, options: ViewerLoadOptions = {}) {
+  public loadVrm(url: string, options: ViewerLoadOptions = {}): Promise<void> {
     if (this.model?.vrm) {
       this.unloadVRM()
     }
@@ -154,7 +154,7 @@ export class Viewer {
     model.setIdleNeutralVisualTestMode(
       Boolean(options.idleNeutralVisualTestMode)
     )
-    model.loadVRM(url).then(async () => {
+    return model.loadVRM(url).then(async () => {
       if (this.model !== model || !model.vrm) return
 
       // Disable frustum culling
@@ -170,6 +170,10 @@ export class Viewer {
           const vrma = await loadVRMAnimation(buildUrl('/idle_loop.vrma'))
           if (vrma && this.model === model) model.loadAnimation(vrma)
         }
+      } catch {
+        console.warn('Failed to load idle VRMA animation', {
+          reason_code: 'idle_vrma_load_failed',
+        })
       } finally {
         model.vrm.scene.visible = true
       }

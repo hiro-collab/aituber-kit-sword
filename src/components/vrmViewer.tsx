@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
@@ -14,6 +14,42 @@ import {
 type VrmViewerProps = {
   visualTestMode?: ProjectionVisualTestMode
   motionStimulusAssetPath?: string
+}
+
+type VrmLoadError = {
+  selectedVrmPathClass: string
+  reasonCode: string
+}
+
+const VRM_PUBLIC_ROOT_HINT = 'organs/expression/aituber-kit/public/vrm'
+const VRM_PATH_HINT = '/vrm/<file>.vrm'
+
+const getVrmFileNameFromPath = (selectedVrmPath: string) => {
+  if (!selectedVrmPath.startsWith('/vrm/')) return undefined
+  const fileName = selectedVrmPath.slice('/vrm/'.length)
+  if (!fileName || fileName.includes('/') || fileName.includes('\\')) {
+    return undefined
+  }
+  try {
+    return decodeURIComponent(fileName)
+  } catch {
+    return fileName
+  }
+}
+
+const getVrmPathClass = (selectedVrmPath: string) => {
+  if (selectedVrmPath.startsWith('blob:')) return 'browser_blob_vrm'
+  if (getVrmFileNameFromPath(selectedVrmPath)) return 'configured_vrm_public_path'
+  if (selectedVrmPath.startsWith('/vrm/')) return 'invalid_vrm_public_path'
+  return 'unsupported_vrm_path'
+}
+
+const createVrmLoadError = (selectedVrmPath: string): VrmLoadError => {
+  const selectedVrmPathClass = getVrmPathClass(selectedVrmPath)
+  return {
+    selectedVrmPathClass,
+    reasonCode: 'selected_vrm_load_failed',
+  }
 }
 
 export default function VrmViewer({
@@ -38,11 +74,14 @@ export default function VrmViewer({
   )
   const motionStimulusHandlerRef = useRef<((event: Event) => void) | null>(null)
   const selectedVrmPath = settingsStore((s) => s.selectedVrmPath)
+  const [vrmLoadError, setVrmLoadError] = useState<VrmLoadError | null>(null)
 
   const publishVrmViewerDebugState = useCallback(
     (selectedVrmPath: string | null | undefined) => {
       ;(window as any).__projectionVisualVrmViewerDebug = {
-        selectedVrmPath: selectedVrmPath ?? null,
+        selectedVrmPathClass: selectedVrmPath
+          ? getVrmPathClass(selectedVrmPath)
+          : null,
         visualTestMode: visualTestModeRef.current ?? null,
         frozenVisualTestMode: frozenVisualTestModeRef.current,
         selfMirrorBaselineVisualTestMode:
@@ -148,13 +187,46 @@ export default function VrmViewer({
     frozenVisualTestModeRef.current = frozenVisualTestMode
   }, [frozenVisualTestMode, visualTestMode])
 
+  const loadVrmWithErrorState = useCallback(
+    (
+      selectedVrmPath: string,
+      options: { idleNeutralVisualTestMode?: boolean } = {}
+    ) => {
+      const { viewer } = homeStore.getState()
+      setVrmLoadError(null)
+      void viewer
+        .loadVrm(selectedVrmPath, options)
+        .then(() => {
+          ;(window as any).__projectionVisualVrmLoadError = null
+          setVrmLoadError((current) =>
+            current?.selectedVrmPathClass === getVrmPathClass(selectedVrmPath)
+              ? null
+              : current
+          )
+        })
+        .catch(() => {
+          const loadError = createVrmLoadError(selectedVrmPath)
+          console.warn('Selected VRM load failed', {
+            reason_code: loadError.reasonCode,
+            path_class: loadError.selectedVrmPathClass,
+          })
+          ;(window as any).__projectionVisualVrmLoadError = {
+            selectedVrmPathClass: loadError.selectedVrmPathClass,
+            reasonCode: loadError.reasonCode,
+          }
+          setVrmLoadError(loadError)
+        })
+    },
+    []
+  )
+
   const canvasRef = useCallback(
     (canvas: HTMLCanvasElement) => {
       if (canvas) {
         const { viewer } = homeStore.getState()
         const { selectedVrmPath } = settingsStore.getState()
         viewer.setup(canvas)
-        viewer.loadVrm(selectedVrmPath, {
+        loadVrmWithErrorState(selectedVrmPath, {
           idleNeutralVisualTestMode: frozenVisualTestModeRef.current,
         })
         viewer.setMotionRuntimeAssetPath(motionStimulusAssetPathRef.current)
@@ -184,7 +256,7 @@ export default function VrmViewer({
           if (file_type === 'vrm') {
             const blob = new Blob([file], { type: 'application/octet-stream' })
             const url = window.URL.createObjectURL(blob)
-            viewer.loadVrm(url, {
+            loadVrmWithErrorState(url, {
               idleNeutralVisualTestMode: frozenVisualTestModeRef.current,
             })
             publishVrmViewerDebugState(url)
@@ -210,7 +282,11 @@ export default function VrmViewer({
         })
       }
     },
-    [bindMotionStimulusReceiver, publishVrmViewerDebugState]
+    [
+      bindMotionStimulusReceiver,
+      loadVrmWithErrorState,
+      publishVrmViewerDebugState,
+    ]
   )
 
   useEffect(() => {
@@ -225,12 +301,13 @@ export default function VrmViewer({
     }
     loadedVrmPathRef.current = selectedVrmPath
     loadedVisualTestModeRef.current = visualTestMode
-    viewer.loadVrm(selectedVrmPath, {
+    loadVrmWithErrorState(selectedVrmPath, {
       idleNeutralVisualTestMode: frozenVisualTestMode,
     })
     publishVrmViewerDebugState(selectedVrmPath)
   }, [
     frozenVisualTestMode,
+    loadVrmWithErrorState,
     publishVrmViewerDebugState,
     selectedVrmPath,
     visualTestMode,
@@ -255,6 +332,31 @@ export default function VrmViewer({
       <div className={'absolute top-0 left-0 w-screen h-[100svh] z-5'}>
         <canvas ref={canvasRef} className={'h-full w-full'}></canvas>
       </div>
+      {vrmLoadError && (
+        <div
+          className="absolute left-4 top-4 z-20 max-w-xl rounded-md border border-red-300 bg-black/80 p-4 text-sm leading-6 text-white shadow-lg"
+          role="alert"
+          aria-live="polite"
+        >
+          <div className="mb-2 font-bold text-red-200">
+            VRMを読み込めませんでした
+          </div>
+          <div>
+            VRMパス種別: <code>{vrmLoadError.selectedVrmPathClass}</code>
+          </div>
+          <div>
+            任意のローカルVRMを使う場合は、選択したファイル名のVRMを{' '}
+            <code>{VRM_PUBLIC_ROOT_HINT}</code> に置き、{' '}
+            <code>NEXT_PUBLIC_SELECTED_VRM_PATH={VRM_PATH_HINT}</code>{' '}
+            を設定します。Windows absolute pathではなく、Next.jsが配信する{' '}
+            <code>/vrm/...</code> の形を使います。
+          </div>
+          <div>
+            .envを変えた後はNext.jsを再起動し、古いブラウザ保存設定が残る場合は
+            設定画面でVRMを選び直すかサイトデータをクリアしてください。
+          </div>
+        </div>
+      )}
       {poseAdjustMode && <PoseTestButton />}
     </>
   )
