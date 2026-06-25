@@ -244,12 +244,14 @@ export class Viewer {
           loop: true,
         })
       }
-    } catch (error) {
+    } catch {
       if (loadToken === this._motionRuntimeAssetLoadToken) {
         this._loadedMotionRuntimeAssetPath = undefined
         this._loadedMotionRuntimeModel = undefined
       }
-      console.error('Failed to load Motion Runtime VRMA:', error)
+      console.warn('Motion Runtime query VRMA unavailable', {
+        reason_code: 'motion_query_asset_load_failed',
+      })
     }
   }
 
@@ -300,8 +302,10 @@ export class Viewer {
           request.trace.runtime_result_id ?? request.trace.driver_result_id,
         safe_visible_state: 'motion_started',
       }
-    } catch (error) {
-      console.error('Failed to start Motion Runtime stimulus:', error)
+    } catch {
+      console.warn('Motion Runtime dance asset unavailable', {
+        reason_code: 'motion_asset_load_failed',
+      })
       return {
         status: 'unavailable',
         reason_code: 'motion_asset_load_failed',

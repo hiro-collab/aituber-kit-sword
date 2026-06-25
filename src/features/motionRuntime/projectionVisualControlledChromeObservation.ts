@@ -361,8 +361,14 @@ export type ProjectionVisualControlledChromeObservationSummary = {
   producer_status: 'collecting' | 'complete' | 'unavailable'
   stimulus_ref: ProjectionVisualStimulusRef
   scenario_id: string
-  scenario_label: 'dance_visible_motion' | 'expression_visible_change'
-  expected_motion: 'broad_avatar_motion' | 'face_visible_change'
+  scenario_label:
+    | 'dance_visible_motion'
+    | 'dance_stop_to_idle'
+    | 'expression_visible_change'
+  expected_motion:
+    | 'broad_avatar_motion'
+    | 'neutral_idle_requested'
+    | 'face_visible_change'
   target_identity: {
     schema_version: 'self_mirror_capture_target_identity.v0'
     capture_surface_kind: 'controlled_chrome_extension_tab'
@@ -429,6 +435,7 @@ export type ProjectionVisualControlledChromeObservationSummary = {
 }
 
 type ObservationScenario = {
+  stimulus_ref: ProjectionVisualStimulusRef
   scenario_id: string
   scenario_label: ProjectionVisualControlledChromeObservationSummary['scenario_label']
   expected_motion: ProjectionVisualControlledChromeObservationSummary['expected_motion']
@@ -683,10 +690,7 @@ export class ProjectionVisualControlledChromeObservationSession {
         PROJECTION_VISUAL_CONTROLLED_CHROME_OBSERVATION_PRODUCER_SCHEMA_VERSION,
       source_kind: 'controlled_chrome_metric_summary',
       producer_status: this.producerStatus,
-      stimulus_ref:
-        this.scenario.scenario_label === 'dance_visible_motion'
-          ? 'voice.dance_please'
-          : 'voice.smile_please',
+      stimulus_ref: this.scenario.stimulus_ref,
       scenario_id: this.scenario.scenario_id,
       scenario_label: this.scenario.scenario_label,
       expected_motion: this.scenario.expected_motion,
@@ -1804,6 +1808,7 @@ function scenarioForStimulusRef(
 
   if (stimulusRef === 'voice.dance_please') {
     return {
+      stimulus_ref: 'voice.dance_please',
       scenario_id:
         'rr003.visible_motion.dance_visible_motion.controlled_chrome.v0',
       scenario_label: 'dance_visible_motion',
@@ -1823,7 +1828,30 @@ function scenarioForStimulusRef(
     }
   }
 
+  if (stimulusRef === 'voice.stop_dance') {
+    return {
+      stimulus_ref: 'voice.stop_dance',
+      scenario_id:
+        'rr003.visible_motion.dance_stop_to_idle.controlled_chrome.v0',
+      scenario_label: 'dance_stop_to_idle',
+      expected_motion: 'neutral_idle_requested',
+      expected_roi_id: 'avatar_full',
+      windows,
+      rois: [
+        {
+          roi_id: 'avatar_full',
+          kind: 'avatar',
+          counts_as_avatar_motion: false,
+          expected_for_pass: true,
+          rect_norm: DANCE_AVATAR_FULL_AUTHORITY_ROI_RECT,
+        },
+        speechBubble,
+      ],
+    }
+  }
+
   return {
+    stimulus_ref: 'voice.smile_please',
     scenario_id:
       'rr003.visible_motion.expression_visible_change.controlled_chrome.v0',
     scenario_label: 'expression_visible_change',

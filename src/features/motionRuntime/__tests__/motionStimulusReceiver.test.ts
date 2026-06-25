@@ -2,12 +2,27 @@ import {
   CONTEXT_NOD_DURATION_MS,
   CONTEXT_NOD_GROUP_KEY,
   DANCE_SEQUENCE_GROUP_KEY,
-  DEFAULT_DANCE_MOTION_ASSET_PATH,
+  DANCE_MOTION_ASSET_PATH_ENV,
   receiveMotionStimulusV0,
+  resolveDanceMotionAssetPath,
   type MotionStimulusReceiverAdapter,
 } from '../motionStimulusReceiver'
 
+const CONFIGURED_DANCE_MOTION_ASSET_PATH =
+  '/local-vrma/configured-dance.vrma'
+const originalDanceMotionAssetPath =
+  process.env[DANCE_MOTION_ASSET_PATH_ENV]
+
 describe('receiveMotionStimulusV0', () => {
+  beforeEach(() => {
+    process.env[DANCE_MOTION_ASSET_PATH_ENV] =
+      CONFIGURED_DANCE_MOTION_ASSET_PATH
+  })
+
+  afterEach(() => {
+    restoreEnv(DANCE_MOTION_ASSET_PATH_ENV, originalDanceMotionAssetPath)
+  })
+
   it('validates a safe motion_stimulus.v0 subset and starts the dance adapter', async () => {
     const startDance = jest.fn().mockResolvedValue({
       status: 'started',
@@ -23,7 +38,7 @@ describe('receiveMotionStimulusV0', () => {
 
     expect(startDance).toHaveBeenCalledWith(
       expect.objectContaining({
-        assetPath: DEFAULT_DANCE_MOTION_ASSET_PATH,
+        assetPath: CONFIGURED_DANCE_MOTION_ASSET_PATH,
         stimulusId: 'dance.sequence',
         stimulusInstanceId: 'stimulus-instance-1',
         groupKey: 'dance.sequence',
@@ -84,7 +99,7 @@ describe('receiveMotionStimulusV0', () => {
 
     expect(startDance).toHaveBeenCalledWith(
       expect.objectContaining({
-        assetPath: DEFAULT_DANCE_MOTION_ASSET_PATH,
+        assetPath: CONFIGURED_DANCE_MOTION_ASSET_PATH,
         stimulusId: 'mot_stim_turn_123_dance_sequence',
         stimulusInstanceId: 'mot_inst_turn_123_1',
         groupKey: 'dance.sequence',
@@ -120,6 +135,46 @@ describe('receiveMotionStimulusV0', () => {
       'runtime_started',
       'result',
     ])
+  })
+
+  it('returns unavailable and does not start dance when the dance motion asset path is not configured', async () => {
+    delete process.env[DANCE_MOTION_ASSET_PATH_ENV]
+    const startDance = jest.fn()
+
+    const result = await receiveMotionStimulusV0(
+      createDanceStimulus(),
+      { startDance },
+      { nowMs: () => 1_720_000_000_500 }
+    )
+
+    expect(startDance).not.toHaveBeenCalled()
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        status: 'unavailable',
+        reason_code: 'dance_motion_asset_not_configured',
+        safe_visible_state: 'no_visible_change',
+        stimulus_id: 'dance.sequence',
+      })
+    )
+    expect(result.lifecycle_trace.map((entry) => entry.state)).toEqual([
+      'request_issued',
+      'result',
+    ])
+  })
+
+  it.each([
+    ['/local-vrma/custom-dance.vrma', '/local-vrma/custom-dance.vrma'],
+    [' /local-vrma/trimmed-dance.vrma ', '/local-vrma/trimmed-dance.vrma'],
+    ['', undefined],
+    ['C:\\private\\dance.vrma', undefined],
+    ['https://example.test/dance.vrma', undefined],
+    ['/vrm/model.vrma', undefined],
+    ['/local-vrma/../secret.vrma', undefined],
+    ['/local-vrma/subdir/dance.vrma', undefined],
+    ['/local-vrma/.hidden.vrma', undefined],
+  ])('resolves only safe local dance motion asset paths: %s', (value, expected) => {
+    expect(resolveDanceMotionAssetPath(value)).toBe(expected)
   })
 
   it('does not start dance_sequence play requests without the safe dance payload ref', async () => {
@@ -216,6 +271,36 @@ describe('receiveMotionStimulusV0', () => {
       })
     )
   })
+
+  it.each(['task_interrupted', 'timeout_elapsed'])(
+    'accepts Thought Core stop reason %s for dance stop requests',
+    async (stopReason) => {
+      const stopDance = jest.fn().mockResolvedValue({
+        status: 'completed',
+        reason_code: 'motion_runtime_stop_requested',
+        runtime_result_id: 'runtime-result-stop-reason-1',
+        safe_visible_state: 'neutral_idle_requested',
+      })
+      const stimulus = createStopStimulus()
+      stimulus.stop_reason = stopReason
+
+      const result = await receiveMotionStimulusV0(
+        stimulus,
+        { startDance: jest.fn(), stopDance },
+        { nowMs: () => 1_720_000_004_000 }
+      )
+
+      expect(stopDance).toHaveBeenCalledTimes(1)
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          status: 'completed',
+          reason_code: 'motion_runtime_stop_requested',
+          safe_visible_state: 'neutral_idle_requested',
+        })
+      )
+    }
+  )
 
   it('does not stop dance for unsafe or incomplete stop payload markers', async () => {
     const startDance = jest.fn()
@@ -1073,4 +1158,12 @@ function createExpressionVisibleStimulus() {
       shared_summary_only: true,
     },
   }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name]
+    return
+  }
+  process.env[name] = value
 }

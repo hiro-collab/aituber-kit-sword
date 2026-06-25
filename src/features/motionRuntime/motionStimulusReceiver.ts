@@ -3,8 +3,10 @@ export const MOTION_STIMULUS_RECEIVER_EVENT =
 export const MOTION_STIMULUS_RECEIVER_RESULT_EVENT =
   'projection-visual-motion-stimulus-result'
 
-export const DEFAULT_DANCE_MOTION_ASSET_PATH =
-  '/local-vrma/worker2-demo-dance.vrma'
+export const DANCE_MOTION_ASSET_PATH_ENV =
+  'NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
+const SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN =
+  /^\/local-vrma\/[a-z0-9_-][a-z0-9._-]*\.vrma$/i
 
 export const CONTEXT_NOD_GROUP_KEY = 'context.nod'
 export const CONTEXT_NOD_DURATION_MS = 900
@@ -228,7 +230,11 @@ const DANCE_SEQUENCE_PAYLOAD_REFS = new Set([
 const MOTION_STOP_PAYLOAD_REFS = new Set(['motion.thought_core.stop.v0'])
 const MOTION_STOP_INTERRUPT_POLICY = 'stop'
 const MOTION_STOP_FALLBACK_STATE = 'stop_to_idle'
-const MOTION_STOP_REASON = 'user_requested'
+const MOTION_STOP_REASONS = new Set([
+  'user_requested',
+  'task_interrupted',
+  'timeout_elapsed',
+])
 
 const CONTEXT_NOD_PAYLOAD_REFS = new Set([
   'motion.thought_core.expression.v0',
@@ -390,8 +396,17 @@ export async function receiveMotionStimulusV0(
       )
     }
 
+    const assetPath = resolveDanceMotionAssetPath()
+    if (!assetPath) {
+      return createUnavailableResult(
+        stimulus,
+        'dance_motion_asset_not_configured',
+        issuedAtMs
+      )
+    }
+
     const startResult = await adapter.startDance({
-      assetPath: DEFAULT_DANCE_MOTION_ASSET_PATH,
+      assetPath,
       stimulusId: stimulus.stimulusId,
       stimulusInstanceId: stimulus.stimulusInstanceId,
       groupKey: DANCE_SEQUENCE_GROUP_KEY,
@@ -703,7 +718,7 @@ function hasCompatibleMotionStopMetadata(
   ) {
     return false
   }
-  if (stimulus.stopReason && stimulus.stopReason !== MOTION_STOP_REASON) {
+  if (stimulus.stopReason && !MOTION_STOP_REASONS.has(stimulus.stopReason)) {
     return false
   }
   return true
@@ -796,6 +811,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+export function resolveDanceMotionAssetPath(
+  value = process.env[DANCE_MOTION_ASSET_PATH_ENV]
+): string | undefined {
+  const text = safeString(value)
+  if (!text) return undefined
+  return SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN.test(text)
+    ? text
+    : undefined
 }
 
 function optionalSafeString(value: unknown): string | undefined {

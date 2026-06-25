@@ -9,6 +9,7 @@ import {
   CONTEXT_NOD_DURATION_MS,
   CONTEXT_NOD_GROUP_KEY,
   DANCE_SEQUENCE_GROUP_KEY,
+  DANCE_MOTION_ASSET_PATH_ENV,
 } from '@/features/motionRuntime/motionStimulusReceiver'
 
 jest.mock('@/lib/VRMAnimation/loadVRMAnimation', () => ({
@@ -18,14 +19,19 @@ jest.mock('@/lib/VRMAnimation/loadVRMAnimation', () => ({
 const mockedLoadVRMAnimation = loadVRMAnimation as jest.MockedFunction<
   typeof loadVRMAnimation
 >
+const originalDanceMotionAssetPath =
+  process.env[DANCE_MOTION_ASSET_PATH_ENV]
 
 describe('Viewer Motion Runtime asset lifecycle', () => {
   beforeEach(() => {
     mockedLoadVRMAnimation.mockReset()
+    process.env[DANCE_MOTION_ASSET_PATH_ENV] = '/local-vrma/test-dance.vrma'
     jest.spyOn(console, 'error').mockImplementation(() => {})
+    jest.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   afterEach(() => {
+    restoreEnv(DANCE_MOTION_ASSET_PATH_ENV, originalDanceMotionAssetPath)
     jest.restoreAllMocks()
   })
 
@@ -110,6 +116,13 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
 
     expect(mockedLoadVRMAnimation).toHaveBeenCalledTimes(2)
     expect(model.playMotionRuntimeVRMA).toHaveBeenCalledTimes(1)
+    expect(console.error).not.toHaveBeenCalled()
+    expect(console.warn).toHaveBeenCalledWith(
+      'Motion Runtime query VRMA unavailable',
+      {
+        reason_code: 'motion_query_asset_load_failed',
+      }
+    )
   })
 
   it('unloadVRM stops the Motion Runtime dance sequence before disposing the model', () => {
@@ -150,6 +163,36 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
         requestedAtMs: Date.parse('2026-06-05T08:55:00.000Z'),
         loop: true,
       })
+    )
+  })
+
+  it('returns unavailable without raw error logging when a configured dance VRMA is missing', async () => {
+    const viewer = new Viewer()
+    const model = createReadyModel()
+    viewer.model = model
+    mockedLoadVRMAnimation.mockRejectedValueOnce(
+      new Error(
+        'fetch for "http://127.0.0.1:3000/local-vrma/test-dance.vrma" responded with 404: Not Found'
+      )
+    )
+
+    const result = await viewer.receiveMotionStimulus(createDanceStimulus())
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        status: 'unavailable',
+        reason_code: 'motion_asset_load_failed',
+        safe_visible_state: 'no_visible_change',
+      })
+    )
+    expect(model.playMotionRuntimeVRMA).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
+    expect(console.warn).toHaveBeenCalledWith(
+      'Motion Runtime dance asset unavailable',
+      {
+        reason_code: 'motion_asset_load_failed',
+      }
     )
   })
 
@@ -661,4 +704,12 @@ function createMotionRuntimeDebugSnapshot() {
       humanoidTranslationBoneNames: [],
     },
   } as any
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name]
+    return
+  }
+  process.env[name] = value
 }

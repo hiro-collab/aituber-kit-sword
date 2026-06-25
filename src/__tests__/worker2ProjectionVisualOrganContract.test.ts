@@ -289,6 +289,20 @@ describe('worker-2 projection visual organ contract', () => {
       true,
     ],
     [
+      'passive controlled chrome dance stop stimulus ref',
+      { mode: 'passive', stimulusRef: 'voice.stop_dance' },
+      true,
+      false,
+      true,
+      'passive',
+      undefined,
+      undefined,
+      'voice.stop_dance',
+      false,
+      true,
+      true,
+    ],
+    [
       'passive controlled chrome smile stimulus ref alias',
       { mode: 'passive', motionStimulusRef: 'voice.smile_please' },
       true,
@@ -434,12 +448,12 @@ describe('worker-2 projection visual organ contract', () => {
       },
     ],
     [
-      '/projection-visual/?motionAsset=/local-vrma/worker2-demo-dance.vrma',
+      '/projection-visual/?motionAsset=/local-vrma/configured-dance.vrma',
       {
         mode: undefined,
         hud: undefined,
         visualTest: undefined,
-        motionAsset: '/local-vrma/worker2-demo-dance.vrma',
+        motionAsset: '/local-vrma/configured-dance.vrma',
         stimulusRef: undefined,
         motionStimulusRef: undefined,
       },
@@ -452,6 +466,17 @@ describe('worker-2 projection visual organ contract', () => {
         visualTest: undefined,
         motionAsset: undefined,
         stimulusRef: 'voice.dance_please',
+        motionStimulusRef: undefined,
+      },
+    ],
+    [
+      '/projection-visual/?stimulusRef=voice.stop_dance',
+      {
+        mode: undefined,
+        hud: undefined,
+        visualTest: undefined,
+        motionAsset: undefined,
+        stimulusRef: 'voice.stop_dance',
         motionStimulusRef: undefined,
       },
     ],
@@ -486,8 +511,8 @@ describe('worker-2 projection visual organ contract', () => {
 
   it.each([
     [
-      '/local-vrma/worker2-demo-dance.vrma',
-      '/local-vrma/worker2-demo-dance.vrma',
+      '/local-vrma/configured-dance.vrma',
+      '/local-vrma/configured-dance.vrma',
     ],
     [' /local-vrma/trimmed.vrma ', '/local-vrma/trimmed.vrma'],
     ['/local-vrma/not-vrma.txt', undefined],
@@ -508,6 +533,7 @@ describe('worker-2 projection visual organ contract', () => {
 
   it.each([
     ['voice.dance_please', 'voice.dance_please'],
+    ['voice.stop_dance', 'voice.stop_dance'],
     ['voice.smile_please', 'voice.smile_please'],
     ['VOICE.DANCE_PLEASE', 'voice.dance_please'],
     ['raw_transcript', undefined],
@@ -525,6 +551,10 @@ describe('worker-2 projection visual organ contract', () => {
     )
     const expression = createProjectionVisualMotionStimulusFromRef(
       'voice.smile_please',
+      new Date('2026-06-13T10:30:15.123Z')
+    )
+    const stop = createProjectionVisualMotionStimulusFromRef(
+      'voice.stop_dance',
       new Date('2026-06-13T10:30:15.123Z')
     )
 
@@ -546,8 +576,20 @@ describe('worker-2 projection visual organ contract', () => {
         target_model_type: 'vrm',
       })
     )
-    expect(JSON.stringify([dance, expression])).not.toContain('entity_id')
-    expect(JSON.stringify([dance, expression])).not.toContain(
+    expect(stop).toEqual(
+      expect.objectContaining({
+        schema_version: 'motion_stimulus.v0',
+        kind: 'stop',
+        request_mode: 'stop',
+        payload_ref: 'motion.thought_core.stop.v0',
+        target_model_type: 'vrm',
+        safe_visible_state: 'neutral_idle_requested',
+      })
+    )
+    expect(JSON.stringify([dance, stop, expression])).not.toContain(
+      'entity_id'
+    )
+    expect(JSON.stringify([dance, stop, expression])).not.toContain(
       'provider_payload'
     )
   })
@@ -835,6 +877,9 @@ describe('worker-2 projection visual organ contract', () => {
     const viewerSource = readSource('src/features/vrmViewer/viewer.ts')
     const modelSource = readSource('src/features/vrmViewer/model.ts')
     const vrmViewerSource = readSource('src/components/vrmViewer.tsx')
+    const motionStimulusReceiverSource = readSource(
+      'src/features/motionRuntime/motionStimulusReceiver.ts'
+    )
 
     expect(bridgeSource).toContain(
       "mode: 'operator' | 'passive' | 'stage-output'"
@@ -891,6 +936,25 @@ describe('worker-2 projection visual organ contract', () => {
     expect(viewerSource).toContain('this.model !== model')
     expect(viewerSource).toContain(
       "this.model?.stopMotionRuntimeGroup('dance.sequence')"
+    )
+    expect(motionStimulusReceiverSource).toContain(
+      'NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
+    )
+    expect(motionStimulusReceiverSource).not.toContain(
+      'DEFAULT_DANCE_MOTION_ASSET_PATH'
+    )
+    expect(motionStimulusReceiverSource).not.toContain('worker2-demo-dance')
+    expect(motionStimulusReceiverSource).toContain(
+      'dance_motion_asset_not_configured'
+    )
+    expect(viewerSource).toContain('Motion Runtime query VRMA unavailable')
+    expect(viewerSource).toContain('Motion Runtime dance asset unavailable')
+    expect(viewerSource).toContain('motion_asset_load_failed')
+    expect(viewerSource).not.toContain(
+      "Failed to load Motion Runtime VRMA:', error"
+    )
+    expect(viewerSource).not.toContain(
+      "Failed to start Motion Runtime stimulus:', error"
     )
     expect(vrmViewerSource).toContain('motionStimulusAssetPathRef')
   })

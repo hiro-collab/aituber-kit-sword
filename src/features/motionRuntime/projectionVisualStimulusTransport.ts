@@ -2,6 +2,7 @@ import type { MotionStimulusReceiverResult } from './motionStimulusReceiver'
 
 export type ProjectionVisualStimulusRef =
   | 'voice.dance_please'
+  | 'voice.stop_dance'
   | 'voice.smile_please'
 
 export const PROJECTION_VISUAL_STIMULUS_DISPATCH_ADAPTER_GLOBAL =
@@ -17,6 +18,7 @@ export const PROJECTION_VISUAL_MOTION_RUN_EVIDENCE_ENVELOPE_SCHEMA_VERSION =
 
 const SUPPORTED_STIMULUS_REFS = new Set<ProjectionVisualStimulusRef>([
   'voice.dance_please',
+  'voice.stop_dance',
   'voice.smile_please',
 ])
 
@@ -39,6 +41,25 @@ const STIMULUS_REF_INVENTORY: readonly ProjectionVisualStimulusRefInventoryEntry
       does_not_cover: [
         'all_dance_patterns',
         'semantic_dance_quality',
+        'self_mirror_pass_without_metric_interpretation',
+      ],
+    },
+    {
+      safe_ref: 'voice.stop_dance',
+      status: 'supported',
+      kind: 'stop',
+      request_mode: 'stop',
+      payload_ref: 'motion.thought_core.stop.v0',
+      target_model_type: 'vrm',
+      track_scope: 'full_body',
+      expected_roi: 'avatar_full',
+      expected_visible_change: 'neutral_idle_requested',
+      scenario_label: 'dance_stop_to_idle',
+      route_owner: 'RR003-02 Motion / VRM / AITuber bridge',
+      test_status: 'source_static_stop_stimulus_contract_only',
+      does_not_cover: [
+        'visible_stop_proof',
+        'thought_core_stop_timing_policy',
         'self_mirror_pass_without_metric_interpretation',
       ],
     },
@@ -79,16 +100,22 @@ export type ProjectionVisualStimulusRefUnsupportedReasonCode =
 export type ProjectionVisualStimulusRefInventoryEntry = {
   safe_ref: ProjectionVisualStimulusRef
   status: 'supported'
-  kind: 'dance_sequence' | 'expression'
-  request_mode: 'play' | 'apply'
+  kind: 'dance_sequence' | 'stop' | 'expression'
+  request_mode: 'play' | 'stop' | 'apply'
   payload_ref: string
   target_model_type: 'vrm'
   track_scope: 'full_body' | 'face_head'
   track_channels?: string[]
   expected_roi: 'avatar_full' | 'avatar_face_head'
-  expected_visible_change: 'broad_avatar_motion' | 'face_expression'
+  expected_visible_change:
+    | 'broad_avatar_motion'
+    | 'neutral_idle_requested'
+    | 'face_expression'
   expression_profile_ref?: string
-  scenario_label: 'dance_visible_motion' | 'expression_visible_change'
+  scenario_label:
+    | 'dance_visible_motion'
+    | 'dance_stop_to_idle'
+    | 'expression_visible_change'
   route_owner: 'RR003-02 Motion / VRM / AITuber bridge'
   test_status: string
   does_not_cover: string[]
@@ -173,7 +200,10 @@ export type ProjectionVisualMotionRunReasonGroup = {
 
 type ProjectionVisualMotionRunObservationSummaryInput = {
   schema_version?: string
-  scenario_label?: 'dance_visible_motion' | 'expression_visible_change'
+  scenario_label?:
+    | 'dance_visible_motion'
+    | 'dance_stop_to_idle'
+    | 'expression_visible_change'
   target_identity?: {
     capture_surface_kind?: string
     same_page_or_target?: boolean
@@ -745,6 +775,43 @@ export function createProjectionVisualMotionStimulusFromRef(
       trace: {
         ...sharedTrace,
         runtime_result_id: `mot_res_controlled_chrome_dance_${suffix}`,
+      },
+      redaction: {
+        shared_summary_only: true,
+        safe_ref_transport: true,
+      },
+    }
+  }
+
+  if (stimulusRef === 'voice.stop_dance') {
+    return {
+      schema_version: 'motion_stimulus.v0',
+      motion_event_id: `mot_evt_controlled_chrome_stop_${suffix}`,
+      stimulus_id: 'mot_stim_controlled_chrome_voice_stop_dance',
+      stimulus_instance_id: `mot_inst_controlled_chrome_stop_${suffix}`,
+      source_class: 'thought_core',
+      source_origin: 'motion.requested',
+      requested_at: requestedAtIso,
+      kind: 'stop',
+      request_mode: 'stop',
+      phase: 'requested',
+      lifecycle_state: 'request_issued',
+      safe_visible_state: 'neutral_idle_requested',
+      target_model_type: 'vrm',
+      payload_ref: 'motion.thought_core.stop.v0',
+      duration_ms: 0,
+      loop: false,
+      interrupt_policy: 'stop',
+      fallback_state: 'stop_to_idle',
+      stop_reason: 'user_requested',
+      track_mask: { scope: 'full_body' },
+      requirements: {
+        stop_target: 'dance.sequence',
+        fallback_state: 'stop_to_idle',
+      },
+      trace: {
+        ...sharedTrace,
+        runtime_result_id: `mot_res_controlled_chrome_stop_${suffix}`,
       },
       redaction: {
         shared_summary_only: true,

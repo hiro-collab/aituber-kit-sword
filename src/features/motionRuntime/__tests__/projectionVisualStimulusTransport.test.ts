@@ -10,11 +10,27 @@ import {
   resolveProjectionVisualStimulusRef,
   type ProjectionVisualStimulusDispatchAdapterState,
 } from '../projectionVisualStimulusTransport'
-import { receiveMotionStimulusV0 } from '../motionStimulusReceiver'
+import {
+  DANCE_MOTION_ASSET_PATH_ENV,
+  receiveMotionStimulusV0,
+} from '../motionStimulusReceiver'
 
+const CONFIGURED_DANCE_MOTION_ASSET_PATH =
+  '/local-vrma/configured-dance.vrma'
 const REQUESTED_AT = new Date('2026-06-13T10:30:15.123Z')
+const originalDanceMotionAssetPath =
+  process.env[DANCE_MOTION_ASSET_PATH_ENV]
 
 describe('Projection Visual safe stimulus ref transport', () => {
+  beforeEach(() => {
+    process.env[DANCE_MOTION_ASSET_PATH_ENV] =
+      CONFIGURED_DANCE_MOTION_ASSET_PATH
+  })
+
+  afterEach(() => {
+    restoreEnv(DANCE_MOTION_ASSET_PATH_ENV, originalDanceMotionAssetPath)
+  })
+
   const danceState: ProjectionVisualStimulusDispatchAdapterState = {
     schema_version: 'projection_visual_stimulus_dispatch_adapter.v0',
     transport: 'projection_visual_safe_query_ref',
@@ -68,6 +84,7 @@ describe('Projection Visual safe stimulus ref transport', () => {
 
   it.each([
     ['voice.dance_please', 'voice.dance_please'],
+    ['voice.stop_dance', 'voice.stop_dance'],
     [' VOICE.SMILE_PLEASE ', 'voice.smile_please'],
     ['voice.unknown', undefined],
     ['provider_payload', undefined],
@@ -97,6 +114,22 @@ describe('Projection Visual safe stimulus ref transport', () => {
         ]),
       }),
       expect.objectContaining({
+        safe_ref: 'voice.stop_dance',
+        status: 'supported',
+        kind: 'stop',
+        request_mode: 'stop',
+        payload_ref: 'motion.thought_core.stop.v0',
+        target_model_type: 'vrm',
+        track_scope: 'full_body',
+        expected_roi: 'avatar_full',
+        expected_visible_change: 'neutral_idle_requested',
+        scenario_label: 'dance_stop_to_idle',
+        does_not_cover: expect.arrayContaining([
+          'visible_stop_proof',
+          'thought_core_stop_timing_policy',
+        ]),
+      }),
+      expect.objectContaining({
         safe_ref: 'voice.smile_please',
         status: 'supported',
         kind: 'expression',
@@ -119,6 +152,7 @@ describe('Projection Visual safe stimulus ref transport', () => {
 
   it.each([
     ['voice.dance_please', true, undefined],
+    ['voice.stop_dance', true, undefined],
     [' VOICE.SMILE_PLEASE ', true, undefined],
     ['provider_payload', false, 'unsupported_unsafe_ref'],
     ['entity_id', false, 'unsupported_unsafe_ref'],
@@ -438,6 +472,69 @@ describe('Projection Visual safe stimulus ref transport', () => {
     )
   })
 
+  it('builds a controlled-Chrome-safe stop stimulus accepted by the existing receiver', async () => {
+    const startDance = jest.fn()
+    const stopDance = jest.fn().mockResolvedValue({
+      status: 'completed',
+      reason_code: 'motion_stopped',
+      runtime_result_id: 'mot_res_controlled_chrome_stop_actual',
+      safe_visible_state: 'neutral_idle_requested',
+    })
+    const stimulus = createProjectionVisualMotionStimulusFromRef(
+      'voice.stop_dance',
+      REQUESTED_AT
+    )
+
+    const result = await receiveMotionStimulusV0(
+      stimulus,
+      { startDance, stopDance },
+      { nowMs: () => 1_720_000_000_500 }
+    )
+
+    expect(stimulus).toEqual(
+      expect.objectContaining({
+        schema_version: 'motion_stimulus.v0',
+        kind: 'stop',
+        request_mode: 'stop',
+        payload_ref: 'motion.thought_core.stop.v0',
+        target_model_type: 'vrm',
+        safe_visible_state: 'neutral_idle_requested',
+        duration_ms: 0,
+        loop: false,
+        interrupt_policy: 'stop',
+        fallback_state: 'stop_to_idle',
+        stop_reason: 'user_requested',
+      })
+    )
+    expect(startDance).not.toHaveBeenCalled()
+    expect(stopDance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stimulusId: 'mot_stim_controlled_chrome_voice_stop_dance',
+        stimulusInstanceId:
+          'mot_inst_controlled_chrome_stop_20260613_103015123z',
+        groupKey: 'dance.sequence',
+        trace: expect.objectContaining({
+          event_id:
+            'evt_controlled_chrome_voice_stop_dance_20260613_103015123z',
+          runtime_result_id:
+            'mot_res_controlled_chrome_stop_20260613_103015123z',
+          multi_stimulus_group_id:
+            'multi_stimulus_controlled_chrome_20260613_103015123z',
+        }),
+      })
+    )
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        status: 'completed',
+        reason_code: 'motion_stopped',
+        safe_visible_state: 'neutral_idle_requested',
+        stimulus_id: 'mot_stim_controlled_chrome_voice_stop_dance',
+        runtime_result_id: 'mot_res_controlled_chrome_stop_actual',
+      })
+    )
+  })
+
   it('builds an expression-visible stimulus accepted by the distinct expression adapter', async () => {
     const startDance = jest.fn()
     const startContextNod = jest.fn()
@@ -507,6 +604,10 @@ describe('Projection Visual safe stimulus ref transport', () => {
     const generatedText = JSON.stringify([
       createProjectionVisualMotionStimulusFromRef(
         'voice.dance_please',
+        REQUESTED_AT
+      ),
+      createProjectionVisualMotionStimulusFromRef(
+        'voice.stop_dance',
         REQUESTED_AT
       ),
       createProjectionVisualMotionStimulusFromRef(
@@ -645,3 +746,11 @@ describe('Projection Visual safe stimulus ref transport', () => {
     expect(JSON.stringify(attributes)).not.toContain('entity_driver_result')
   })
 })
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name]
+    return
+  }
+  process.env[name] = value
+}

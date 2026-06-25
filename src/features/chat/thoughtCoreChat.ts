@@ -19,6 +19,13 @@ const DANCE_SEQUENCE_PAYLOAD_REF = 'motion.thought_core.dance_sequence.v0'
 const MOTION_STOP_KIND = 'stop'
 const MOTION_STOP_REQUEST_MODE = 'stop'
 const MOTION_STOP_PAYLOAD_REF = 'motion.thought_core.stop.v0'
+const MOTION_STOP_INTERRUPT_POLICY = 'stop'
+const MOTION_STOP_FALLBACK_STATE = 'stop_to_idle'
+const MOTION_STOP_REASONS = new Set([
+  'user_requested',
+  'task_interrupted',
+  'timeout_elapsed',
+])
 const EXPRESSION_VISIBLE_KIND = 'expression'
 const EXPRESSION_VISIBLE_REQUEST_MODE = 'apply'
 const EXPRESSION_VISIBLE_PAYLOAD_REF =
@@ -277,6 +284,32 @@ function buildSafeMotionTrace(
   return safeTrace
 }
 
+function buildSafeStopMetadata(
+  payload: JsonRecord,
+  motionProfile: { kind: string }
+): JsonRecord {
+  if (motionProfile.kind !== MOTION_STOP_KIND) return {}
+
+  const result: JsonRecord = {}
+  if (payload.duration_ms === 0) {
+    result.duration_ms = 0
+  }
+  if (payload.loop === false) {
+    result.loop = false
+  }
+  if (safeString(payload.interrupt_policy) === MOTION_STOP_INTERRUPT_POLICY) {
+    result.interrupt_policy = MOTION_STOP_INTERRUPT_POLICY
+  }
+  if (safeString(payload.fallback_state) === MOTION_STOP_FALLBACK_STATE) {
+    result.fallback_state = MOTION_STOP_FALLBACK_STATE
+  }
+  const stopReason = safeString(payload.stop_reason)
+  if (MOTION_STOP_REASONS.has(stopReason)) {
+    result.stop_reason = stopReason
+  }
+  return result
+}
+
 export function extractThoughtCoreDanceMotionStimulus(
   event: unknown
 ): JsonRecord | null {
@@ -356,6 +389,7 @@ export function extractThoughtCoreMotionStimulus(
     safe_visible_state: safeVisibleState,
     target_model_type: VRM_TARGET_MODEL_TYPE,
     payload_ref: motionProfile.payloadRef,
+    ...buildSafeStopMetadata(payload, motionProfile),
     track_mask: sanitizeMotionTrackMask(payload.track_mask),
     requirements: sanitizeMotionMetadata(payload.requirements),
     trace: buildSafeMotionTrace(

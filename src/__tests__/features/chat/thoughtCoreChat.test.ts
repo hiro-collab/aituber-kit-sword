@@ -213,6 +213,11 @@ describe('getThoughtCoreChatResponseStream motion bridge', () => {
         stimulus_id: 'mot_stim_turn_bridge_stop',
         stimulus_instance_id: 'mot_inst_turn_bridge_stop',
         safe_visible_state: 'neutral_idle_requested',
+        duration_ms: 0,
+        loop: false,
+        interrupt_policy: 'stop',
+        fallback_state: 'stop_to_idle',
+        stop_reason: 'user_requested',
       })
     )
     expect(dispatched[0].detail.requirements).toEqual(
@@ -229,6 +234,50 @@ describe('getThoughtCoreChatResponseStream motion bridge', () => {
       })
     )
   })
+
+  it.each([
+    ['task_interrupted', '別の作業に移ります'],
+    ['timeout_elapsed', '踊りを止めます'],
+  ])(
+    'preserves allowlisted Thought Core stop reason %s',
+    async (stopReason, speech) => {
+      const dispatched: CustomEvent[] = []
+      window.addEventListener(MOTION_STIMULUS_RECEIVER_EVENT, (event) => {
+        dispatched.push(event as CustomEvent)
+      })
+      ;(global.fetch as jest.Mock).mockResolvedValue(
+        createSseResponse([
+          createMotionRequestedEvent({
+            ...createStopStimulus(),
+            stop_reason: stopReason,
+          }),
+          {
+            type: 'assistant.speech_delta',
+            data: { delta: speech },
+          },
+        ])
+      )
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: '別の作業をして' } as any],
+        '',
+        'session-bridge'
+      )
+      const text = await readTextStream(stream)
+
+      expect(text).toBe(speech)
+      expect(dispatched).toHaveLength(1)
+      expect(dispatched[0].detail).toEqual(
+        expect.objectContaining({
+          kind: 'stop',
+          request_mode: 'stop',
+          payload_ref: 'motion.thought_core.stop.v0',
+          stop_reason: stopReason,
+          safe_visible_state: 'neutral_idle_requested',
+        })
+      )
+    }
+  )
 
   it('dispatches safe Thought Core expression-visible requests as a distinct route', async () => {
     const dispatched: CustomEvent[] = []

@@ -275,6 +275,61 @@ describe('Projection Visual controlled Chrome observation producer', () => {
     expect(JSON.stringify(summary)).not.toContain('private_path_marker')
   })
 
+  it('keeps stop-dance safe refs in a neutral idle observation scenario', () => {
+    const root = document.querySelector<HTMLElement>(
+      '[data-projection-visual-mode]'
+    ) as HTMLElement
+    const session = new ProjectionVisualControlledChromeObservationSession({
+      stimulusRef: 'voice.stop_dance',
+      root,
+      sampleProvider: ({ rois }) =>
+        rois.map((roi) => ({
+          roi_id: roi.roi_id,
+          source_kind: 'test_sample_provider',
+          luma: new Uint8Array([0, 0, 0, 0]),
+        })),
+    })
+
+    session.recordSample()
+    session.complete()
+    const summary = session.buildSummary({
+      ...resultState,
+      stimulus_ref: 'voice.stop_dance',
+      motion_event_id: 'mot_evt_controlled_chrome_stop_1',
+      stimulus_id: 'mot_stim_controlled_chrome_voice_stop_dance',
+      stimulus_instance_id: 'mot_inst_controlled_chrome_stop_1',
+      runtime_result_id: 'mot_res_controlled_chrome_stop_planned_1',
+      result: {
+        accepted: true,
+        status: 'completed',
+        reason_code: 'motion_stopped',
+        safe_visible_state: 'neutral_idle_requested',
+        motion_event_id: 'mot_evt_controlled_chrome_stop_1',
+        stimulus_id: 'mot_stim_controlled_chrome_voice_stop_dance',
+        stimulus_instance_id: 'mot_inst_controlled_chrome_stop_1',
+        runtime_result_id: 'mot_res_controlled_chrome_stop_actual_1',
+      },
+    })
+
+    expect(summary).toEqual(
+      expect.objectContaining({
+        stimulus_ref: 'voice.stop_dance',
+        scenario_label: 'dance_stop_to_idle',
+        expected_motion: 'neutral_idle_requested',
+        raw_frame_included: false,
+      })
+    )
+    expect(summary.runtime_join).toEqual(
+      expect.objectContaining({
+        motion_event_id: 'mot_evt_controlled_chrome_stop_1',
+        stimulus_id: 'mot_stim_controlled_chrome_voice_stop_dance',
+        result_reason_code: 'motion_stopped',
+        result_safe_visible_state: 'neutral_idle_requested',
+      })
+    )
+    expect(summary.dance_avatar_full_readback_diagnostic).toBeUndefined()
+  })
+
   it('distinguishes static dance authority ROI from moving guard ROI without raw pixels', () => {
     let nowMs = 0
     const root = document.querySelector<HTMLElement>(
