@@ -29,7 +29,12 @@ import i18next from 'i18next'
 import {
   preprocessMessage,
   handleTTSError,
+  writeSynthesizedSpeechOutputSummary,
 } from '../../../features/messages/speakCharacter'
+import {
+  buildSpeechOutputSummary,
+  compareSpeechOutputSummaries,
+} from '@/utils/speechOutputParitySummary'
 
 jest.mock('../../../features/stores/settings', () => ({
   getState: jest.fn(),
@@ -218,6 +223,51 @@ describe('speakCharacter', () => {
         duration: 5000,
         tag: 'tts-error',
       })
+    })
+  })
+
+  describe('writeSynthesizedSpeechOutputSummary', () => {
+    beforeEach(() => {
+      delete (window as any).__projectionVisualSpeechOutputSummaryV0
+    })
+
+    it('records the actual synthesized Talk.message so bubble and VOICEVOX text drift is testable', () => {
+      writeSynthesizedSpeechOutputSummary({
+        emotion: 'neutral',
+        message: '実際に音声合成へ渡る文です',
+        displayMessage: '吹き出しに表示される文です',
+        sourceMessageId: 'assistant-message-1',
+        sourceTurnId: 'turn-1',
+      })
+
+      const ttsSummary = (window as any)
+        .__projectionVisualSpeechOutputSummaryV0
+      const bubbleSummary = buildSpeechOutputSummary({
+        surface: 'projection_visual_assistant_bubble',
+        sourceField: 'homeStore.chatLog.latestAssistantMessage',
+        message: '吹き出しに表示される文です',
+        messageId: 'assistant-message-1',
+        turnId: 'turn-1',
+      })
+      const parity = compareSpeechOutputSummaries(bubbleSummary, ttsSummary)
+
+      expect(ttsSummary).toEqual(
+        expect.objectContaining({
+          schema_version: 'projection_visual_speech_output_parity.v0',
+          surface: 'tts_talk_message',
+          source_field: 'Talk.message.synthesized',
+          message_id: 'assistant-message-1',
+          turn_id: 'turn-1',
+          text_length: Array.from('実際に音声合成へ渡る文です').length,
+          raw_text_published: false,
+          raw_audio_published: false,
+          provider_payload_published: false,
+          private_data_published: false,
+        })
+      )
+      expect(ttsSummary).not.toHaveProperty('text')
+      expect(parity.parity_status).toBe('text_mismatch')
+      expect(parity.text_hash_match).toBe(false)
     })
   })
 })

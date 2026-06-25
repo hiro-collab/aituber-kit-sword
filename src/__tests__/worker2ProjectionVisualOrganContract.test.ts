@@ -613,6 +613,9 @@ describe('worker-2 projection visual organ contract', () => {
     const speechParitySource = readSource(
       'src/utils/speechOutputParitySummary.ts'
     )
+    const speakCharacterSource = readSource(
+      'src/features/messages/speakCharacter.ts'
+    )
     const cssSource = readSource('src/styles/globals.css')
 
     expect(bubbleSource).toContain('const MAX_OPERATOR_VISIBLE_LINES = 6')
@@ -631,6 +634,19 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(speechParitySource).toContain(
       '__projectionVisualSpeechOutputSummaryV0'
+    )
+    expect(speakCharacterSource).toContain(
+      'writeSynthesizedSpeechOutputSummary'
+    )
+    expect(speakCharacterSource).toContain(
+      "sourceField: 'Talk.message.synthesized'"
+    )
+    expect(
+      speakCharacterSource.indexOf('writeSynthesizedSpeechOutputSummary(talk)')
+    ).toBeLessThan(
+      speakCharacterSource.indexOf(
+        'buffer = await synthesizeVoice(talk, ss.selectVoice)'
+      )
     )
     expect(bubbleSource).toContain('data-projection-visual-speech-parity-v0')
     expect(bubbleSource).toContain('data-speech-parity-status')

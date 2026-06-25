@@ -23,6 +23,10 @@ import {
   asyncConvertEnglishToJapaneseReading,
   containsEnglish,
 } from '@/utils/textProcessing'
+import {
+  buildSpeechOutputSummary,
+  writeWindowSpeechOutputSummary,
+} from '@/utils/speechOutputParitySummary'
 
 const speakQueue = SpeakQueue.getInstance()
 
@@ -65,6 +69,20 @@ export function preprocessMessage(
 
   // 変換不要な場合はそのまま返す
   return processed
+}
+
+export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
+  if (!talk.message.trim()) return
+
+  writeWindowSpeechOutputSummary(
+    buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.message.synthesized',
+      message: talk.message,
+      messageId: talk.sourceMessageId,
+      turnId: talk.sourceTurnId,
+    })
+  )
 }
 
 async function synthesizeVoice(
@@ -261,6 +279,7 @@ const createSpeakCharacter = () => {
           buffer = talk.buffer
           isNeedDecode = false
         } else if (talk.message !== '') {
+          writeSynthesizedSpeechOutputSummary(talk)
           buffer = await synthesizeVoice(talk, ss.selectVoice)
         } else {
           buffer = null
