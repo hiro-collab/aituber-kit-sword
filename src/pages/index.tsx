@@ -29,16 +29,15 @@ import { useLive2DEnabled } from '@/hooks/useLive2DEnabled'
 import { useBrowserControlOwner } from '@/features/browserControl/useBrowserControlOwner'
 import { BrowserControlNotice } from '@/components/browserControlNotice'
 
-const configuredSystemCellAIService = ((): 'dify' | 'thought-core' | null => {
+const configuredSystemCellAIService = ((): 'thought-core' | null => {
   const candidates = [
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE,
-    process.env.NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE,
     process.env.NEXT_PUBLIC_SELECT_AI_SERVICE,
   ]
   for (const candidate of candidates) {
     const configured = (candidate || '').trim().toLowerCase()
-    if (configured === 'dify' || configured === 'thought-core') {
-      return configured
+    if (configured === 'thought-core') {
+      return 'thought-core'
     }
   }
   return null

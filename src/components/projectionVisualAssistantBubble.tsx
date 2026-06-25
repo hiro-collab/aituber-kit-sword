@@ -181,10 +181,10 @@ export const ProjectionVisualAssistantBubble = ({
       buildSpeechOutputSummary({
         surface: 'projection_visual_assistant_bubble',
         sourceField: bubbleSourceField,
-        message: cleanedMessage,
+        message: currentPage,
         messageId: latestAssistantMessageEntry.id,
       }),
-    [bubbleSourceField, cleanedMessage, latestAssistantMessageEntry.id]
+    [bubbleSourceField, currentPage, latestAssistantMessageEntry.id]
   )
   const [operatorSpeechOutputSummary, setOperatorSpeechOutputSummary] =
     useState<SpeechOutputSummary | null>(() => readWindowSpeechOutputSummary())

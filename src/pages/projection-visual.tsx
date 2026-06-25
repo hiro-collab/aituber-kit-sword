@@ -36,25 +36,14 @@ import {
 import { ProjectionVisualStimulusRefBridge } from '@/features/motionRuntime/projectionVisualStimulusRefBridge'
 import '@/lib/i18n'
 
-const projectionVisualAIService = ((): 'dify' | 'thought-core' | null => {
+const projectionVisualAIService = ((): 'thought-core' | null => {
   const configured = (
     process.env.NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE || ''
   )
     .trim()
     .toLowerCase()
-  if (configured === 'dify' || configured === 'thought-core') {
-    return configured
-  }
-  const legacyForceDify = (
-    process.env.NEXT_PUBLIC_PROJECTION_VISUAL_FORCE_DIFY || ''
-  )
-    .trim()
-    .toLowerCase()
-  if (legacyForceDify === 'true') {
-    return 'dify'
-  }
-  if (legacyForceDify === 'false') {
-    return null
+  if (configured === 'thought-core') {
+    return 'thought-core'
   }
   return 'thought-core'
 })()

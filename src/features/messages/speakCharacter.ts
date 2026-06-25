@@ -74,13 +74,14 @@ export function preprocessMessage(
 }
 
 export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
-  if (!talk.message.trim()) return
+  const speechOutputMessage = resolveSpeechOutputMessage(talk)
+  if (!speechOutputMessage.trim()) return
 
   const sourceField = resolveSpeechOutputSourceField(talk)
   writeWindowSpeechOutputDisplayState(
     buildSpeechOutputDisplayState({
       sourceField,
-      message: talk.message,
+      message: speechOutputMessage,
       messageId: talk.sourceMessageId,
       turnId: talk.sourceTurnId,
     })
@@ -89,7 +90,7 @@ export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
     buildSpeechOutputSummary({
       surface: 'tts_talk_message',
       sourceField,
-      message: talk.message,
+      message: speechOutputMessage,
       messageId: talk.sourceMessageId,
       turnId: talk.sourceTurnId,
     })

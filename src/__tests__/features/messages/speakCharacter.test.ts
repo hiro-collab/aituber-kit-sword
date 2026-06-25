@@ -244,10 +244,7 @@ describe('speakCharacter', () => {
         '吹き出しと音声で共有する文です'
       )
 
-      talk.message = resolveSpeechOutputMessage(talk)
-      writeSynthesizedSpeechOutputSummary({
-        ...talk,
-      })
+      writeSynthesizedSpeechOutputSummary(talk)
 
       const ttsSummary = (window as any)
         .__projectionVisualSpeechOutputSummaryV0

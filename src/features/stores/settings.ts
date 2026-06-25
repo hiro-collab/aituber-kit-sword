@@ -42,17 +42,16 @@ import {
   getCommentTextColor,
 } from '@/utils/commentDisplayStyle'
 
-const getConfiguredSystemCellAIService = (): AIService | null => {
+const getConfiguredSystemCellAIService = (): 'thought-core' | null => {
   const candidates = [
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE,
-    process.env.NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE,
     process.env.NEXT_PUBLIC_SELECT_AI_SERVICE,
   ]
 
   for (const candidate of candidates) {
     const configured = (candidate || '').trim().toLowerCase()
-    if (configured === 'dify' || configured === 'thought-core') {
-      return configured as AIService
+    if (configured === 'thought-core') {
+      return 'thought-core'
     }
   }
 

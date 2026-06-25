@@ -32,12 +32,12 @@ describe('worker-2 projection visual organ contract', () => {
     const source = readSource('src/pages/index.tsx')
 
     expect(source).toContain('NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE')
-    expect(source).toContain('NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE')
     expect(source).toContain('NEXT_PUBLIC_SELECT_AI_SERVICE')
     expect(source).toContain("configured === 'thought-core'")
-    expect(source).toContain("configured === 'dify'")
     expect(source).toContain('selectAIService: configuredSystemCellAIService')
     expect(source).toContain('thoughtCoreUrl: configuredThoughtCoreUrl')
+    expect(source).not.toContain('NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE')
+    expect(source).not.toContain("configured === 'dify'")
   })
 
   it('keeps Projection Visual display-only modes scoped through query mode', () => {
@@ -131,6 +131,16 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(source).toContain('!isDisplayOnlyMode && controlOwner.isOwner &&')
     expect(source).toContain('<GestureVoiceBridge />')
+  })
+
+  it('does not mix legacy Projection Visual Dify force flags into current AI service routing', () => {
+    const source = readSource('src/pages/projection-visual.tsx')
+
+    expect(source).toContain('NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE')
+    expect(source).toContain("configured === 'thought-core'")
+    expect(source).not.toContain("configured === 'dify'")
+    expect(source).not.toContain('NEXT_PUBLIC_PROJECTION_VISUAL_FORCE_DIFY')
+    expect(source).not.toContain('legacyForceDify')
   })
 
   it.each([
@@ -647,6 +657,10 @@ describe('worker-2 projection visual organ contract', () => {
       'writeSynthesizedSpeechOutputSummary'
     )
     expect(speakCharacterSource).toContain(
+      'const speechOutputMessage = resolveSpeechOutputMessage(talk)'
+    )
+    expect(speakCharacterSource).toContain('message: speechOutputMessage')
+    expect(speakCharacterSource).toContain(
       "'Talk.displayMessage.spoken'"
     )
     expect(
@@ -661,6 +675,7 @@ describe('worker-2 projection visual organ contract', () => {
     expect(bubbleSource).toContain('data-speech-bubble-text-hash')
     expect(bubbleSource).toContain('data-speech-tts-text-hash')
     expect(bubbleSource).toContain('speechOutputDisplayState.display_message')
+    expect(bubbleSource).toContain('message: currentPage')
     expect(bridgeSource).toContain('readWindowSpeechOutputDisplayState')
     expect(bubbleSource).toContain('(current + 1) % pages.length')
     expect(bubbleSource).toContain(

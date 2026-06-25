@@ -8,8 +8,6 @@ describe('settingsStore persistence', () => {
   const originalSystemCellAIService =
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE
   const originalSelectAIService = process.env.NEXT_PUBLIC_SELECT_AI_SERVICE
-  const originalProjectionVisualAIService =
-    process.env.NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE
   const originalThoughtCoreBaseUrl =
     process.env.NEXT_PUBLIC_THOUGHT_CORE_BASE_URL
 
@@ -42,10 +40,6 @@ describe('settingsStore persistence', () => {
       originalSystemCellAIService
     )
     restoreEnv('NEXT_PUBLIC_SELECT_AI_SERVICE', originalSelectAIService)
-    restoreEnv(
-      'NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE',
-      originalProjectionVisualAIService
-    )
     restoreEnv('NEXT_PUBLIC_THOUGHT_CORE_BASE_URL', originalThoughtCoreBaseUrl)
   })
 
@@ -129,7 +123,6 @@ describe('settingsStore persistence', () => {
   it('uses the configured System Cell AI service over persisted provider state', () => {
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE = 'thought-core'
     process.env.NEXT_PUBLIC_SELECT_AI_SERVICE = ''
-    process.env.NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE = ''
     process.env.NEXT_PUBLIC_THOUGHT_CORE_BASE_URL = 'http://127.0.0.1:18888'
 
     localStorage.setItem(
@@ -149,5 +142,25 @@ describe('settingsStore persistence', () => {
     expect(settingsStore.getState().thoughtCoreUrl).toBe(
       'http://127.0.0.1:18888'
     )
+  })
+
+  it('does not use Projection Visual AI service env as a System Cell provider fallback', () => {
+    process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE = ''
+    process.env.NEXT_PUBLIC_SELECT_AI_SERVICE = ''
+    process.env.NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE = 'thought-core'
+
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        state: {
+          selectAIService: 'openai',
+        },
+        version: 0,
+      })
+    )
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().selectAIService).toBe('openai')
   })
 })

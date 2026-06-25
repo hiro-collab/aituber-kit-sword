@@ -466,6 +466,48 @@ describe('handlers', () => {
         })
       )
     })
+
+    it.each([
+      'light_off execute_succeeded command submitted external observation physical state。',
+      'light_on execute_succeeded command submitted external observation physical state。',
+    ])(
+      'light action response stays identical for speech bubble display and TTS: %s',
+      async (actionMessage) => {
+        const mockUpsertMessage = jest.fn()
+        ;(settingsStore.getState as jest.Mock).mockReturnValue({
+          poseConfigs: [],
+        })
+        ;(homeStore.getState as jest.Mock).mockReturnValue({
+          upsertMessage: mockUpsertMessage,
+        })
+
+        await speakMessageHandler(actionMessage)
+
+        const compactText =
+          'コマンドは送信済みです。実際に変わったかは未確認です。目視または別センサーで確認してください。'
+
+        expect(speakCharacter).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            message: compactText,
+            displayMessage: compactText,
+            sourceMessageId: expect.any(String),
+            sourceTurnId: expect.any(String),
+          }),
+          expect.any(Function),
+          expect.any(Function)
+        )
+        expect((window as any).__projectionVisualSpeechOutputSummaryV0).toEqual(
+          expect.objectContaining({
+            surface: 'tts_talk_message',
+            source_field: 'Talk.message',
+            meaning_class: 'command_accepted_unconfirmed',
+            text_length: Array.from(compactText).length,
+            raw_text_published: false,
+          })
+        )
+      }
+    )
   })
 
   describe('processAIResponse', () => {
