@@ -29,6 +29,7 @@ import i18next from 'i18next'
 import {
   preprocessMessage,
   handleTTSError,
+  resolveSpeechOutputMessage,
   writeSynthesizedSpeechOutputSummary,
 } from '../../../features/messages/speakCharacter'
 import {
@@ -231,21 +232,31 @@ describe('speakCharacter', () => {
       delete (window as any).__projectionVisualSpeechOutputSummaryV0
     })
 
-    it('records the actual synthesized Talk.message so bubble and VOICEVOX text drift is testable', () => {
-      writeSynthesizedSpeechOutputSummary({
-        emotion: 'neutral',
-        message: '実際に音声合成へ渡る文です',
-        displayMessage: '吹き出しに表示される文です',
+    it('uses the operator-visible display message as the canonical synthesized speech text', () => {
+      const talk = {
+        emotion: 'neutral' as const,
+        message: '古い内部文です',
+        displayMessage: '吹き出しと音声で共有する文です',
         sourceMessageId: 'assistant-message-1',
         sourceTurnId: 'turn-1',
+      }
+      expect(resolveSpeechOutputMessage(talk)).toBe(
+        '吹き出しと音声で共有する文です'
+      )
+
+      talk.message = resolveSpeechOutputMessage(talk)
+      writeSynthesizedSpeechOutputSummary({
+        ...talk,
       })
 
       const ttsSummary = (window as any)
         .__projectionVisualSpeechOutputSummaryV0
+      const displayState = (window as any)
+        .__projectionVisualSpeechOutputDisplayStateV0
       const bubbleSummary = buildSpeechOutputSummary({
         surface: 'projection_visual_assistant_bubble',
-        sourceField: 'homeStore.chatLog.latestAssistantMessage',
-        message: '吹き出しに表示される文です',
+        sourceField: 'speechOutputDisplayState.display_message',
+        message: '吹き出しと音声で共有する文です',
         messageId: 'assistant-message-1',
         turnId: 'turn-1',
       })
@@ -255,19 +266,30 @@ describe('speakCharacter', () => {
         expect.objectContaining({
           schema_version: 'projection_visual_speech_output_parity.v0',
           surface: 'tts_talk_message',
-          source_field: 'Talk.message.synthesized',
+          source_field: 'Talk.displayMessage.spoken',
           message_id: 'assistant-message-1',
           turn_id: 'turn-1',
-          text_length: Array.from('実際に音声合成へ渡る文です').length,
+          text_length: Array.from('吹き出しと音声で共有する文です').length,
           raw_text_published: false,
           raw_audio_published: false,
           provider_payload_published: false,
           private_data_published: false,
         })
       )
+      expect(displayState).toEqual(
+        expect.objectContaining({
+          schema_version: 'projection_visual_speech_output_parity.v0',
+          source_field: 'Talk.displayMessage.spoken',
+          message_id: 'assistant-message-1',
+          turn_id: 'turn-1',
+          display_message: '吹き出しと音声で共有する文です',
+          raw_text_local_only: true,
+          raw_text_published: false,
+        })
+      )
       expect(ttsSummary).not.toHaveProperty('text')
-      expect(parity.parity_status).toBe('text_mismatch')
-      expect(parity.text_hash_match).toBe(false)
+      expect(parity.parity_status).toBe('same_text_same_message')
+      expect(parity.text_hash_match).toBe(true)
     })
   })
 })

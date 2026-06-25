@@ -1,4 +1,5 @@
 import {
+  buildSelfOutputSpeechObservationSummary,
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
   sanitizeSpeechOutputSummary,
@@ -83,5 +84,50 @@ describe('speechOutputParitySummary', () => {
         private_data_published: false,
       })
     )
+  })
+
+  it('classifies self-output STT as non-user-turn evidence for bubble/TTS drift', () => {
+    const bubble = buildSpeechOutputSummary({
+      surface: 'projection_visual_assistant_bubble',
+      sourceField: 'homeStore.chatLog.latestAssistantMessage',
+      message: '吹き出しだけに出ている文です。',
+      messageId: 'assistant-message-1',
+      turnId: 'turn-1',
+    })
+    const tts = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.message.synthesized',
+      message: 'VOICEVOXで実際に喋った文です。',
+      messageId: 'assistant-message-1',
+      turnId: 'turn-1',
+    })
+
+    const observation = buildSelfOutputSpeechObservationSummary({
+      transcript: 'VOICEVOXで実際に喋った文です。',
+      confidence: 0.92,
+      bubble,
+      tts,
+      messageId: 'assistant-message-1',
+      turnId: 'turn-1',
+    })
+
+    expect(observation).toEqual(
+      expect.objectContaining({
+        route: 'self_output_observation',
+        speaker_role: 'system_self_output',
+        may_start_user_turn: false,
+        turn_adoption_authority: false,
+        transcript_surface: 'stt_self_output_observation',
+        observed_alignment: 'heard_matches_tts_bubble_mismatch',
+        text_hash_matches_tts: true,
+        text_hash_matches_bubble: false,
+        raw_text_published: false,
+        raw_audio_published: false,
+        provider_payload_published: false,
+        private_data_published: false,
+      })
+    )
+    expect(observation).not.toHaveProperty('transcript')
+    expect(observation).not.toHaveProperty('text')
   })
 })

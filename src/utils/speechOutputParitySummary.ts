@@ -6,6 +6,7 @@ export const SPEECH_OUTPUT_PARITY_SCHEMA_VERSION =
 export type SpeechOutputSurface =
   | 'projection_visual_assistant_bubble'
   | 'tts_talk_message'
+  | 'stt_self_output_observation'
 
 export type SpeechOutputSummary = {
   schema_version: typeof SPEECH_OUTPUT_PARITY_SCHEMA_VERSION
@@ -16,6 +17,19 @@ export type SpeechOutputSummary = {
   text_hash: string
   text_length: number
   meaning_class: string
+  raw_text_published: false
+  raw_audio_published: false
+  provider_payload_published: false
+  private_data_published: false
+}
+
+export type SpeechOutputDisplayState = {
+  schema_version: typeof SPEECH_OUTPUT_PARITY_SCHEMA_VERSION
+  source_field: string
+  message_id: string | null
+  turn_id: string | null
+  display_message: string
+  raw_text_local_only: true
   raw_text_published: false
   raw_audio_published: false
   provider_payload_published: false
@@ -42,7 +56,35 @@ export type SpeechOutputParitySummary = {
   private_data_published: false
 }
 
+export type SelfOutputSpeechObservationSummary = {
+  schema_version: typeof SPEECH_OUTPUT_PARITY_SCHEMA_VERSION
+  route: 'self_output_observation'
+  speaker_role: 'system_self_output'
+  may_start_user_turn: false
+  turn_adoption_authority: false
+  transcript_surface: 'stt_self_output_observation'
+  transcript_text_hash: string
+  transcript_text_length: number
+  transcript_meaning_class: string
+  confidence_class: 'high' | 'medium' | 'low' | 'unknown'
+  observed_alignment:
+    | 'heard_matches_bubble_and_tts'
+    | 'heard_matches_tts_bubble_mismatch'
+    | 'heard_matches_bubble_tts_mismatch'
+    | 'heard_mismatch_or_low_confidence'
+    | 'tts_summary_unavailable'
+  text_hash_matches_bubble: boolean
+  text_hash_matches_tts: boolean
+  message_id: string | null
+  turn_id: string | null
+  raw_text_published: false
+  raw_audio_published: false
+  provider_payload_published: false
+  private_data_published: false
+}
+
 const SAFE_IDENTIFIER_PATTERN = /^[a-zA-Z0-9._:-]{1,128}$/
+const MAX_LOCAL_DISPLAY_MESSAGE_CHARS = 1600
 
 export const safeSpeechOutputIdentifier = (value: unknown): string | null => {
   if (typeof value !== 'string') return null
@@ -76,6 +118,30 @@ export const buildSpeechOutputSummary = (args: {
     text_hash: hashSpeechOutputText(normalizedText),
     text_length: Array.from(normalizedText).length,
     meaning_class: classifyReviewProofMessage(normalizedText),
+    raw_text_published: false,
+    raw_audio_published: false,
+    provider_payload_published: false,
+    private_data_published: false,
+  }
+}
+
+export const buildSpeechOutputDisplayState = (args: {
+  sourceField: string
+  message: string
+  messageId?: string | null
+  turnId?: string | null
+}): SpeechOutputDisplayState => {
+  const displayMessage = args.message
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_LOCAL_DISPLAY_MESSAGE_CHARS)
+  return {
+    schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
+    source_field: args.sourceField,
+    message_id: safeSpeechOutputIdentifier(args.messageId),
+    turn_id: safeSpeechOutputIdentifier(args.turnId),
+    display_message: displayMessage,
+    raw_text_local_only: true,
     raw_text_published: false,
     raw_audio_published: false,
     provider_payload_published: false,
@@ -119,6 +185,74 @@ export const compareSpeechOutputSummaries = (
   }
 }
 
+export const buildSelfOutputSpeechObservationSummary = (args: {
+  transcript: string
+  confidence?: number | null
+  bubble: SpeechOutputSummary
+  tts: SpeechOutputSummary | null
+  messageId?: string | null
+  turnId?: string | null
+}): SelfOutputSpeechObservationSummary => {
+  const transcript = buildSpeechOutputSummary({
+    surface: 'stt_self_output_observation',
+    sourceField: 'self_output_stt_transcript.local',
+    message: args.transcript,
+    messageId: args.messageId,
+    turnId: args.turnId,
+  })
+  const highEnoughConfidence =
+    typeof args.confidence !== 'number' || args.confidence >= 0.6
+  const textHashMatchesBubble =
+    transcript.text_hash === args.bubble.text_hash &&
+    transcript.text_length === args.bubble.text_length
+  const textHashMatchesTts =
+    Boolean(args.tts) &&
+    transcript.text_hash === args.tts?.text_hash &&
+    transcript.text_length === args.tts.text_length
+  const confidenceClass =
+    typeof args.confidence !== 'number'
+      ? 'unknown'
+      : args.confidence >= 0.8
+        ? 'high'
+        : args.confidence >= 0.6
+          ? 'medium'
+          : 'low'
+  const observedAlignment: SelfOutputSpeechObservationSummary['observed_alignment'] =
+    !args.tts
+      ? 'tts_summary_unavailable'
+      : !highEnoughConfidence
+        ? 'heard_mismatch_or_low_confidence'
+        : textHashMatchesBubble && textHashMatchesTts
+          ? 'heard_matches_bubble_and_tts'
+          : textHashMatchesTts
+            ? 'heard_matches_tts_bubble_mismatch'
+            : textHashMatchesBubble
+              ? 'heard_matches_bubble_tts_mismatch'
+              : 'heard_mismatch_or_low_confidence'
+
+  return {
+    schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
+    route: 'self_output_observation',
+    speaker_role: 'system_self_output',
+    may_start_user_turn: false,
+    turn_adoption_authority: false,
+    transcript_surface: 'stt_self_output_observation',
+    transcript_text_hash: transcript.text_hash,
+    transcript_text_length: transcript.text_length,
+    transcript_meaning_class: transcript.meaning_class,
+    confidence_class: confidenceClass,
+    observed_alignment: observedAlignment,
+    text_hash_matches_bubble: textHashMatchesBubble,
+    text_hash_matches_tts: textHashMatchesTts,
+    message_id: safeSpeechOutputIdentifier(args.messageId),
+    turn_id: safeSpeechOutputIdentifier(args.turnId),
+    raw_text_published: false,
+    raw_audio_published: false,
+    provider_payload_published: false,
+    private_data_published: false,
+  }
+}
+
 export const readWindowSpeechOutputSummary = (): SpeechOutputSummary | null => {
   if (typeof window === 'undefined') return null
   const value = (
@@ -128,6 +262,17 @@ export const readWindowSpeechOutputSummary = (): SpeechOutputSummary | null => {
   ).__projectionVisualSpeechOutputSummaryV0
   return sanitizeSpeechOutputSummary(value)
 }
+
+export const readWindowSpeechOutputDisplayState =
+  (): SpeechOutputDisplayState | null => {
+    if (typeof window === 'undefined') return null
+    const value = (
+      window as unknown as {
+        __projectionVisualSpeechOutputDisplayStateV0?: SpeechOutputDisplayState
+      }
+    ).__projectionVisualSpeechOutputDisplayStateV0
+    return sanitizeSpeechOutputDisplayState(value)
+  }
 
 export const writeWindowSpeechOutputSummary = (
   summary: SpeechOutputSummary
@@ -141,6 +286,22 @@ export const writeWindowSpeechOutputSummary = (
   window.dispatchEvent(
     new CustomEvent('projectionVisualSpeechOutputSummaryV0', {
       detail: summary,
+    })
+  )
+}
+
+export const writeWindowSpeechOutputDisplayState = (
+  state: SpeechOutputDisplayState
+) => {
+  if (typeof window === 'undefined') return
+  ;(
+    window as unknown as {
+      __projectionVisualSpeechOutputDisplayStateV0?: SpeechOutputDisplayState
+    }
+  ).__projectionVisualSpeechOutputDisplayStateV0 = state
+  window.dispatchEvent(
+    new CustomEvent('projectionVisualSpeechOutputDisplayStateV0', {
+      detail: state,
     })
   )
 }
@@ -166,7 +327,8 @@ export const sanitizeSpeechOutputSummary = (
   if (value.schema_version !== SPEECH_OUTPUT_PARITY_SCHEMA_VERSION) return null
   if (
     value.surface !== 'projection_visual_assistant_bubble' &&
-    value.surface !== 'tts_talk_message'
+    value.surface !== 'tts_talk_message' &&
+    value.surface !== 'stt_self_output_observation'
   ) {
     return null
   }
@@ -196,6 +358,37 @@ export const sanitizeSpeechOutputSummary = (
     text_hash: textHash,
     text_length: textLength,
     meaning_class: meaningClass,
+    raw_text_published: false,
+    raw_audio_published: false,
+    provider_payload_published: false,
+    private_data_published: false,
+  }
+}
+
+export const sanitizeSpeechOutputDisplayState = (
+  value: unknown
+): SpeechOutputDisplayState | null => {
+  if (!isRecord(value)) return null
+  if (value.schema_version !== SPEECH_OUTPUT_PARITY_SCHEMA_VERSION) return null
+  const displayMessage =
+    typeof value.display_message === 'string'
+      ? value.display_message
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, MAX_LOCAL_DISPLAY_MESSAGE_CHARS)
+      : ''
+  if (!displayMessage) return null
+  const sourceField =
+    typeof value.source_field === 'string'
+      ? value.source_field.slice(0, 96)
+      : ''
+  return {
+    schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
+    source_field: sourceField,
+    message_id: safeSpeechOutputIdentifier(value.message_id),
+    turn_id: safeSpeechOutputIdentifier(value.turn_id),
+    display_message: displayMessage,
+    raw_text_local_only: true,
     raw_text_published: false,
     raw_audio_published: false,
     provider_payload_published: false,

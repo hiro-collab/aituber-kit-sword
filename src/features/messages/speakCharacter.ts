@@ -24,7 +24,9 @@ import {
   containsEnglish,
 } from '@/utils/textProcessing'
 import {
+  buildSpeechOutputDisplayState,
   buildSpeechOutputSummary,
+  writeWindowSpeechOutputDisplayState,
   writeWindowSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
 
@@ -74,15 +76,38 @@ export function preprocessMessage(
 export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
   if (!talk.message.trim()) return
 
-  writeWindowSpeechOutputSummary(
-    buildSpeechOutputSummary({
-      surface: 'tts_talk_message',
-      sourceField: 'Talk.message.synthesized',
+  const sourceField = resolveSpeechOutputSourceField(talk)
+  writeWindowSpeechOutputDisplayState(
+    buildSpeechOutputDisplayState({
+      sourceField,
       message: talk.message,
       messageId: talk.sourceMessageId,
       turnId: talk.sourceTurnId,
     })
   )
+  writeWindowSpeechOutputSummary(
+    buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField,
+      message: talk.message,
+      messageId: talk.sourceMessageId,
+      turnId: talk.sourceTurnId,
+    })
+  )
+}
+
+export const resolveSpeechOutputMessage = (talk: Talk): string => {
+  const displayMessage =
+    typeof talk.displayMessage === 'string' ? talk.displayMessage.trim() : ''
+  return displayMessage || talk.message
+}
+
+export const resolveSpeechOutputSourceField = (talk: Talk): string => {
+  const displayMessage =
+    typeof talk.displayMessage === 'string' ? talk.displayMessage.trim() : ''
+  return displayMessage
+    ? 'Talk.displayMessage.spoken'
+    : 'Talk.message.synthesized'
 }
 
 async function synthesizeVoice(
@@ -230,7 +255,8 @@ const createSpeakCharacter = () => {
       return
     }
 
-    const processedMessage = preprocessMessage(talk.message, ss)
+    const speechOutputMessage = resolveSpeechOutputMessage(talk)
+    const processedMessage = preprocessMessage(speechOutputMessage, ss)
     if (!processedMessage && !talk.buffer) {
       if (onComplete && !called) {
         called = true

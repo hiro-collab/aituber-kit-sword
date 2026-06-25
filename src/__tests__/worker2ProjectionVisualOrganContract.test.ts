@@ -616,6 +616,9 @@ describe('worker-2 projection visual organ contract', () => {
     const speakCharacterSource = readSource(
       'src/features/messages/speakCharacter.ts'
     )
+    const bridgeSource = readSource(
+      'src/components/projectionVisualDisplayStateBridge.tsx'
+    )
     const cssSource = readSource('src/styles/globals.css')
 
     expect(bubbleSource).toContain('const MAX_OPERATOR_VISIBLE_LINES = 6')
@@ -635,11 +638,16 @@ describe('worker-2 projection visual organ contract', () => {
     expect(speechParitySource).toContain(
       '__projectionVisualSpeechOutputSummaryV0'
     )
+    expect(speechParitySource).toContain(
+      '__projectionVisualSpeechOutputDisplayStateV0'
+    )
+    expect(speechParitySource).toContain('self_output_observation')
+    expect(speechParitySource).toContain('may_start_user_turn: false')
     expect(speakCharacterSource).toContain(
       'writeSynthesizedSpeechOutputSummary'
     )
     expect(speakCharacterSource).toContain(
-      "sourceField: 'Talk.message.synthesized'"
+      "'Talk.displayMessage.spoken'"
     )
     expect(
       speakCharacterSource.indexOf('writeSynthesizedSpeechOutputSummary(talk)')
@@ -652,6 +660,8 @@ describe('worker-2 projection visual organ contract', () => {
     expect(bubbleSource).toContain('data-speech-parity-status')
     expect(bubbleSource).toContain('data-speech-bubble-text-hash')
     expect(bubbleSource).toContain('data-speech-tts-text-hash')
+    expect(bubbleSource).toContain('speechOutputDisplayState.display_message')
+    expect(bridgeSource).toContain('readWindowSpeechOutputDisplayState')
     expect(bubbleSource).toContain('(current + 1) % pages.length')
     expect(bubbleSource).toContain(
       "variant?: 'operator' | 'passive' | 'stage-output'"

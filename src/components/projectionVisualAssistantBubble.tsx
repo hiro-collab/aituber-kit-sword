@@ -9,8 +9,10 @@ import { compactReviewProofMessage } from '@/utils/reviewProofMessage'
 import {
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
+  readWindowSpeechOutputDisplayState,
   readWindowSpeechOutputSummary,
   writeWindowSpeechOutputParitySummary,
+  type SpeechOutputDisplayState,
   type SpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
 
@@ -123,6 +125,10 @@ export const ProjectionVisualAssistantBubble = ({
   const passiveSpeechOutputSummary = projectionDisplayStore(
     (s) => s.speechOutputSummary
   )
+  const [operatorSpeechOutputDisplayState, setOperatorSpeechOutputDisplayState] =
+    useState<SpeechOutputDisplayState | null>(() =>
+      readWindowSpeechOutputDisplayState()
+    )
   const characterName = settingsStore((s) => s.characterName)
   const showCharacterName = settingsStore((s) => s.showCharacterName)
   const poseConfigs = settingsStore((s) => s.poseConfigs)
@@ -132,12 +138,24 @@ export const ProjectionVisualAssistantBubble = ({
   const shouldUseProjectionDisplayMessage =
     variant === 'stage-output' ||
     (variant === 'passive' && Boolean(passiveAssistantMessage))
+  const latestChatAssistantMessageEntry = getLatestAssistantMessageEntry(chatLog)
+  const shouldUseOperatorSpeechDisplayMessage =
+    variant === 'operator' &&
+    Boolean(operatorSpeechOutputDisplayState?.display_message) &&
+    (!latestChatAssistantMessageEntry.id ||
+      operatorSpeechOutputDisplayState?.message_id ===
+        latestChatAssistantMessageEntry.id)
   const latestAssistantMessageEntry = shouldUseProjectionDisplayMessage
     ? {
         content: passiveAssistantMessage,
         id: passiveAssistantMessageId ?? undefined,
       }
-    : getLatestAssistantMessageEntry(chatLog)
+    : shouldUseOperatorSpeechDisplayMessage
+      ? {
+          content: operatorSpeechOutputDisplayState?.display_message || '',
+          id: operatorSpeechOutputDisplayState?.message_id ?? undefined,
+        }
+      : latestChatAssistantMessageEntry
   const latestAssistantMessage = latestAssistantMessageEntry.content
   const motionPattern = useMemo(
     () => buildMotionPattern(poseConfigs.map((pose) => pose.id)),
@@ -155,7 +173,9 @@ export const ProjectionVisualAssistantBubble = ({
   const currentPage = pages[pageIndex]?.text ?? cleanedMessage
   const bubbleSourceField = shouldUseProjectionDisplayMessage
     ? 'projectionDisplayStore.assistantMessage'
-    : 'homeStore.chatLog.latestAssistantMessage'
+    : shouldUseOperatorSpeechDisplayMessage
+      ? 'speechOutputDisplayState.display_message'
+      : 'homeStore.chatLog.latestAssistantMessage'
   const bubbleSummary = useMemo(
     () =>
       buildSpeechOutputSummary({
@@ -190,6 +210,7 @@ export const ProjectionVisualAssistantBubble = ({
           ? (event.detail as SpeechOutputSummary | undefined)
           : undefined
       setOperatorSpeechOutputSummary(detail ?? readWindowSpeechOutputSummary())
+      setOperatorSpeechOutputDisplayState(readWindowSpeechOutputDisplayState())
     }
 
     updateSpeechSummary()

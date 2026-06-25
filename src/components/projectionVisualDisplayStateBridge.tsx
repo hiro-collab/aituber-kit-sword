@@ -5,6 +5,7 @@ import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
 import { getLatestAssistantMessageEntry } from '@/utils/assistantMessageUtils'
 import {
+  readWindowSpeechOutputDisplayState,
   readWindowSpeechOutputSummary,
   sanitizeSpeechOutputSummary,
   type SpeechOutputSummary,
@@ -52,10 +53,21 @@ const readOperatorDisplayState = () => {
   const settings = settingsStore.getState()
   const chatLog = homeStore.getState().chatLog
   const latestAssistantMessage = getLatestAssistantMessageEntry(chatLog)
+  const currentSpeechDisplayState = readWindowSpeechOutputDisplayState()
+  const currentSpeechMessageMatchesLatest =
+    Boolean(currentSpeechDisplayState?.display_message) &&
+    (!latestAssistantMessage.id ||
+      currentSpeechDisplayState?.message_id === latestAssistantMessage.id)
+  const currentSpeechDisplayMessage =
+    currentSpeechDisplayState?.display_message || ''
 
   return {
-    assistantMessage: latestAssistantMessage.content,
-    assistantMessageId: latestAssistantMessage.id,
+    assistantMessage: currentSpeechMessageMatchesLatest
+      ? currentSpeechDisplayMessage
+      : latestAssistantMessage.content,
+    assistantMessageId: currentSpeechMessageMatchesLatest
+      ? currentSpeechDisplayState?.message_id
+      : latestAssistantMessage.id,
     speechOutputSummary: readWindowSpeechOutputSummary(),
     settings: {
       modelType: settings.modelType,
