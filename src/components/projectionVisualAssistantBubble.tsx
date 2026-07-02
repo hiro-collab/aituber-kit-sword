@@ -171,11 +171,25 @@ export const ProjectionVisualAssistantBubble = ({
     [latestAssistantMessage, motionPattern]
   )
   const currentPage = pages[pageIndex]?.text ?? cleanedMessage
+  const bubbleTextScopeClass =
+    pages.length > 1 ? 'current_visible_page' : 'compacted_full_text'
   const bubbleSourceField = shouldUseProjectionDisplayMessage
     ? 'projectionDisplayStore.assistantMessage'
     : shouldUseOperatorSpeechDisplayMessage
       ? 'speechOutputDisplayState.display_message'
       : 'homeStore.chatLog.latestAssistantMessage'
+  const intendedTextSummary = useMemo(
+    () =>
+      buildSpeechOutputSummary({
+        surface: 'projection_visual_intended_text',
+        sourceField: bubbleSourceField,
+        message: cleanedMessage,
+        messageId: latestAssistantMessageEntry.id,
+        textRoleClass: 'intended_text',
+        textScopeClass: 'compacted_full_text',
+      }),
+    [bubbleSourceField, cleanedMessage, latestAssistantMessageEntry.id]
+  )
   const bubbleSummary = useMemo(
     () =>
       buildSpeechOutputSummary({
@@ -183,8 +197,15 @@ export const ProjectionVisualAssistantBubble = ({
         sourceField: bubbleSourceField,
         message: currentPage,
         messageId: latestAssistantMessageEntry.id,
+        textRoleClass: 'bubble_text',
+        textScopeClass: bubbleTextScopeClass,
       }),
-    [bubbleSourceField, currentPage, latestAssistantMessageEntry.id]
+    [
+      bubbleSourceField,
+      bubbleTextScopeClass,
+      currentPage,
+      latestAssistantMessageEntry.id,
+    ]
   )
   const [operatorSpeechOutputSummary, setOperatorSpeechOutputSummary] =
     useState<SpeechOutputSummary | null>(() => readWindowSpeechOutputSummary())
@@ -192,8 +213,11 @@ export const ProjectionVisualAssistantBubble = ({
     ? passiveSpeechOutputSummary
     : operatorSpeechOutputSummary
   const paritySummary = useMemo(
-    () => compareSpeechOutputSummaries(bubbleSummary, ttsSpeechOutputSummary),
-    [bubbleSummary, ttsSpeechOutputSummary]
+    () =>
+      compareSpeechOutputSummaries(bubbleSummary, ttsSpeechOutputSummary, {
+        intended: intendedTextSummary,
+      }),
+    [bubbleSummary, intendedTextSummary, ttsSpeechOutputSummary]
   )
   const maxVisibleLines =
     variant === 'operator'
@@ -286,6 +310,13 @@ export const ProjectionVisualAssistantBubble = ({
       }
       data-projection-visual-speech-parity-v0={paritySummary.schema_version}
       data-speech-parity-status={paritySummary.parity_status}
+      data-speech-bubble-text-scope={paritySummary.bubble_text_scope_class}
+      data-speech-tts-provider-input-class={
+        paritySummary.tts_provider_input_text_class
+      }
+      data-speech-heard-text-class={paritySummary.heard_text_class}
+      data-speech-intended-text-hash={intendedTextSummary.text_hash}
+      data-speech-intended-text-length={intendedTextSummary.text_length}
       data-speech-message-id-match={String(paritySummary.message_id_match)}
       data-speech-text-hash-match={String(paritySummary.text_hash_match)}
       data-speech-bubble-source-field={bubbleSummary.source_field}

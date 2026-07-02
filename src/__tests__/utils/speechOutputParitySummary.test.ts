@@ -27,6 +27,11 @@ describe('speechOutputParitySummary', () => {
     expect(parity.parity_status).toBe('same_text_same_message')
     expect(parity.message_id_match).toBe(true)
     expect(parity.text_hash_match).toBe(true)
+    expect(parity.bubble_text_scope_class).toBe('current_visible_page')
+    expect(parity.tts_provider_input_text_class).toBe(
+      'tts_provider_input_text_present'
+    )
+    expect(parity.heard_text_class).toBe('not_collected_or_not_authorized')
     expect(bubble).not.toHaveProperty('text')
     expect(tts).not.toHaveProperty('text')
     expect(parity.raw_text_published).toBe(false)
@@ -56,11 +61,56 @@ describe('speechOutputParitySummary', () => {
     expect(parity.text_hash_match).toBe(true)
   })
 
+  it('classifies same-message bubble/TTS text scope mismatch without exact same-text claim', () => {
+    const intended = buildSpeechOutputSummary({
+      surface: 'projection_visual_intended_text',
+      sourceField: 'speechOutputDisplayState.display_message',
+      message: '最初のページです。次のページです。',
+      messageId: 'assistant-message-current',
+      turnId: 'turn-current',
+      textRoleClass: 'intended_text',
+      textScopeClass: 'compacted_full_text',
+    })
+    const bubble = buildSpeechOutputSummary({
+      surface: 'projection_visual_assistant_bubble',
+      sourceField: 'speechOutputDisplayState.display_message',
+      message: '最初のページです。',
+      messageId: 'assistant-message-current',
+      turnId: 'turn-current',
+      textRoleClass: 'bubble_text',
+      textScopeClass: 'current_visible_page',
+    })
+    const tts = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.displayMessage.spoken',
+      message: '最初のページです。次のページです。',
+      messageId: 'assistant-message-current',
+      turnId: 'turn-current',
+      textRoleClass: 'tts_provider_input_text',
+      textScopeClass: 'tts_provider_input',
+    })
+
+    const parity = compareSpeechOutputSummaries(bubble, tts, { intended })
+
+    expect(parity.intended).toEqual(intended)
+    expect(parity.parity_status).toBe('same_message_text_scope_mismatch')
+    expect(parity.message_id_match).toBe(true)
+    expect(parity.text_hash_match).toBe(false)
+    expect(parity.bubble_text_scope_class).toBe('current_visible_page')
+    expect(parity.tts_provider_input_text_class).toBe(
+      'tts_provider_input_text_present'
+    )
+    expect(parity.heard_text_class).toBe('not_collected_or_not_authorized')
+    expect(parity.raw_text_published).toBe(false)
+  })
+
   it('sanitizes unsafe ids and malformed hashes from passive display state', () => {
     const summary = sanitizeSpeechOutputSummary({
       schema_version: 'projection_visual_speech_output_parity.v0',
       surface: 'tts_talk_message',
       source_field: 'Talk.message',
+      text_role_class: 'tts_provider_input_text',
+      text_scope_class: 'tts_provider_input',
       message_id: 'C:\\private\\message.txt',
       turn_id: 'turn-safe',
       text_hash: 'not-a-hash',
@@ -76,6 +126,8 @@ describe('speechOutputParitySummary', () => {
       expect.objectContaining({
         message_id: null,
         turn_id: 'turn-safe',
+        text_role_class: 'tts_provider_input_text',
+        text_scope_class: 'tts_provider_input',
         text_hash: '00000000',
         text_length: 1600,
         raw_text_published: false,

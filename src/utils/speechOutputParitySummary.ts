@@ -4,14 +4,31 @@ export const SPEECH_OUTPUT_PARITY_SCHEMA_VERSION =
   'projection_visual_speech_output_parity.v0'
 
 export type SpeechOutputSurface =
+  | 'projection_visual_intended_text'
   | 'projection_visual_assistant_bubble'
   | 'tts_talk_message'
   | 'stt_self_output_observation'
+
+export type SpeechOutputTextRoleClass =
+  | 'intended_text'
+  | 'bubble_text'
+  | 'tts_provider_input_text'
+  | 'heard_text_not_collected_or_not_authorized'
+
+export type SpeechOutputTextScopeClass =
+  | 'full_message'
+  | 'compacted_full_text'
+  | 'current_visible_page'
+  | 'tts_provider_input'
+  | 'not_collected_or_not_authorized'
+  | 'scope_unknown'
 
 export type SpeechOutputSummary = {
   schema_version: typeof SPEECH_OUTPUT_PARITY_SCHEMA_VERSION
   surface: SpeechOutputSurface
   source_field: string
+  text_role_class: SpeechOutputTextRoleClass
+  text_scope_class: SpeechOutputTextScopeClass
   message_id: string | null
   turn_id: string | null
   text_hash: string
@@ -39,15 +56,22 @@ export type SpeechOutputDisplayState = {
 export type SpeechOutputParityStatus =
   | 'same_text_same_message'
   | 'same_text_message_id_unavailable'
+  | 'same_message_text_scope_mismatch'
   | 'text_match_message_id_mismatch'
   | 'text_mismatch'
   | 'tts_summary_unavailable'
 
 export type SpeechOutputParitySummary = {
   schema_version: typeof SPEECH_OUTPUT_PARITY_SCHEMA_VERSION
+  intended: SpeechOutputSummary | null
   bubble: SpeechOutputSummary
   tts: SpeechOutputSummary | null
   parity_status: SpeechOutputParityStatus
+  bubble_text_scope_class: SpeechOutputTextScopeClass
+  tts_provider_input_text_class:
+    | 'tts_provider_input_text_present'
+    | 'tts_provider_input_text_unavailable'
+  heard_text_class: 'not_collected_or_not_authorized'
   message_id_match: boolean
   text_hash_match: boolean
   raw_text_published: false
@@ -101,18 +125,44 @@ export const hashSpeechOutputText = (value: string): string => {
   return hash.toString(16).padStart(8, '0')
 }
 
+const defaultSpeechOutputTextRoleClass = (
+  surface: SpeechOutputSurface
+): SpeechOutputTextRoleClass => {
+  if (surface === 'projection_visual_intended_text') return 'intended_text'
+  if (surface === 'projection_visual_assistant_bubble') return 'bubble_text'
+  if (surface === 'tts_talk_message') return 'tts_provider_input_text'
+  return 'heard_text_not_collected_or_not_authorized'
+}
+
+const defaultSpeechOutputTextScopeClass = (
+  surface: SpeechOutputSurface
+): SpeechOutputTextScopeClass => {
+  if (surface === 'projection_visual_intended_text') return 'compacted_full_text'
+  if (surface === 'projection_visual_assistant_bubble') {
+    return 'current_visible_page'
+  }
+  if (surface === 'tts_talk_message') return 'tts_provider_input'
+  return 'not_collected_or_not_authorized'
+}
+
 export const buildSpeechOutputSummary = (args: {
   surface: SpeechOutputSurface
   sourceField: string
   message: string
   messageId?: string | null
   turnId?: string | null
+  textRoleClass?: SpeechOutputTextRoleClass
+  textScopeClass?: SpeechOutputTextScopeClass
 }): SpeechOutputSummary => {
   const normalizedText = args.message.replace(/\s+/g, ' ').trim()
   return {
     schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
     surface: args.surface,
     source_field: args.sourceField,
+    text_role_class:
+      args.textRoleClass ?? defaultSpeechOutputTextRoleClass(args.surface),
+    text_scope_class:
+      args.textScopeClass ?? defaultSpeechOutputTextScopeClass(args.surface),
     message_id: safeSpeechOutputIdentifier(args.messageId),
     turn_id: safeSpeechOutputIdentifier(args.turnId),
     text_hash: hashSpeechOutputText(normalizedText),
@@ -151,7 +201,8 @@ export const buildSpeechOutputDisplayState = (args: {
 
 export const compareSpeechOutputSummaries = (
   bubble: SpeechOutputSummary,
-  tts: SpeechOutputSummary | null
+  tts: SpeechOutputSummary | null,
+  args: { intended?: SpeechOutputSummary | null } = {}
 ): SpeechOutputParitySummary => {
   const textHashMatch =
     Boolean(tts) &&
@@ -165,6 +216,8 @@ export const compareSpeechOutputSummaries = (
     ? 'tts_summary_unavailable'
     : textHashMatch && messageIdMatch
       ? 'same_text_same_message'
+      : messageIdMatch
+        ? 'same_message_text_scope_mismatch'
       : textHashMatch && (!bubble.message_id || !tts.message_id)
         ? 'same_text_message_id_unavailable'
         : textHashMatch
@@ -173,9 +226,15 @@ export const compareSpeechOutputSummaries = (
 
   return {
     schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
+    intended: args.intended ?? null,
     bubble,
     tts,
     parity_status: parityStatus,
+    bubble_text_scope_class: bubble.text_scope_class,
+    tts_provider_input_text_class: tts
+      ? 'tts_provider_input_text_present'
+      : 'tts_provider_input_text_unavailable',
+    heard_text_class: 'not_collected_or_not_authorized',
     message_id_match: messageIdMatch,
     text_hash_match: textHashMatch,
     raw_text_published: false,
@@ -327,6 +386,7 @@ export const sanitizeSpeechOutputSummary = (
   if (value.schema_version !== SPEECH_OUTPUT_PARITY_SCHEMA_VERSION) return null
   if (
     value.surface !== 'projection_visual_assistant_bubble' &&
+    value.surface !== 'projection_visual_intended_text' &&
     value.surface !== 'tts_talk_message' &&
     value.surface !== 'stt_self_output_observation'
   ) {
@@ -348,11 +408,29 @@ export const sanitizeSpeechOutputSummary = (
     typeof value.meaning_class === 'string'
       ? value.meaning_class.slice(0, 96)
       : 'normal_conversation_fallback'
+  const textRoleClass =
+    value.text_role_class === 'intended_text' ||
+    value.text_role_class === 'bubble_text' ||
+    value.text_role_class === 'tts_provider_input_text' ||
+    value.text_role_class === 'heard_text_not_collected_or_not_authorized'
+      ? value.text_role_class
+      : defaultSpeechOutputTextRoleClass(value.surface)
+  const textScopeClass =
+    value.text_scope_class === 'full_message' ||
+    value.text_scope_class === 'compacted_full_text' ||
+    value.text_scope_class === 'current_visible_page' ||
+    value.text_scope_class === 'tts_provider_input' ||
+    value.text_scope_class === 'not_collected_or_not_authorized' ||
+    value.text_scope_class === 'scope_unknown'
+      ? value.text_scope_class
+      : defaultSpeechOutputTextScopeClass(value.surface)
 
   return {
     schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
     surface: value.surface,
     source_field: sourceField,
+    text_role_class: textRoleClass,
+    text_scope_class: textScopeClass,
     message_id: safeSpeechOutputIdentifier(value.message_id),
     turn_id: safeSpeechOutputIdentifier(value.turn_id),
     text_hash: textHash,

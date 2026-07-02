@@ -645,6 +645,15 @@ describe('worker-2 projection visual organ contract', () => {
     expect(speechParitySource).toContain(
       'projection_visual_speech_output_parity.v0'
     )
+    expect(speechParitySource).toContain('projection_visual_intended_text')
+    expect(speechParitySource).toContain('text_role_class')
+    expect(speechParitySource).toContain('text_scope_class')
+    expect(speechParitySource).toContain('same_message_text_scope_mismatch')
+    expect(speechParitySource).toContain('bubble_text_scope_class')
+    expect(speechParitySource).toContain('tts_provider_input_text_class')
+    expect(speechParitySource).toContain(
+      "heard_text_class: 'not_collected_or_not_authorized'"
+    )
     expect(speechParitySource).toContain(
       '__projectionVisualSpeechOutputSummaryV0'
     )
@@ -672,6 +681,11 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(bubbleSource).toContain('data-projection-visual-speech-parity-v0')
     expect(bubbleSource).toContain('data-speech-parity-status')
+    expect(bubbleSource).toContain('data-speech-bubble-text-scope')
+    expect(bubbleSource).toContain('data-speech-tts-provider-input-class')
+    expect(bubbleSource).toContain('data-speech-heard-text-class')
+    expect(bubbleSource).toContain('data-speech-intended-text-hash')
+    expect(bubbleSource).toContain('textScopeClass: bubbleTextScopeClass')
     expect(bubbleSource).toContain('data-speech-bubble-text-hash')
     expect(bubbleSource).toContain('data-speech-tts-text-hash')
     expect(bubbleSource).toContain('speechOutputDisplayState.display_message')

@@ -277,6 +277,8 @@ const handleSpeakAndStateUpdate = (
       message: outputMessage,
       messageId: speechLink.assistantMessageId,
       turnId: speechLink.assistantTurnId ?? sessionId,
+      textRoleClass: 'tts_provider_input_text',
+      textScopeClass: 'tts_provider_input',
     })
   )
 

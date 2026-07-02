@@ -256,6 +256,15 @@ describe('speakCharacter', () => {
         message: '吹き出しと音声で共有する文です',
         messageId: 'assistant-message-1',
         turnId: 'turn-1',
+        textRoleClass: 'bubble_text',
+        textScopeClass: 'compacted_full_text',
+      })
+      const internalMessageSummary = buildSpeechOutputSummary({
+        surface: 'tts_talk_message',
+        sourceField: 'Talk.message',
+        message: '古い内部文です',
+        messageId: 'assistant-message-1',
+        turnId: 'turn-1',
       })
       const parity = compareSpeechOutputSummaries(bubbleSummary, ttsSummary)
 
@@ -264,6 +273,8 @@ describe('speakCharacter', () => {
           schema_version: 'projection_visual_speech_output_parity.v0',
           surface: 'tts_talk_message',
           source_field: 'Talk.displayMessage.spoken',
+          text_role_class: 'tts_provider_input_text',
+          text_scope_class: 'tts_provider_input',
           message_id: 'assistant-message-1',
           turn_id: 'turn-1',
           text_length: Array.from('吹き出しと音声で共有する文です').length,
@@ -285,8 +296,13 @@ describe('speakCharacter', () => {
         })
       )
       expect(ttsSummary).not.toHaveProperty('text')
+      expect(ttsSummary.text_hash).not.toBe(internalMessageSummary.text_hash)
       expect(parity.parity_status).toBe('same_text_same_message')
       expect(parity.text_hash_match).toBe(true)
+      expect(parity.tts_provider_input_text_class).toBe(
+        'tts_provider_input_text_present'
+      )
+      expect(parity.heard_text_class).toBe('not_collected_or_not_authorized')
     })
   })
 })

@@ -93,6 +93,8 @@ export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
       message: speechOutputMessage,
       messageId: talk.sourceMessageId,
       turnId: talk.sourceTurnId,
+      textRoleClass: 'tts_provider_input_text',
+      textScopeClass: 'tts_provider_input',
     })
   )
 }
