@@ -898,6 +898,52 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain('event.user_text || event.request_id')
   })
 
+  it('keeps Projection Visual avatar motion readiness summary-only and class-coded', () => {
+    const hudSource = readSource('src/components/projectionVisualHud.tsx')
+    const messageInputSource = readSource(
+      'src/components/messageInputContainer.tsx'
+    )
+    const listeningPoseDiagnosticSource = readSource(
+      'src/features/gestureVoice/listeningPoseDiagnostic.ts'
+    )
+
+    expect(listeningPoseDiagnosticSource).toContain(
+      'projection_visual_listening_pose_gate_v0'
+    )
+    expect(listeningPoseDiagnosticSource).toContain(
+      'projection-visual-listening-pose-diagnostic'
+    )
+    expect(listeningPoseDiagnosticSource).toContain(
+      '__projectionVisualListeningPoseDiagnostic'
+    )
+    expect(listeningPoseDiagnosticSource).toContain('pose_id_class')
+    expect(listeningPoseDiagnosticSource).not.toContain('selectedVrmPath')
+    expect(listeningPoseDiagnosticSource).not.toContain('local_path')
+    expect(messageInputSource).toContain(
+      'publishProjectionVisualListeningPoseDiagnostic'
+    )
+    expect(messageInputSource).toContain('listening_pose_disabled')
+    expect(messageInputSource).toContain('target_model_type_unavailable')
+    expect(messageInputSource).toContain('vrm_model_not_ready')
+    expect(messageInputSource).toContain('listening_pose_config_missing')
+    expect(messageInputSource).toContain('listening_pose_apply_requested')
+    expect(messageInputSource).toContain('listening_pose_applied')
+    expect(messageInputSource).toContain('listening_pose_apply_failed')
+    expect(messageInputSource).toContain(
+      "console.warn('Listening pose apply failed'"
+    )
+    expect(messageInputSource).not.toContain(
+      "console.error('Failed to apply listening pose:', error)"
+    )
+    expect(hudSource).toContain('Avatar Motion')
+    expect(hudSource).toContain("label: 'POSE GATE'")
+    expect(hudSource).toContain("label: 'DANCE ASSET'")
+    expect(hudSource).toContain('dance_motion_asset_not_configured')
+    expect(hudSource).toContain('motion_asset_load_failed')
+    expect(hudSource).toContain('__projectionVisualMotionStimulusResult')
+    expect(hudSource).toContain('MOTION_STIMULUS_RECEIVER_RESULT_EVENT')
+  })
+
   it('keeps Thought Core API traces tied to projection-visual without trusting request URLs', () => {
     const source = readSource('src/pages/api/thoughtCoreChat.ts')
 

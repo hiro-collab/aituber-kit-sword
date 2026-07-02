@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import {
+  PROJECTION_VISUAL_LISTENING_POSE_DIAGNOSTIC_EVENT,
+  PROJECTION_VISUAL_LISTENING_POSE_DIAGNOSTIC_GLOBAL,
+  type ProjectionVisualListeningPoseDiagnostic,
+} from '@/features/gestureVoice/listeningPoseDiagnostic'
+import {
+  MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
+  type MotionStimulusReceiverResult,
+} from '@/features/motionRuntime/motionStimulusReceiver'
 
 type HudState = {
   fontSize: number
@@ -950,6 +959,82 @@ const compactSpeechPhaseLabel = (value: unknown): string => {
   return raw.replace(/^start_/, '').replace(/_/g, ' ')
 }
 
+const compactListeningPoseLabel = (
+  diagnostic: ProjectionVisualListeningPoseDiagnostic | null
+): string => {
+  const reason = diagnostic?.reason_code
+  if (!reason) return 'pending'
+  if (reason === 'listening_pose_disabled') return 'disabled'
+  if (reason === 'target_model_type_unavailable') return 'non vrm'
+  if (reason === 'vrm_model_not_ready') return 'no model'
+  if (reason === 'listening_pose_config_missing') return 'no pose'
+  if (reason === 'listening_pose_apply_requested') return 'request'
+  if (reason === 'listening_pose_applied') return 'applied'
+  if (reason === 'listening_pose_reset_to_idle') return 'reset'
+  if (reason === 'listening_pose_apply_failed') return 'failed'
+  return 'idle'
+}
+
+const listeningPoseHudState = (
+  diagnostic: ProjectionVisualListeningPoseDiagnostic | null
+): string => {
+  if (!diagnostic) return 'DEGRADED'
+  if (diagnostic.status === 'failed') return 'ERROR'
+  if (
+    diagnostic.status === 'disabled' ||
+    diagnostic.status === 'unavailable'
+  ) {
+    return 'DEGRADED'
+  }
+  return 'OK'
+}
+
+const compactDanceAssetLabel = (
+  result: MotionStimulusReceiverResult | null
+): string => {
+  const reason = result?.reason_code
+  if (!reason) return 'pending'
+  if (reason === 'dance_motion_asset_not_configured') return 'not set'
+  if (reason === 'motion_asset_load_failed') return 'load fail'
+  if (
+    reason === 'motion_runtime_vrma_started' ||
+    reason === 'motion_runtime_start_adapter_accepted'
+  ) {
+    return 'started'
+  }
+  if (
+    reason === 'motion_stopped' ||
+    reason === 'motion_runtime_stop_requested'
+  ) {
+    return 'stopped'
+  }
+  return result?.status ?? 'reported'
+}
+
+const danceAssetHudState = (
+  result: MotionStimulusReceiverResult | null
+): string => {
+  if (!result) return 'DEGRADED'
+  if (result.reason_code === 'motion_asset_load_failed') return 'ERROR'
+  if (
+    result.reason_code === 'dance_motion_asset_not_configured' ||
+    result.status === 'unavailable' ||
+    result.status === 'degraded'
+  ) {
+    return 'DEGRADED'
+  }
+  if (result.status === 'failed_safe') return 'ERROR'
+  return result.accepted ? 'OK' : 'DEGRADED'
+}
+
+const latestMotionResultAtMs = (
+  result: MotionStimulusReceiverResult | null
+): number | undefined => {
+  const latestTrace =
+    result?.lifecycle_trace?.[result.lifecycle_trace.length - 1]
+  return latestTrace?.at_ms
+}
+
 const KeyValueRows = ({ rows }: { rows: Array<[string, unknown]> }) => (
   <div className="td-kv-list">
     {rows.map(([key, value]) => (
@@ -1002,6 +1087,23 @@ export const ProjectionVisualHud = ({
           ? latestDiagnostic
           : null)
       )
+    })
+  const [listeningPoseDiagnostic, setListeningPoseDiagnostic] =
+    useState<ProjectionVisualListeningPoseDiagnostic | null>(() => {
+      if (typeof window === 'undefined') {
+        return null
+      }
+      return (
+        (window as any)[PROJECTION_VISUAL_LISTENING_POSE_DIAGNOSTIC_GLOBAL] ??
+        null
+      )
+    })
+  const [motionStimulusResult, setMotionStimulusResult] =
+    useState<MotionStimulusReceiverResult | null>(() => {
+      if (typeof window === 'undefined') {
+        return null
+      }
+      return (window as any).__projectionVisualMotionStimulusResult ?? null
     })
   const [nowMs, setNowMs] = useState(0)
   const [developerHudDiagnostics] = useState(readDeveloperHudDiagnosticsFlag)
@@ -1087,17 +1189,43 @@ export const ProjectionVisualHud = ({
         setBrowserSttDiagnostic(detail)
       }
     }
+    const handleListeningPoseDiagnostic = (event: Event) => {
+      setListeningPoseDiagnostic(
+        (event as CustomEvent<ProjectionVisualListeningPoseDiagnostic>).detail
+      )
+    }
+    const handleMotionStimulusResult = (event: Event) => {
+      setMotionStimulusResult(
+        (event as CustomEvent<MotionStimulusReceiverResult>).detail
+      )
+    }
 
     window.addEventListener('projection-visual-stt-status', handleStatus)
     window.addEventListener(
       'projection-visual-stt-diagnostic',
       handleDiagnostic
     )
+    window.addEventListener(
+      PROJECTION_VISUAL_LISTENING_POSE_DIAGNOSTIC_EVENT,
+      handleListeningPoseDiagnostic
+    )
+    window.addEventListener(
+      MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
+      handleMotionStimulusResult
+    )
     return () => {
       window.removeEventListener('projection-visual-stt-status', handleStatus)
       window.removeEventListener(
         'projection-visual-stt-diagnostic',
         handleDiagnostic
+      )
+      window.removeEventListener(
+        PROJECTION_VISUAL_LISTENING_POSE_DIAGNOSTIC_EVENT,
+        handleListeningPoseDiagnostic
+      )
+      window.removeEventListener(
+        MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
+        handleMotionStimulusResult
       )
     }
   }, [])
@@ -1547,6 +1675,14 @@ export const ProjectionVisualHud = ({
     browserSttDiagnostic?.updatedAt !== undefined && nowMs > 0
       ? nowMs - Date.parse(browserSttDiagnostic.updatedAt)
       : undefined
+  const listeningPoseDiagnosticAge =
+    listeningPoseDiagnostic?.updatedAt !== undefined && nowMs > 0
+      ? nowMs - Date.parse(listeningPoseDiagnostic.updatedAt)
+      : undefined
+  const motionStimulusResultAge =
+    latestMotionResultAtMs(motionStimulusResult) !== undefined && nowMs > 0
+      ? nowMs - latestMotionResultAtMs(motionStimulusResult)!
+      : undefined
   const latestBridgeDiagnostic =
     sttDiagnostic?.controller === 'gesture_bridge' ? sttDiagnostic : null
   const isHudVisible = isPassiveHud ? true : hud.visible
@@ -1566,6 +1702,11 @@ export const ProjectionVisualHud = ({
   const sttGateFreshness = freshnessVisualFromAgeMs(sttUpdatedAge)
   const browserDiagnosticFreshness =
     freshnessVisualFromAgeMs(browserSttDiagnosticAge)
+  const listeningPoseFreshness =
+    freshnessVisualFromAgeMs(listeningPoseDiagnosticAge)
+  const motionStimulusFreshness = freshnessVisualFromAgeMs(
+    motionStimulusResultAge
+  )
   const mediapipeFreshness = freshnessVisualFromAgeMs(mediapipe?.age_ms)
   const speechStatusTiles = [
     {
@@ -1601,6 +1742,24 @@ export const ProjectionVisualHud = ({
       detail: `diag ${freshnessDetailLabel(browserDiagnosticFreshness)}`,
       state: browserSttDiagnostic?.error ? 'ERROR' : compactMetricState(speechAudioLabel),
       freshnessVisual: browserDiagnosticFreshness,
+    },
+  ]
+  const avatarMotionStatusTiles = [
+    {
+      id: 'pose-gate',
+      label: 'POSE GATE',
+      value: compactListeningPoseLabel(listeningPoseDiagnostic),
+      detail: listeningPoseDiagnostic?.reason_code ?? 'no pose diagnostic',
+      state: listeningPoseHudState(listeningPoseDiagnostic),
+      freshnessVisual: listeningPoseFreshness,
+    },
+    {
+      id: 'dance-asset',
+      label: 'DANCE ASSET',
+      value: compactDanceAssetLabel(motionStimulusResult),
+      detail: motionStimulusResult?.reason_code ?? 'no motion result',
+      state: danceAssetHudState(motionStimulusResult),
+      freshnessVisual: motionStimulusFreshness,
     },
   ]
   const reflexMetricTiles = [
@@ -1821,6 +1980,22 @@ export const ProjectionVisualHud = ({
             <div className="td-panel-subtitle">Speech Input</div>
             <div className="td-stt-mini-grid" aria-label="Speech input states">
               {speechStatusTiles.map((tile) => (
+                <div
+                  className="td-stt-mini-card"
+                  data-state={normalizeState(tile.state)}
+                  data-freshness={tile.freshnessVisual?.level}
+                  style={tile.freshnessVisual?.style}
+                  key={tile.id}
+                >
+                  <span>{tile.label}</span>
+                  <strong title={tile.value}>{tile.value}</strong>
+                  <em title={tile.detail}>{tile.detail}</em>
+                </div>
+              ))}
+            </div>
+            <div className="td-panel-subtitle">Avatar Motion</div>
+            <div className="td-stt-mini-grid" aria-label="Avatar motion states">
+              {avatarMotionStatusTiles.map((tile) => (
                 <div
                   className="td-stt-mini-card"
                   data-state={normalizeState(tile.state)}

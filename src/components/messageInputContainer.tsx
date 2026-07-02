@@ -4,6 +4,10 @@ import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
 import { useVoiceRecognition } from '@/hooks/useVoiceRecognition'
 import { registerGestureVoiceControls } from '@/features/gestureVoice/gestureVoiceControls'
+import {
+  publishProjectionVisualListeningPoseDiagnostic,
+  type ProjectionVisualListeningPoseDiagnosticInput,
+} from '@/features/gestureVoice/listeningPoseDiagnostic'
 
 const gestureVoiceInterruptsSpeech =
   process.env.NEXT_PUBLIC_GESTURE_VOICE_INTERRUPT_SPEECH === 'true'
@@ -101,9 +105,31 @@ export const MessageInputContainer = ({ onChatProcessStart }: Props) => {
   ])
 
   useEffect(() => {
+    const targetModelTypeClass =
+      modelType === 'vrm' ? 'vrm' : modelType ? 'non_vrm' : 'unknown'
+    const poseIdClass = listeningPoseId ? 'configured' : 'missing'
+    const publishListeningPoseDiagnostic = (
+      detail: Omit<
+        ProjectionVisualListeningPoseDiagnosticInput,
+        | 'controller'
+        | 'listening'
+        | 'enabled'
+        | 'target_model_type_class'
+        | 'pose_id_class'
+      >
+    ) => {
+      publishProjectionVisualListeningPoseDiagnostic({
+        controller: 'message_input_container',
+        listening: isListening,
+        enabled: listeningPoseEnabled,
+        target_model_type_class: targetModelTypeClass,
+        pose_id_class: poseIdClass,
+        ...detail,
+      })
+    }
     const resetListeningPose = () => {
       if (!listeningPoseActiveRef.current) {
-        return
+        return false
       }
 
       const model = homeStore.getState().viewer.model
@@ -111,30 +137,110 @@ export const MessageInputContainer = ({ onChatProcessStart }: Props) => {
         model.poseManager.resetToIdle(model)
       }
       listeningPoseActiveRef.current = false
+      publishListeningPoseDiagnostic({
+        status: 'reset',
+        reason_code: 'listening_pose_reset_to_idle',
+        model_ready: Boolean(model),
+        pose_config_available: false,
+        safe_visible_state: 'neutral_idle_requested',
+      })
+      return true
     }
 
-    if (!listeningPoseEnabled || modelType !== 'vrm' || !isListening) {
+    if (!listeningPoseEnabled) {
       resetListeningPose()
+      publishListeningPoseDiagnostic({
+        status: 'disabled',
+        reason_code: 'listening_pose_disabled',
+        model_ready: Boolean(homeStore.getState().viewer.model),
+        pose_config_available: false,
+        safe_visible_state: 'listening_pose_not_requested',
+      })
+      return
+    }
+
+    if (modelType !== 'vrm') {
+      resetListeningPose()
+      publishListeningPoseDiagnostic({
+        status: 'unavailable',
+        reason_code: 'target_model_type_unavailable',
+        model_ready: Boolean(homeStore.getState().viewer.model),
+        pose_config_available: false,
+        safe_visible_state: 'listening_pose_not_requested',
+      })
+      return
+    }
+
+    if (!isListening) {
+      resetListeningPose()
+      publishListeningPoseDiagnostic({
+        status: 'idle',
+        reason_code: 'listening_pose_inactive',
+        model_ready: Boolean(homeStore.getState().viewer.model),
+        pose_config_available: false,
+        safe_visible_state: 'listening_pose_not_requested',
+      })
       return
     }
 
     const model = homeStore.getState().viewer.model
+    if (!model) {
+      publishListeningPoseDiagnostic({
+        status: 'unavailable',
+        reason_code: 'vrm_model_not_ready',
+        model_ready: false,
+        pose_config_available: false,
+        safe_visible_state: 'no_visible_change',
+      })
+      return
+    }
+
     const poseConfig = poseConfigs.find((pose) => pose.id === listeningPoseId)
-    if (!model || !poseConfig) {
+    if (!poseConfig) {
+      publishListeningPoseDiagnostic({
+        status: 'unavailable',
+        reason_code: 'listening_pose_config_missing',
+        model_ready: true,
+        pose_config_available: false,
+        safe_visible_state: 'no_visible_change',
+      })
       return
     }
 
     listeningPoseActiveRef.current = true
+    publishListeningPoseDiagnostic({
+      status: 'requested',
+      reason_code: 'listening_pose_apply_requested',
+      model_ready: true,
+      pose_config_available: true,
+      safe_visible_state: 'listening_pose_requested',
+    })
     void model.poseManager
       .applyPose(model, listeningPoseId, poseConfig)
       .then(() => {
+        publishListeningPoseDiagnostic({
+          status: 'applied',
+          reason_code: 'listening_pose_applied',
+          model_ready: true,
+          pose_config_available: true,
+          safe_visible_state: 'listening_pose_applied',
+        })
         if (!latestVoiceStateRef.current.isListening) {
           resetListeningPose()
         }
       })
-      .catch((error) => {
+      .catch(() => {
         listeningPoseActiveRef.current = false
-        console.error('Failed to apply listening pose:', error)
+        console.warn('Listening pose apply failed', {
+          reason_code: 'listening_pose_apply_failed',
+        })
+        publishListeningPoseDiagnostic({
+          status: 'failed',
+          reason_code: 'listening_pose_apply_failed',
+          model_ready: true,
+          pose_config_available: true,
+          safe_visible_state: 'no_visible_change',
+        })
       })
   }, [
     isListening,
