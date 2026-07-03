@@ -814,7 +814,7 @@ function safeString(value: unknown): string {
 }
 
 export function resolveDanceMotionAssetPath(
-  value = process.env[DANCE_MOTION_ASSET_PATH_ENV]
+  value = process.env.NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH
 ): string | undefined {
   const text = safeString(value)
   if (!text) return undefined

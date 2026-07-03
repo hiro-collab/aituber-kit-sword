@@ -177,6 +177,12 @@ describe('receiveMotionStimulusV0', () => {
     expect(resolveDanceMotionAssetPath(value)).toBe(expected)
   })
 
+  it('uses the statically analyzable public dance motion env key by default', () => {
+    process.env[DANCE_MOTION_ASSET_PATH_ENV] = CONFIGURED_DANCE_MOTION_ASSET_PATH
+
+    expect(resolveDanceMotionAssetPath()).toBe(CONFIGURED_DANCE_MOTION_ASSET_PATH)
+  })
+
   it('does not start dance_sequence play requests without the safe dance payload ref', async () => {
     const startDance = jest.fn()
     const stimulus = createThoughtCoreDanceSequenceStimulus()

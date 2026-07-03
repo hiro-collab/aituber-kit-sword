@@ -1041,6 +1041,12 @@ describe('worker-2 projection visual organ contract', () => {
     expect(motionStimulusReceiverSource).toContain(
       'NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
     )
+    expect(motionStimulusReceiverSource).toContain(
+      'process.env.NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
+    )
+    expect(motionStimulusReceiverSource).not.toContain(
+      'process.env[DANCE_MOTION_ASSET_PATH_ENV]'
+    )
     expect(motionStimulusReceiverSource).not.toContain(
       'DEFAULT_DANCE_MOTION_ASSET_PATH'
     )
