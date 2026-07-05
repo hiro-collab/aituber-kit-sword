@@ -213,7 +213,7 @@ const getWorkspaceRoot = () => {
   let current = process.cwd()
   for (let depth = 0; depth < 8; depth += 1) {
     if (
-      pathExists(path.join(current, 'sword-control-plane')) ||
+      pathExists(path.join(current, 'control-plane', 'core')) ||
       pathExists(path.join(current, 'organs'))
     ) {
       return current
