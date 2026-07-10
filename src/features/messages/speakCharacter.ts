@@ -84,6 +84,7 @@ export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
       message: speechOutputMessage,
       messageId: talk.sourceMessageId,
       turnId: talk.sourceTurnId,
+      conversationAttemptRef: talk.sourceConversationAttemptRef,
     })
   )
   writeWindowSpeechOutputSummary(
@@ -93,6 +94,7 @@ export function writeSynthesizedSpeechOutputSummary(talk: Talk): void {
       message: speechOutputMessage,
       messageId: talk.sourceMessageId,
       turnId: talk.sourceTurnId,
+      conversationAttemptRef: talk.sourceConversationAttemptRef,
       textRoleClass: 'tts_provider_input_text',
       textScopeClass: 'tts_provider_input',
     })

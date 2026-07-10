@@ -1,12 +1,16 @@
 import { Message } from '@/features/messages/messages'
 import { AIService } from '@/features/constants/settings'
-import { getThoughtCoreChatResponseStream } from './thoughtCoreChat'
+import {
+  getThoughtCoreChatResponseStream,
+  type ThoughtCoreResponseMetadata,
+} from './thoughtCoreChat'
 import { getVercelAIChatResponseStream } from './vercelAIChat'
 import settingsStore from '@/features/stores/settings'
 import { getOpenAIAudioChatResponseStream } from '@/features/chat/openAIAudioChat'
 
 export async function getAIChatResponseStream(
-  messages: Message[]
+  messages: Message[],
+  onResponseMetadata?: (metadata: ThoughtCoreResponseMetadata) => void
 ): Promise<ReadableStream<string> | null> {
   const ss = settingsStore.getState()
 
@@ -32,11 +36,18 @@ export async function getAIChatResponseStream(
     case 'custom-api':
       return getVercelAIChatResponseStream(messages)
     case 'thought-core':
-      return getThoughtCoreChatResponseStream(
-        messages,
-        ss.thoughtCoreUrl || '',
-        ss.thoughtCoreSessionId || ''
-      )
+      return onResponseMetadata
+        ? getThoughtCoreChatResponseStream(
+            messages,
+            ss.thoughtCoreUrl || '',
+            ss.thoughtCoreSessionId || '',
+            onResponseMetadata
+          )
+        : getThoughtCoreChatResponseStream(
+            messages,
+            ss.thoughtCoreUrl || '',
+            ss.thoughtCoreSessionId || ''
+          )
     default:
       throw new Error(`Unsupported AI service: ${ss.selectAIService}`)
   }

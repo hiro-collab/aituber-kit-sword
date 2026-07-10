@@ -216,13 +216,15 @@ const extractSentence = (
 type AssistantSpeechLink = {
   assistantMessageId?: string
   assistantTurnId?: string
+  conversationAttemptRef?: string
   displayMessage?: string
 }
 
 const publishAssistantDisplayMessage = (
   messageId: string,
   content: string,
-  thinking?: string
+  thinking?: string,
+  conversationAttemptRef?: string
 ) => {
   const trimmedContent = content.trim()
   if (!trimmedContent) return
@@ -232,6 +234,7 @@ const publishAssistantDisplayMessage = (
     role: 'assistant',
     content: trimmedContent,
     ...(thinking && { thinking }),
+    ...(conversationAttemptRef && { conversationAttemptRef }),
   })
 }
 
@@ -277,6 +280,7 @@ const handleSpeakAndStateUpdate = (
       message: outputMessage,
       messageId: speechLink.assistantMessageId,
       turnId: speechLink.assistantTurnId ?? sessionId,
+      conversationAttemptRef: speechLink.conversationAttemptRef,
       textRoleClass: 'tts_provider_input_text',
       textScopeClass: 'tts_provider_input',
     })
@@ -290,6 +294,7 @@ const handleSpeakAndStateUpdate = (
       motion: motionTag || undefined,
       sourceMessageId: speechLink.assistantMessageId,
       sourceTurnId: speechLink.assistantTurnId ?? sessionId,
+      sourceConversationAttemptRef: speechLink.conversationAttemptRef,
       displayMessage: outputMessage,
     },
     () => {
@@ -533,12 +538,15 @@ export const processAIResponse = async (messages: Message[]) => {
   }
 
   let stream
+  let conversationAttemptRef: string | undefined
 
   const currentSlideMessagesRef = { current: [] as string[] }
   const assistantMessageListRef = { current: [] as string[] }
 
   try {
-    stream = await getAIChatResponseStream(messages)
+    stream = await getAIChatResponseStream(messages, (metadata) => {
+      conversationAttemptRef = metadata.conversationAttemptRef
+    })
   } catch (e) {
     console.error(e)
     resetThinkingPose()
@@ -588,6 +596,7 @@ export const processAIResponse = async (messages: Message[]) => {
             role: 'assistant',
             content: currentMessageContent || '',
             thinking: currentThinkingContent,
+            ...(conversationAttemptRef && { conversationAttemptRef }),
           })
           // receivedChunksForSpeechには追加しない（読み上げ対象外）
         } else {
@@ -611,6 +620,7 @@ export const processAIResponse = async (messages: Message[]) => {
                 ...(currentThinkingContent && {
                   thinking: currentThinkingContent,
                 }),
+                ...(conversationAttemptRef && { conversationAttemptRef }),
               })
             }
           } else if (!isCodeBlock) {
@@ -624,6 +634,7 @@ export const processAIResponse = async (messages: Message[]) => {
                 ...(currentThinkingContent && {
                   thinking: currentThinkingContent,
                 }),
+                ...(conversationAttemptRef && { conversationAttemptRef }),
               })
             }
           }
@@ -720,6 +731,7 @@ export const processAIResponse = async (messages: Message[]) => {
                     {
                       assistantMessageId: getCurrentAssistantMessageId(),
                       assistantTurnId: sessionId,
+                      conversationAttemptRef,
                       displayMessage: sentence,
                     }
                   ) || hasSpeakBeenCalled
@@ -785,6 +797,7 @@ export const processAIResponse = async (messages: Message[]) => {
                   {
                     assistantMessageId: getCurrentAssistantMessageId(),
                     assistantTurnId: sessionId,
+                    conversationAttemptRef,
                     displayMessage: sentence,
                   }
                 ) || hasSpeakBeenCalled
@@ -841,6 +854,7 @@ export const processAIResponse = async (messages: Message[]) => {
                 {
                   assistantMessageId: getCurrentAssistantMessageId(),
                   assistantTurnId: sessionId,
+                  conversationAttemptRef,
                   displayMessage: finalTextAfterMotion,
                 }
               ) || hasSpeakBeenCalled
@@ -895,6 +909,7 @@ export const processAIResponse = async (messages: Message[]) => {
       role: 'assistant',
       content: currentMessageContent.trim(),
       ...(currentThinkingContent && { thinking: currentThinkingContent }),
+      ...(conversationAttemptRef && { conversationAttemptRef }),
     })
 
     // IndexedDBにアシスタントメッセージを保存

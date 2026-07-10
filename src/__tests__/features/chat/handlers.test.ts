@@ -237,7 +237,8 @@ describe('handlers', () => {
             role: 'system',
             content: 'テストプロンプト',
           }),
-        ])
+        ]),
+        expect.any(Function)
       )
     })
   })
@@ -518,6 +519,53 @@ describe('handlers', () => {
 
       expect(homeStore.setState).toHaveBeenCalledWith({ chatProcessing: false })
       expect(speakCharacter).not.toHaveBeenCalled()
+    })
+
+    it('associates the response attempt ref with the canonical assistant message and Talk', async () => {
+      const mockUpsertMessage = jest.fn()
+      const stream = new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue('応答します。')
+          controller.close()
+        },
+      })
+      ;(settingsStore.getState as jest.Mock).mockReturnValue({
+        thinkingPoseEnabled: false,
+        modelType: 'live2d',
+      })
+      ;(homeStore.getState as jest.Mock).mockReturnValue({
+        upsertMessage: mockUpsertMessage,
+        viewer: {},
+      })
+      ;(getAIChatResponseStream as jest.Mock).mockImplementation(
+        async (_messages, onResponseMetadata) => {
+          onResponseMetadata?.({
+            conversationAttemptRef:
+              'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+          })
+          return stream
+        }
+      )
+
+      await processAIResponse([{ role: 'user', content: 'こんにちは' }])
+
+      expect(mockUpsertMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: 'assistant',
+          content: '応答します。',
+          conversationAttemptRef:
+            'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+        })
+      )
+      expect(speakCharacter).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          sourceConversationAttemptRef:
+            'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+        }),
+        expect.any(Function),
+        expect.any(Function)
+      )
     })
   })
 })

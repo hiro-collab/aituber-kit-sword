@@ -759,3 +759,80 @@ function createStopStimulus() {
     },
   }
 }
+
+describe('getThoughtCoreChatResponseStream conversation attempt metadata', () => {
+  const conversationAttemptRef =
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+  const originalFetch = global.fetch
+
+  beforeEach(() => {
+    global.fetch = jest.fn() as any
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('forwards only a canonical ref from accepted assistant events while preserving canonical speech', async () => {
+    const onResponseMetadata = jest.fn()
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'assistant.speech_delta',
+          data: {
+            delta: '応答します。',
+            conversation_attempt_ref: conversationAttemptRef,
+          },
+        },
+      ])
+    )
+
+    const stream = await getThoughtCoreChatResponseStream(
+      [{ content: 'こんにちは' } as any],
+      '',
+      'session-bridge',
+      onResponseMetadata
+    )
+
+    await expect(readTextStream(stream)).resolves.toBe('応答します。')
+    expect(onResponseMetadata).toHaveBeenCalledWith({
+      conversationAttemptRef,
+    })
+  })
+
+  it.each([
+    undefined,
+    'raw-private-marker',
+    'C:\\private\\attempt',
+    'm4.prepared_sample_attempt0123456789abcdef0123456789abcdef',
+    'm4.prepared_sample_attempt:0123456789ABCDEF0123456789abcdef',
+    'm4.other_attempt:0123456789abcdef0123456789abcdef',
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcde',
+  ])(
+    'omits missing or non-canonical conversation attempt refs: %p',
+    async (conversationAttemptRef) => {
+      const onResponseMetadata = jest.fn()
+      ;(global.fetch as jest.Mock).mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'assistant.speech_delta',
+            data: {
+              delta: '応答します。',
+              conversation_attempt_ref: conversationAttemptRef,
+            },
+          },
+        ])
+      )
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: 'こんにちは' } as any],
+        '',
+        'session-bridge',
+        onResponseMetadata
+      )
+
+      await expect(readTextStream(stream)).resolves.toBe('応答します。')
+      expect(onResponseMetadata).not.toHaveBeenCalled()
+    }
+  )
+})

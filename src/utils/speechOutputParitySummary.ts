@@ -31,6 +31,7 @@ export type SpeechOutputSummary = {
   text_scope_class: SpeechOutputTextScopeClass
   message_id: string | null
   turn_id: string | null
+  conversation_attempt_ref: string | null
   text_hash: string
   text_length: number
   meaning_class: string
@@ -45,6 +46,7 @@ export type SpeechOutputDisplayState = {
   source_field: string
   message_id: string | null
   turn_id: string | null
+  conversation_attempt_ref: string | null
   display_message: string
   raw_text_local_only: true
   raw_text_published: false
@@ -55,6 +57,8 @@ export type SpeechOutputDisplayState = {
 
 export type SpeechOutputParityStatus =
   | 'same_text_same_message'
+  | 'same_text_same_message_attempt_ref_unavailable'
+  | 'same_text_same_message_attempt_ref_mismatch'
   | 'same_text_message_id_unavailable'
   | 'same_message_text_scope_mismatch'
   | 'text_match_message_id_mismatch'
@@ -73,6 +77,9 @@ export type SpeechOutputParitySummary = {
     | 'tts_provider_input_text_unavailable'
   heard_text_class: 'not_collected_or_not_authorized'
   message_id_match: boolean
+  conversation_attempt_ref: string | null
+  conversation_attempt_ref_class: 'match' | 'unavailable' | 'mismatch'
+  conversation_attempt_ref_match: boolean
   text_hash_match: boolean
   raw_text_published: false
   raw_audio_published: false
@@ -101,6 +108,7 @@ export type SelfOutputSpeechObservationSummary = {
   text_hash_matches_tts: boolean
   message_id: string | null
   turn_id: string | null
+  conversation_attempt_ref: string | null
   raw_text_published: false
   raw_audio_published: false
   provider_payload_published: false
@@ -108,6 +116,8 @@ export type SelfOutputSpeechObservationSummary = {
 }
 
 const SAFE_IDENTIFIER_PATTERN = /^[a-zA-Z0-9._:-]{1,128}$/
+export const CONVERSATION_ATTEMPT_REF_PATTERN =
+  /^m4\.prepared_sample_attempt:[a-f0-9]{32}$/
 const MAX_LOCAL_DISPLAY_MESSAGE_CHARS = 1600
 
 export const safeSpeechOutputIdentifier = (value: unknown): string | null => {
@@ -125,6 +135,31 @@ export const hashSpeechOutputText = (value: string): string => {
   return hash.toString(16).padStart(8, '0')
 }
 
+export const safeConversationAttemptRef = (value: unknown): string | null => {
+  return typeof value === 'string' &&
+    CONVERSATION_ATTEMPT_REF_PATTERN.test(value)
+    ? value
+    : null
+}
+
+export const resolveSpeechOutputDisplayConversationAttemptRef = (args: {
+  displayMessageId?: string | null
+  sourceMessageId?: string | null
+  conversationAttemptRef?: string | null
+}): string | null => {
+  const displayMessageId = safeSpeechOutputIdentifier(args.displayMessageId)
+  const sourceMessageId = safeSpeechOutputIdentifier(args.sourceMessageId)
+  const conversationAttemptRef = safeConversationAttemptRef(
+    args.conversationAttemptRef
+  )
+  return displayMessageId &&
+    sourceMessageId &&
+    displayMessageId === sourceMessageId &&
+    conversationAttemptRef
+    ? conversationAttemptRef
+    : null
+}
+
 const defaultSpeechOutputTextRoleClass = (
   surface: SpeechOutputSurface
 ): SpeechOutputTextRoleClass => {
@@ -137,7 +172,8 @@ const defaultSpeechOutputTextRoleClass = (
 const defaultSpeechOutputTextScopeClass = (
   surface: SpeechOutputSurface
 ): SpeechOutputTextScopeClass => {
-  if (surface === 'projection_visual_intended_text') return 'compacted_full_text'
+  if (surface === 'projection_visual_intended_text')
+    return 'compacted_full_text'
   if (surface === 'projection_visual_assistant_bubble') {
     return 'current_visible_page'
   }
@@ -151,6 +187,7 @@ export const buildSpeechOutputSummary = (args: {
   message: string
   messageId?: string | null
   turnId?: string | null
+  conversationAttemptRef?: string | null
   textRoleClass?: SpeechOutputTextRoleClass
   textScopeClass?: SpeechOutputTextScopeClass
 }): SpeechOutputSummary => {
@@ -165,6 +202,9 @@ export const buildSpeechOutputSummary = (args: {
       args.textScopeClass ?? defaultSpeechOutputTextScopeClass(args.surface),
     message_id: safeSpeechOutputIdentifier(args.messageId),
     turn_id: safeSpeechOutputIdentifier(args.turnId),
+    conversation_attempt_ref: safeConversationAttemptRef(
+      args.conversationAttemptRef
+    ),
     text_hash: hashSpeechOutputText(normalizedText),
     text_length: Array.from(normalizedText).length,
     meaning_class: classifyReviewProofMessage(normalizedText),
@@ -180,6 +220,7 @@ export const buildSpeechOutputDisplayState = (args: {
   message: string
   messageId?: string | null
   turnId?: string | null
+  conversationAttemptRef?: string | null
 }): SpeechOutputDisplayState => {
   const displayMessage = args.message
     .replace(/\s+/g, ' ')
@@ -190,6 +231,9 @@ export const buildSpeechOutputDisplayState = (args: {
     source_field: args.sourceField,
     message_id: safeSpeechOutputIdentifier(args.messageId),
     turn_id: safeSpeechOutputIdentifier(args.turnId),
+    conversation_attempt_ref: safeConversationAttemptRef(
+      args.conversationAttemptRef
+    ),
     display_message: displayMessage,
     raw_text_local_only: true,
     raw_text_published: false,
@@ -212,17 +256,37 @@ export const compareSpeechOutputSummaries = (
     Boolean(tts?.message_id) &&
     Boolean(bubble.message_id) &&
     bubble.message_id === tts?.message_id
+  const matchingConversationAttemptRefs =
+    Boolean(tts?.conversation_attempt_ref) &&
+    Boolean(bubble.conversation_attempt_ref) &&
+    bubble.conversation_attempt_ref === tts?.conversation_attempt_ref
+  const conversationAttemptRefMatch =
+    messageIdMatch && matchingConversationAttemptRefs
+  const conversationAttemptRefClass: SpeechOutputParitySummary['conversation_attempt_ref_class'] =
+    !messageIdMatch ||
+    !bubble.conversation_attempt_ref ||
+    !tts?.conversation_attempt_ref
+      ? 'unavailable'
+      : matchingConversationAttemptRefs
+        ? 'match'
+        : 'mismatch'
   const parityStatus: SpeechOutputParityStatus = !tts
     ? 'tts_summary_unavailable'
-    : textHashMatch && messageIdMatch
+    : textHashMatch && messageIdMatch && conversationAttemptRefMatch
       ? 'same_text_same_message'
-      : messageIdMatch
-        ? 'same_message_text_scope_mismatch'
-      : textHashMatch && (!bubble.message_id || !tts.message_id)
-        ? 'same_text_message_id_unavailable'
-        : textHashMatch
-          ? 'text_match_message_id_mismatch'
-          : 'text_mismatch'
+      : textHashMatch &&
+          messageIdMatch &&
+          conversationAttemptRefClass === 'unavailable'
+        ? 'same_text_same_message_attempt_ref_unavailable'
+        : textHashMatch && messageIdMatch
+          ? 'same_text_same_message_attempt_ref_mismatch'
+          : messageIdMatch
+            ? 'same_message_text_scope_mismatch'
+            : textHashMatch && (!bubble.message_id || !tts.message_id)
+              ? 'same_text_message_id_unavailable'
+              : textHashMatch
+                ? 'text_match_message_id_mismatch'
+                : 'text_mismatch'
 
   return {
     schema_version: SPEECH_OUTPUT_PARITY_SCHEMA_VERSION,
@@ -236,6 +300,11 @@ export const compareSpeechOutputSummaries = (
       : 'tts_provider_input_text_unavailable',
     heard_text_class: 'not_collected_or_not_authorized',
     message_id_match: messageIdMatch,
+    conversation_attempt_ref: conversationAttemptRefMatch
+      ? bubble.conversation_attempt_ref
+      : null,
+    conversation_attempt_ref_class: conversationAttemptRefClass,
+    conversation_attempt_ref_match: conversationAttemptRefMatch,
     text_hash_match: textHashMatch,
     raw_text_published: false,
     raw_audio_published: false,
@@ -251,6 +320,7 @@ export const buildSelfOutputSpeechObservationSummary = (args: {
   tts: SpeechOutputSummary | null
   messageId?: string | null
   turnId?: string | null
+  conversationAttemptRef?: string | null
 }): SelfOutputSpeechObservationSummary => {
   const transcript = buildSpeechOutputSummary({
     surface: 'stt_self_output_observation',
@@ -305,6 +375,9 @@ export const buildSelfOutputSpeechObservationSummary = (args: {
     text_hash_matches_tts: textHashMatchesTts,
     message_id: safeSpeechOutputIdentifier(args.messageId),
     turn_id: safeSpeechOutputIdentifier(args.turnId),
+    conversation_attempt_ref: safeConversationAttemptRef(
+      args.conversationAttemptRef
+    ),
     raw_text_published: false,
     raw_audio_published: false,
     provider_payload_published: false,
@@ -433,6 +506,9 @@ export const sanitizeSpeechOutputSummary = (
     text_scope_class: textScopeClass,
     message_id: safeSpeechOutputIdentifier(value.message_id),
     turn_id: safeSpeechOutputIdentifier(value.turn_id),
+    conversation_attempt_ref: safeConversationAttemptRef(
+      value.conversation_attempt_ref
+    ),
     text_hash: textHash,
     text_length: textLength,
     meaning_class: meaningClass,
@@ -465,6 +541,9 @@ export const sanitizeSpeechOutputDisplayState = (
     source_field: sourceField,
     message_id: safeSpeechOutputIdentifier(value.message_id),
     turn_id: safeSpeechOutputIdentifier(value.turn_id),
+    conversation_attempt_ref: safeConversationAttemptRef(
+      value.conversation_attempt_ref
+    ),
     display_message: displayMessage,
     raw_text_local_only: true,
     raw_text_published: false,

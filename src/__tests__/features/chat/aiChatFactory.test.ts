@@ -115,6 +115,29 @@ describe('aiChatFactory', () => {
     expect(result).toBe(mockStream)
   })
 
+  it('threads the optional response metadata callback only to Thought Core', async () => {
+    const onResponseMetadata = jest.fn()
+    const mockStream = createMockStream()
+    ;(getThoughtCoreChatResponseStream as jest.Mock).mockResolvedValue(
+      mockStream
+    )
+    ;(settingsStore.getState as jest.Mock).mockReturnValue({
+      selectAIService: 'thought-core',
+      audioMode: false,
+      thoughtCoreUrl: 'http://127.0.0.1:18787',
+      thoughtCoreSessionId: 'living-room',
+    })
+
+    await getAIChatResponseStream(testMessages, onResponseMetadata)
+
+    expect(getThoughtCoreChatResponseStream).toHaveBeenCalledWith(
+      testMessages,
+      'http://127.0.0.1:18787',
+      'living-room',
+      onResponseMetadata
+    )
+  })
+
   it('サポートされていないAIサービスの場合、エラーをスローする', async () => {
     ;(settingsStore.getState as jest.Mock).mockReturnValue({
       selectAIService: 'unsupported-service',

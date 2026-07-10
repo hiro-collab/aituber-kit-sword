@@ -239,6 +239,8 @@ describe('speakCharacter', () => {
         displayMessage: '吹き出しと音声で共有する文です',
         sourceMessageId: 'assistant-message-1',
         sourceTurnId: 'turn-1',
+        sourceConversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
       }
       expect(resolveSpeechOutputMessage(talk)).toBe(
         '吹き出しと音声で共有する文です'
@@ -246,8 +248,7 @@ describe('speakCharacter', () => {
 
       writeSynthesizedSpeechOutputSummary(talk)
 
-      const ttsSummary = (window as any)
-        .__projectionVisualSpeechOutputSummaryV0
+      const ttsSummary = (window as any).__projectionVisualSpeechOutputSummaryV0
       const displayState = (window as any)
         .__projectionVisualSpeechOutputDisplayStateV0
       const bubbleSummary = buildSpeechOutputSummary({
@@ -256,6 +257,8 @@ describe('speakCharacter', () => {
         message: '吹き出しと音声で共有する文です',
         messageId: 'assistant-message-1',
         turnId: 'turn-1',
+        conversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
         textRoleClass: 'bubble_text',
         textScopeClass: 'compacted_full_text',
       })
@@ -277,6 +280,8 @@ describe('speakCharacter', () => {
           text_scope_class: 'tts_provider_input',
           message_id: 'assistant-message-1',
           turn_id: 'turn-1',
+          conversation_attempt_ref:
+            'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
           text_length: Array.from('吹き出しと音声で共有する文です').length,
           raw_text_published: false,
           raw_audio_published: false,
@@ -290,6 +295,8 @@ describe('speakCharacter', () => {
           source_field: 'Talk.displayMessage.spoken',
           message_id: 'assistant-message-1',
           turn_id: 'turn-1',
+          conversation_attempt_ref:
+            'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
           display_message: '吹き出しと音声で共有する文です',
           raw_text_local_only: true,
           raw_text_published: false,

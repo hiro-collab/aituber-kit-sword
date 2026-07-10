@@ -2,8 +2,15 @@ import {
   buildSelfOutputSpeechObservationSummary,
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
+  resolveSpeechOutputDisplayConversationAttemptRef,
+  safeConversationAttemptRef,
   sanitizeSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
+
+const conversationAttemptRef =
+  'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+const otherConversationAttemptRef =
+  'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
 
 describe('speechOutputParitySummary', () => {
   it('compares bubble and TTS summaries without publishing raw text', () => {
@@ -24,8 +31,11 @@ describe('speechOutputParitySummary', () => {
 
     const parity = compareSpeechOutputSummaries(bubble, tts)
 
-    expect(parity.parity_status).toBe('same_text_same_message')
+    expect(parity.parity_status).toBe(
+      'same_text_same_message_attempt_ref_unavailable'
+    )
     expect(parity.message_id_match).toBe(true)
+    expect(parity.conversation_attempt_ref_class).toBe('unavailable')
     expect(parity.text_hash_match).toBe(true)
     expect(parity.bubble_text_scope_class).toBe('current_visible_page')
     expect(parity.tts_provider_input_text_class).toBe(
@@ -59,6 +69,167 @@ describe('speechOutputParitySummary', () => {
     expect(parity.parity_status).toBe('text_match_message_id_mismatch')
     expect(parity.message_id_match).toBe(false)
     expect(parity.text_hash_match).toBe(true)
+  })
+
+  it('distinguishes matching, missing, and mismatched conversation attempt refs', () => {
+    const bubble = buildSpeechOutputSummary({
+      surface: 'projection_visual_assistant_bubble',
+      sourceField: 'homeStore.chatLog.latestAssistantMessage',
+      message: '同じ文です。',
+      messageId: 'assistant-message-current',
+      conversationAttemptRef,
+    })
+    const matchingTts = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.message',
+      message: '同じ文です。',
+      messageId: 'assistant-message-current',
+      conversationAttemptRef,
+    })
+    const missingTts = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.message',
+      message: '同じ文です。',
+      messageId: 'assistant-message-current',
+    })
+    const mismatchedTts = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.message',
+      message: '同じ文です。',
+      messageId: 'assistant-message-current',
+      conversationAttemptRef: otherConversationAttemptRef,
+    })
+
+    expect(compareSpeechOutputSummaries(bubble, matchingTts)).toEqual(
+      expect.objectContaining({
+        parity_status: 'same_text_same_message',
+        conversation_attempt_ref: conversationAttemptRef,
+        conversation_attempt_ref_class: 'match',
+      })
+    )
+    expect(compareSpeechOutputSummaries(bubble, missingTts)).toEqual(
+      expect.objectContaining({
+        parity_status: 'same_text_same_message_attempt_ref_unavailable',
+        conversation_attempt_ref: null,
+        conversation_attempt_ref_class: 'unavailable',
+      })
+    )
+    expect(compareSpeechOutputSummaries(bubble, mismatchedTts)).toEqual(
+      expect.objectContaining({
+        parity_status: 'same_text_same_message_attempt_ref_mismatch',
+        conversation_attempt_ref: null,
+        conversation_attempt_ref_class: 'mismatch',
+      })
+    )
+  })
+
+  it.each([
+    'm4.prepared_sample_attempt0123456789abcdef0123456789abcdef',
+    'm4.prepared_sample_attempt:0123456789ABCDEF0123456789abcdef',
+    'm4.other_attempt:0123456789abcdef0123456789abcdef',
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcde',
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef0',
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef ',
+    'raw-private-marker',
+  ])('omits a non-canonical conversation attempt ref: %s', (invalidRef) => {
+    expect(safeConversationAttemptRef(invalidRef)).toBeNull()
+    expect(
+      buildSpeechOutputSummary({
+        surface: 'tts_talk_message',
+        sourceField: 'Talk.message',
+        message: 'text',
+        messageId: 'assistant-message-1',
+        conversationAttemptRef: invalidRef,
+      }).conversation_attempt_ref
+    ).toBeNull()
+  })
+
+  it('preserves canonical refs and binds each display surface to its exact source', () => {
+    expect(safeConversationAttemptRef(conversationAttemptRef)).toBe(
+      conversationAttemptRef
+    )
+
+    const chatRef = resolveSpeechOutputDisplayConversationAttemptRef({
+      displayMessageId: 'chat-message-1',
+      sourceMessageId: 'chat-message-1',
+      conversationAttemptRef,
+    })
+    const passiveRef = resolveSpeechOutputDisplayConversationAttemptRef({
+      displayMessageId: 'passive-message-1',
+      sourceMessageId: 'passive-message-1',
+      conversationAttemptRef: otherConversationAttemptRef,
+    })
+    const operatorRef = resolveSpeechOutputDisplayConversationAttemptRef({
+      displayMessageId: 'operator-message-1',
+      sourceMessageId: 'operator-message-1',
+      conversationAttemptRef,
+    })
+
+    expect(chatRef).toBe(conversationAttemptRef)
+    expect(passiveRef).toBe(otherConversationAttemptRef)
+    expect(operatorRef).toBe(conversationAttemptRef)
+    expect(passiveRef).not.toBe(chatRef)
+  })
+
+  it.each([
+    {
+      displayMessageId: null,
+      sourceMessageId: 'message-1',
+      conversationAttemptRef,
+    },
+    {
+      displayMessageId: 'message-1',
+      sourceMessageId: null,
+      conversationAttemptRef,
+    },
+    {
+      displayMessageId: 'message-1',
+      sourceMessageId: 'message-2',
+      conversationAttemptRef,
+    },
+    {
+      displayMessageId: 'message-1',
+      sourceMessageId: 'message-1',
+      conversationAttemptRef: 'm4.attempt-001',
+    },
+  ])(
+    'leaves a display ref unavailable without a matching canonical source',
+    (input) => {
+      expect(resolveSpeechOutputDisplayConversationAttemptRef(input)).toBeNull()
+    }
+  )
+
+  it('treats message-id mismatch as unavailable and differing valid refs as mismatch', () => {
+    const bubble = buildSpeechOutputSummary({
+      surface: 'projection_visual_assistant_bubble',
+      sourceField: 'speechOutputDisplayState.display_message',
+      message: 'same text',
+      messageId: 'message-1',
+      conversationAttemptRef,
+    })
+    const mismatchedMessageId = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.displayMessage.spoken',
+      message: 'same text',
+      messageId: 'message-2',
+      conversationAttemptRef: otherConversationAttemptRef,
+    })
+    const mismatchedRef = buildSpeechOutputSummary({
+      surface: 'tts_talk_message',
+      sourceField: 'Talk.displayMessage.spoken',
+      message: 'same text',
+      messageId: 'message-1',
+      conversationAttemptRef: otherConversationAttemptRef,
+    })
+
+    expect(
+      compareSpeechOutputSummaries(bubble, mismatchedMessageId)
+        .conversation_attempt_ref_class
+    ).toBe('unavailable')
+    expect(
+      compareSpeechOutputSummaries(bubble, mismatchedRef)
+        .conversation_attempt_ref_class
+    ).toBe('mismatch')
   })
 
   it('classifies same-message bubble/TTS text scope mismatch without exact same-text claim', () => {
@@ -113,6 +284,7 @@ describe('speechOutputParitySummary', () => {
       text_scope_class: 'tts_provider_input',
       message_id: 'C:\\private\\message.txt',
       turn_id: 'turn-safe',
+      conversation_attempt_ref: 'raw-private-marker',
       text_hash: 'not-a-hash',
       text_length: 99999,
       meaning_class: 'command_accepted_unconfirmed',
@@ -126,6 +298,7 @@ describe('speechOutputParitySummary', () => {
       expect.objectContaining({
         message_id: null,
         turn_id: 'turn-safe',
+        conversation_attempt_ref: null,
         text_role_class: 'tts_provider_input_text',
         text_scope_class: 'tts_provider_input',
         text_hash: '00000000',
@@ -145,6 +318,7 @@ describe('speechOutputParitySummary', () => {
       message: '吹き出しだけに出ている文です。',
       messageId: 'assistant-message-1',
       turnId: 'turn-1',
+      conversationAttemptRef,
     })
     const tts = buildSpeechOutputSummary({
       surface: 'tts_talk_message',
@@ -161,6 +335,7 @@ describe('speechOutputParitySummary', () => {
       tts,
       messageId: 'assistant-message-1',
       turnId: 'turn-1',
+      conversationAttemptRef,
     })
 
     expect(observation).toEqual(
@@ -177,6 +352,7 @@ describe('speechOutputParitySummary', () => {
         raw_audio_published: false,
         provider_payload_published: false,
         private_data_published: false,
+        conversation_attempt_ref: conversationAttemptRef,
       })
     )
     expect(observation).not.toHaveProperty('transcript')

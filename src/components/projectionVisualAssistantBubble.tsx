@@ -11,6 +11,7 @@ import {
   compareSpeechOutputSummaries,
   readWindowSpeechOutputDisplayState,
   readWindowSpeechOutputSummary,
+  resolveSpeechOutputDisplayConversationAttemptRef,
   writeWindowSpeechOutputParitySummary,
   type SpeechOutputDisplayState,
   type SpeechOutputSummary,
@@ -125,10 +126,14 @@ export const ProjectionVisualAssistantBubble = ({
   const passiveSpeechOutputSummary = projectionDisplayStore(
     (s) => s.speechOutputSummary
   )
-  const [operatorSpeechOutputDisplayState, setOperatorSpeechOutputDisplayState] =
-    useState<SpeechOutputDisplayState | null>(() =>
-      readWindowSpeechOutputDisplayState()
-    )
+  const [
+    operatorSpeechOutputDisplayState,
+    setOperatorSpeechOutputDisplayState,
+  ] = useState<SpeechOutputDisplayState | null>(() =>
+    readWindowSpeechOutputDisplayState()
+  )
+  const [operatorSpeechOutputSummary, setOperatorSpeechOutputSummary] =
+    useState<SpeechOutputSummary | null>(() => readWindowSpeechOutputSummary())
   const characterName = settingsStore((s) => s.characterName)
   const showCharacterName = settingsStore((s) => s.showCharacterName)
   const poseConfigs = settingsStore((s) => s.poseConfigs)
@@ -138,13 +143,20 @@ export const ProjectionVisualAssistantBubble = ({
   const shouldUseProjectionDisplayMessage =
     variant === 'stage-output' ||
     (variant === 'passive' && Boolean(passiveAssistantMessage))
-  const latestChatAssistantMessageEntry = getLatestAssistantMessageEntry(chatLog)
+  const latestChatAssistantMessageEntry =
+    getLatestAssistantMessageEntry(chatLog)
+  const latestChatAssistantMessage = useMemo(() => {
+    for (let index = (chatLog?.length ?? 0) - 1; index >= 0; index -= 1) {
+      const message = chatLog?.[index]
+      if (message?.role === 'assistant') {
+        return message
+      }
+    }
+    return null
+  }, [chatLog])
   const shouldUseOperatorSpeechDisplayMessage =
     variant === 'operator' &&
-    Boolean(operatorSpeechOutputDisplayState?.display_message) &&
-    (!latestChatAssistantMessageEntry.id ||
-      operatorSpeechOutputDisplayState?.message_id ===
-        latestChatAssistantMessageEntry.id)
+    Boolean(operatorSpeechOutputDisplayState?.display_message)
   const latestAssistantMessageEntry = shouldUseProjectionDisplayMessage
     ? {
         content: passiveAssistantMessage,
@@ -178,6 +190,26 @@ export const ProjectionVisualAssistantBubble = ({
     : shouldUseOperatorSpeechDisplayMessage
       ? 'speechOutputDisplayState.display_message'
       : 'homeStore.chatLog.latestAssistantMessage'
+  const bubbleConversationAttemptRef = shouldUseProjectionDisplayMessage
+    ? resolveSpeechOutputDisplayConversationAttemptRef({
+        displayMessageId: passiveAssistantMessageId,
+        sourceMessageId: passiveSpeechOutputSummary?.message_id,
+        conversationAttemptRef:
+          passiveSpeechOutputSummary?.conversation_attempt_ref,
+      })
+    : shouldUseOperatorSpeechDisplayMessage
+      ? resolveSpeechOutputDisplayConversationAttemptRef({
+          displayMessageId: operatorSpeechOutputDisplayState?.message_id,
+          sourceMessageId: operatorSpeechOutputSummary?.message_id,
+          conversationAttemptRef:
+            operatorSpeechOutputDisplayState?.conversation_attempt_ref,
+        })
+      : resolveSpeechOutputDisplayConversationAttemptRef({
+          displayMessageId: latestAssistantMessageEntry.id,
+          sourceMessageId: latestChatAssistantMessage?.id,
+          conversationAttemptRef:
+            latestChatAssistantMessage?.conversationAttemptRef,
+        })
   const intendedTextSummary = useMemo(
     () =>
       buildSpeechOutputSummary({
@@ -185,10 +217,16 @@ export const ProjectionVisualAssistantBubble = ({
         sourceField: bubbleSourceField,
         message: cleanedMessage,
         messageId: latestAssistantMessageEntry.id,
+        conversationAttemptRef: bubbleConversationAttemptRef,
         textRoleClass: 'intended_text',
         textScopeClass: 'compacted_full_text',
       }),
-    [bubbleSourceField, cleanedMessage, latestAssistantMessageEntry.id]
+    [
+      bubbleSourceField,
+      cleanedMessage,
+      latestAssistantMessageEntry.id,
+      bubbleConversationAttemptRef,
+    ]
   )
   const bubbleSummary = useMemo(
     () =>
@@ -197,6 +235,7 @@ export const ProjectionVisualAssistantBubble = ({
         sourceField: bubbleSourceField,
         message: currentPage,
         messageId: latestAssistantMessageEntry.id,
+        conversationAttemptRef: bubbleConversationAttemptRef,
         textRoleClass: 'bubble_text',
         textScopeClass: bubbleTextScopeClass,
       }),
@@ -205,10 +244,9 @@ export const ProjectionVisualAssistantBubble = ({
       bubbleTextScopeClass,
       currentPage,
       latestAssistantMessageEntry.id,
+      bubbleConversationAttemptRef,
     ]
   )
-  const [operatorSpeechOutputSummary, setOperatorSpeechOutputSummary] =
-    useState<SpeechOutputSummary | null>(() => readWindowSpeechOutputSummary())
   const ttsSpeechOutputSummary = shouldUseProjectionDisplayMessage
     ? passiveSpeechOutputSummary
     : operatorSpeechOutputSummary

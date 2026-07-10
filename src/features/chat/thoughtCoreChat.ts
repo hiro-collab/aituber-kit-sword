@@ -3,6 +3,7 @@ import { Message } from '../messages/messages'
 import i18next from 'i18next'
 import toastStore from '@/features/stores/toast'
 import { MOTION_STIMULUS_RECEIVER_EVENT } from '@/features/motionRuntime/motionStimulusReceiver'
+import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
 
 type ThoughtCoreErrorCause = {
   errorCode?: string
@@ -10,6 +11,10 @@ type ThoughtCoreErrorCause = {
 }
 
 type JsonRecord = Record<string, unknown>
+
+export type ThoughtCoreResponseMetadata = {
+  conversationAttemptRef?: string
+}
 
 const THOUGHT_CORE_MOTION_REQUEST_EVENT = 'motion.requested'
 const MOTION_STIMULUS_SCHEMA_VERSION = 'motion_stimulus.v0'
@@ -495,7 +500,8 @@ function hasExpressionVisibleRequirements(value: unknown): boolean {
 export async function getThoughtCoreChatResponseStream(
   messages: Message[],
   url: string,
-  sessionId: string
+  sessionId: string,
+  onResponseMetadata?: (metadata: ThoughtCoreResponseMetadata) => void
 ): Promise<ReadableStream<string>> {
   const response = await fetch('/api/thoughtCoreChat/', {
     method: 'POST',
@@ -558,6 +564,15 @@ export async function getThoughtCoreChatResponseStream(
                   event?.data && typeof event.data === 'object'
                     ? event.data
                     : {}
+
+                if (eventType.startsWith('assistant.')) {
+                  const conversationAttemptRef = safeConversationAttemptRef(
+                    data.conversation_attempt_ref
+                  )
+                  if (conversationAttemptRef) {
+                    onResponseMetadata?.({ conversationAttemptRef })
+                  }
+                }
 
                 if (eventType === THOUGHT_CORE_MOTION_REQUEST_EVENT) {
                   dispatchThoughtCoreMotionStimulus(event)

@@ -9,6 +9,7 @@ export type Message = {
   embedding?: number[] // メモリ機能用のembedding
   userName?: string // YouTubeコメント主名
   thinking?: string // 推論/思考内容（UI表示・永続化用、LLMには送信しない）
+  conversationAttemptRef?: string
 }
 
 export const EMOTIONS = [
@@ -28,6 +29,7 @@ export type Talk = {
   motion?: string
   sourceMessageId?: string
   sourceTurnId?: string
+  sourceConversationAttemptRef?: string
   displayMessage?: string
 }
 

@@ -1,9 +1,18 @@
 /**
- * @jest-environment node
+ * @jest-environment jsdom
  */
 
 import fs from 'fs'
 import path from 'path'
+import { createElement } from 'react'
+import { render } from '@testing-library/react'
+import { ProjectionVisualAssistantBubble } from '@/components/projectionVisualAssistantBubble'
+import {
+  buildSpeechOutputDisplayState,
+  buildSpeechOutputSummary,
+  writeWindowSpeechOutputDisplayState,
+  writeWindowSpeechOutputSummary,
+} from '@/utils/speechOutputParitySummary'
 import {
   readProjectionVisualQueryFromPath,
   resolveSafePublicMotionAssetPath,
@@ -22,6 +31,35 @@ import {
   resolveProjectionVisualRoomLightUpdateKind,
 } from '@/utils/projectionVisualRoomLight'
 
+const chatConversationAttemptRef =
+  'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+const displayConversationAttemptRef =
+  'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
+
+let mockHomeState: { chatLog: Array<Record<string, unknown>> } = { chatLog: [] }
+let mockProjectionDisplayState: Record<string, unknown> = {}
+
+jest.mock('@/features/stores/home', () => ({
+  __esModule: true,
+  default: jest.fn((selector) => selector(mockHomeState)),
+}))
+
+jest.mock('@/features/stores/projectionDisplay', () => ({
+  __esModule: true,
+  default: jest.fn((selector) => selector(mockProjectionDisplayState)),
+}))
+
+jest.mock('@/features/stores/settings', () => ({
+  __esModule: true,
+  default: jest.fn((selector) =>
+    selector({
+      characterName: 'Assistant',
+      showCharacterName: false,
+      poseConfigs: [],
+    })
+  ),
+}))
+
 const readSource = (relativePath: string) =>
   fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8')
 
@@ -31,7 +69,199 @@ const readAgentOsSource = (relativePath: string) =>
     'utf8'
   )
 
+const readParitySummary = () =>
+  (
+    window as unknown as {
+      __projectionVisualSpeechOutputParityV0?: {
+        bubble: { conversation_attempt_ref: string | null }
+        conversation_attempt_ref_class: string
+      }
+    }
+  ).__projectionVisualSpeechOutputParityV0
+
 describe('worker-2 projection visual organ contract', () => {
+  beforeEach(() => {
+    mockHomeState = { chatLog: [] }
+    mockProjectionDisplayState = {
+      assistantMessage: '',
+      assistantMessageId: null,
+      speechOutputSummary: null,
+      sequence: 0,
+      updatedAt: null,
+    }
+    delete (window as unknown as Record<string, unknown>)
+      .__projectionVisualSpeechOutputDisplayStateV0
+    delete (window as unknown as Record<string, unknown>)
+      .__projectionVisualSpeechOutputSummaryV0
+    delete (window as unknown as Record<string, unknown>)
+      .__projectionVisualSpeechOutputParityV0
+  })
+
+  it('binds the chat bubble only to its matching canonical assistant message ref', () => {
+    mockHomeState = {
+      chatLog: [
+        {
+          id: 'chat-message-1',
+          role: 'assistant',
+          content: 'chat display',
+          conversationAttemptRef: chatConversationAttemptRef,
+        },
+      ],
+    }
+
+    render(createElement(ProjectionVisualAssistantBubble))
+
+    expect(readParitySummary()?.bubble.conversation_attempt_ref).toBe(
+      chatConversationAttemptRef
+    )
+  })
+
+  it('switches the stage bubble to its matching passive summary instead of borrowing chat', () => {
+    mockHomeState = {
+      chatLog: [
+        {
+          id: 'chat-message-latest',
+          role: 'assistant',
+          content: 'newer chat display',
+          conversationAttemptRef: chatConversationAttemptRef,
+        },
+      ],
+    }
+    mockProjectionDisplayState = {
+      assistantMessage: 'passive display',
+      assistantMessageId: 'passive-message-1',
+      speechOutputSummary: buildSpeechOutputSummary({
+        surface: 'tts_talk_message',
+        sourceField: 'passive.speech.summary',
+        message: 'passive display',
+        messageId: 'passive-message-1',
+        conversationAttemptRef: displayConversationAttemptRef,
+      }),
+      sequence: 1,
+      updatedAt: null,
+    }
+
+    render(
+      createElement(ProjectionVisualAssistantBubble, {
+        variant: 'stage-output',
+      })
+    )
+
+    expect(readParitySummary()?.bubble.conversation_attempt_ref).toBe(
+      displayConversationAttemptRef
+    )
+  })
+
+  it('switches the operator bubble to its matching display-state ref and reports a differing TTS ref', () => {
+    mockHomeState = {
+      chatLog: [
+        {
+          id: 'chat-message-latest',
+          role: 'assistant',
+          content: 'newer chat display',
+          conversationAttemptRef: chatConversationAttemptRef,
+        },
+      ],
+    }
+    writeWindowSpeechOutputDisplayState(
+      buildSpeechOutputDisplayState({
+        sourceField: 'Talk.displayMessage.spoken',
+        message: 'operator display',
+        messageId: 'operator-message-1',
+        conversationAttemptRef: displayConversationAttemptRef,
+      })
+    )
+    writeWindowSpeechOutputSummary(
+      buildSpeechOutputSummary({
+        surface: 'tts_talk_message',
+        sourceField: 'Talk.displayMessage.spoken',
+        message: 'operator display',
+        messageId: 'operator-message-1',
+        conversationAttemptRef: chatConversationAttemptRef,
+      })
+    )
+
+    render(
+      createElement(ProjectionVisualAssistantBubble, { variant: 'operator' })
+    )
+
+    expect(readParitySummary()?.bubble.conversation_attempt_ref).toBe(
+      displayConversationAttemptRef
+    )
+    expect(readParitySummary()?.conversation_attempt_ref_class).toBe('mismatch')
+  })
+
+  it('leaves passive and operator refs unavailable when their source ids do not match', () => {
+    mockProjectionDisplayState = {
+      assistantMessage: 'passive display',
+      assistantMessageId: 'passive-message-1',
+      speechOutputSummary: buildSpeechOutputSummary({
+        surface: 'tts_talk_message',
+        sourceField: 'passive.speech.summary',
+        message: 'passive display',
+        messageId: 'other-passive-message',
+        conversationAttemptRef: displayConversationAttemptRef,
+      }),
+      sequence: 1,
+      updatedAt: null,
+    }
+    const { unmount } = render(
+      createElement(ProjectionVisualAssistantBubble, {
+        variant: 'stage-output',
+      })
+    )
+    expect(readParitySummary()?.bubble.conversation_attempt_ref).toBeNull()
+    unmount()
+
+    writeWindowSpeechOutputDisplayState(
+      buildSpeechOutputDisplayState({
+        sourceField: 'Talk.displayMessage.spoken',
+        message: 'operator display',
+        messageId: 'operator-message-1',
+        conversationAttemptRef: displayConversationAttemptRef,
+      })
+    )
+    writeWindowSpeechOutputSummary(
+      buildSpeechOutputSummary({
+        surface: 'tts_talk_message',
+        sourceField: 'Talk.displayMessage.spoken',
+        message: 'operator display',
+        messageId: 'other-operator-message',
+        conversationAttemptRef: displayConversationAttemptRef,
+      })
+    )
+    render(
+      createElement(ProjectionVisualAssistantBubble, { variant: 'operator' })
+    )
+    expect(readParitySummary()?.bubble.conversation_attempt_ref).toBeNull()
+  })
+
+  it('binds canonical assistant attempt refs to selected display sources only', () => {
+    const bubbleSource = readSource(
+      'src/components/projectionVisualAssistantBubble.tsx'
+    )
+    const paritySource = readSource('src/utils/speechOutputParitySummary.ts')
+
+    expect(bubbleSource).toContain('bubbleConversationAttemptRef')
+    expect(bubbleSource).toContain(
+      'resolveSpeechOutputDisplayConversationAttemptRef'
+    )
+    expect(bubbleSource).toContain(
+      'passiveSpeechOutputSummary?.conversation_attempt_ref'
+    )
+    expect(bubbleSource).toContain(
+      'operatorSpeechOutputDisplayState?.conversation_attempt_ref'
+    )
+    expect(bubbleSource).not.toContain(
+      'latestCanonicalAssistantConversationAttemptRef'
+    )
+    expect(paritySource).toContain('conversation_attempt_ref')
+    expect(paritySource).toContain('conversation_attempt_ref_class')
+    expect(paritySource).toContain('CONVERSATION_ATTEMPT_REF_PATTERN')
+    expect(paritySource).toContain('raw_text_published: false')
+    expect(paritySource).not.toContain('provider_payload:')
+  })
+
   it('classifies only complete canonical room-light observation update kinds', () => {
     const canonicalObservation = {
       type: 'room_light_observation',
@@ -111,10 +341,15 @@ describe('worker-2 projection visual organ contract', () => {
       ...canonicalObservation,
     }
     delete withoutConfidence.confidence
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind(withoutConfidence)
-    ).toBe('stale')
-    for (const confidence of [Number.NaN, Number.POSITIVE_INFINITY, -0.1, 1.1]) {
+    expect(resolveProjectionVisualRoomLightUpdateKind(withoutConfidence)).toBe(
+      'stale'
+    )
+    for (const confidence of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      -0.1,
+      1.1,
+    ]) {
       expect(
         resolveProjectionVisualRoomLightUpdateKind({
           ...canonicalObservation,
@@ -190,7 +425,11 @@ describe('worker-2 projection visual organ contract', () => {
 
     const invalidObservations = [
       { ...canonicalObservation, source: 'untrusted_camera', privateMarker },
-      { ...canonicalObservation, observed_at: 'not-a-timestamp', privateMarker },
+      {
+        ...canonicalObservation,
+        observed_at: 'not-a-timestamp',
+        privateMarker,
+      },
       {
         ...canonicalObservation,
         model: { name: 'untrusted-model', kind: 'heuristic' },
@@ -198,10 +437,7 @@ describe('worker-2 projection visual organ contract', () => {
       },
       {
         ...canonicalObservation,
-        does_not_prove: [
-          'physical_room_light_state',
-          privateMarker,
-        ],
+        does_not_prove: ['physical_room_light_state', privateMarker],
         privateMarker,
       },
       { observation_bucket: 'balanced', privateMarker },
@@ -705,10 +941,7 @@ describe('worker-2 projection visual organ contract', () => {
   )
 
   it.each([
-    [
-      '/local-vrma/configured-dance.vrma',
-      '/local-vrma/configured-dance.vrma',
-    ],
+    ['/local-vrma/configured-dance.vrma', '/local-vrma/configured-dance.vrma'],
     [' /local-vrma/trimmed.vrma ', '/local-vrma/trimmed.vrma'],
     ['/local-vrma/not-vrma.txt', undefined],
     ['/other-public/motion.vrma', undefined],
@@ -781,9 +1014,7 @@ describe('worker-2 projection visual organ contract', () => {
         safe_visible_state: 'neutral_idle_requested',
       })
     )
-    expect(JSON.stringify([dance, stop, expression])).not.toContain(
-      'entity_id'
-    )
+    expect(JSON.stringify([dance, stop, expression])).not.toContain('entity_id')
     expect(JSON.stringify([dance, stop, expression])).not.toContain(
       'provider_payload'
     )
@@ -854,9 +1085,7 @@ describe('worker-2 projection visual organ contract', () => {
       'const speechOutputMessage = resolveSpeechOutputMessage(talk)'
     )
     expect(speakCharacterSource).toContain('message: speechOutputMessage')
-    expect(speakCharacterSource).toContain(
-      "'Talk.displayMessage.spoken'"
-    )
+    expect(speakCharacterSource).toContain("'Talk.displayMessage.spoken'")
     expect(
       speakCharacterSource.indexOf('writeSynthesizedSpeechOutputSummary(talk)')
     ).toBeLessThan(
@@ -937,7 +1166,9 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(source).toContain('td-state-rail')
     expect(source).toContain('stateWordLabel')
-    expect(source).toContain("return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'")
+    expect(source).toContain(
+      "return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'"
+    )
     expect(source).toContain("if (normalized === 'UNREPORTED') return '-'")
     expect(source).toContain('environmentRailWordLabel')
     expect(source).toContain('const environmentRailLabel')
@@ -1000,7 +1231,9 @@ describe('worker-2 projection visual organ contract', () => {
     expect(cubeVaultSource).toContain(
       "proof_ceiling: 'camera_environment_estimate_only'"
     )
-    expect(cubeVaultSource).not.toContain('state_queries: {\n          room_light')
+    expect(cubeVaultSource).not.toContain(
+      'state_queries: {\n          room_light'
+    )
     expect(source).toContain(
       'data-update-signal={indicator.updateSignal?.target}'
     )
@@ -1019,7 +1252,7 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain('td-environment-source-strip')
     expect(source).toContain('td-sense-metric-grid')
     expect(source).toContain('td-runtime-mini-grid')
-    expect(source).toContain("kicker=\"INPUT / TURN STATUS\"")
+    expect(source).toContain('kicker="INPUT / TURN STATUS"')
     expect(source).toContain('Current Step')
     expect(source).toContain('td-turn-stage-summary')
     expect(source).toContain("label: 'SENSE'")
@@ -1073,15 +1306,9 @@ describe('worker-2 projection visual organ contract', () => {
     expect(readSource('src/styles/globals.css')).toContain(
       '.td-runtime-mini-card[data-freshness]'
     )
-    expect(readSource('src/styles/globals.css')).toContain(
-      '--td-freshness-hue'
-    )
-    expect(readSource('src/styles/globals.css')).toContain(
-      'transition:'
-    )
-    expect(readSource('src/styles/globals.css')).toContain(
-      '.td-env-live-meter'
-    )
+    expect(readSource('src/styles/globals.css')).toContain('--td-freshness-hue')
+    expect(readSource('src/styles/globals.css')).toContain('transition:')
+    expect(readSource('src/styles/globals.css')).toContain('.td-env-live-meter')
     expect(readSource('src/styles/globals.css')).toContain(
       '.td-env-value-card .td-env-live-chip'
     )
