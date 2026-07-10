@@ -9,6 +9,7 @@ import {
   MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
   type MotionStimulusReceiverResult,
 } from '@/features/motionRuntime/motionStimulusReceiver'
+import { resolveProjectionVisualRoomLightSafeView } from '@/utils/projectionVisualRoomLight'
 
 type HudState = {
   fontSize: number
@@ -603,12 +604,11 @@ const ENVIRONMENT_VALUE_LABELS: Record<string, string> = {
   door: 'DOOR',
   fan: 'FAN',
   light: 'LIGHT',
-  room_light: 'ROOM EST',
+  room_light: 'ROOM LIGHT',
 }
 
 const HUD_UPDATE_TARGETS: Record<string, string> = {
-  'query:room_light': 'environment.roomLightEstimate',
-  'vision:room_light': 'environment.roomLightEstimate',
+  'vision:room_light': 'environment.vision.room_light',
 }
 
 const VISION_SOURCE_ONLY_KEYS = new Set(['camera', 'sword_sign'])
@@ -689,29 +689,6 @@ const formatProbability = (value: unknown): string | null => {
   return `${Math.round(normalized)}%`
 }
 
-const roomLightEstimateProbabilityLabels = (
-  signal: any
-): {
-  electricLabel?: string
-  daylightLabel?: string
-} => {
-  const evidence = signal?.evidence ?? {}
-  const probabilities = signal?.probabilities ?? {}
-  const electricProbability =
-    readNumericField(evidence, ['electric_on_probability']) ??
-    readNumericField(probabilities, ['electric_on']) ??
-    readNumericField(signal?.electric_light, ['probability'])
-  const daylightProbability =
-    readNumericField(evidence, ['daylight_present_probability']) ??
-    readNumericField(probabilities, ['daylight_present']) ??
-    readNumericField(signal?.daylight, ['probability'])
-
-  return {
-    electricLabel: formatProbability(electricProbability) ?? undefined,
-    daylightLabel: formatProbability(daylightProbability) ?? undefined,
-  }
-}
-
 const environmentSignalSampleFreshnessLabel = (
   signal: any,
   nowMs: number
@@ -719,14 +696,15 @@ const environmentSignalSampleFreshnessLabel = (
   return freshnessDetailLabel(environmentFreshnessVisual(signal, nowMs))
 }
 
-const roomLightLiveMetrics = (
+const roomLightObservationLiveMetrics = (
   signal: any,
   nowMs: number
 ): EnvironmentLiveMetric[] | undefined => {
-  if (!signal) return undefined
-  const { electricLabel, daylightLabel } =
-    roomLightEstimateProbabilityLabels(signal)
-  const sampleFreshnessLabel = environmentSignalSampleFreshnessLabel(signal, nowMs)
+  const safeView = resolveProjectionVisualRoomLightSafeView(signal)
+  if (!safeView || safeView.state === 'DEGRADED') return undefined
+  const sampleFreshnessLabel = freshnessDetailLabel(
+    environmentFreshnessVisual({ observed_at: safeView.observedAt }, nowMs)
+  )
   const metrics: EnvironmentLiveMetric[] = []
 
   if (sampleFreshnessLabel) {
@@ -737,22 +715,7 @@ const roomLightLiveMetrics = (
       title: 'Camera estimate sample freshness',
     })
   }
-  if (electricLabel) {
-    metrics.push({
-      id: 'electric',
-      label: 'E',
-      value: electricLabel,
-      title: 'Electric-light cue estimate',
-    })
-  }
-  if (daylightLabel) {
-    metrics.push({
-      id: 'daylight',
-      label: 'D',
-      value: daylightLabel,
-      title: 'Daylight cue estimate',
-    })
-  }
+  metrics.push(...(safeView.metrics ?? []))
 
   return metrics.length > 0 ? metrics : undefined
 }
@@ -763,26 +726,31 @@ const environmentSignalDetailLabel = (
   fallbackSource: string
 ): string => {
   if (!signal) return 'not reported'
-
-  const evidence = signal.evidence ?? {}
-  const { electricLabel, daylightLabel } =
-    roomLightEstimateProbabilityLabels(signal)
-  const lightingType =
-    readStringField(evidence, ['lighting_type']) ??
-    readStringField(signal, ['lighting_type', 'label', 'daylight_state'])
-  const confidence = readStringField(signal, [
-    'confidence_label',
-    'confidenceLabel',
-  ])
-
-  if (lightingType && confidence) return `${lightingType} ${confidence}`
-  if (lightingType && daylightLabel) return `${lightingType} ${daylightLabel}`
-  if (lightingType) return lightingType
-  if (daylightLabel) return `daylight ${daylightLabel}`
-
-  if (electricLabel) return `elec cue ${electricLabel}`
-
+  const detail = readStringField(signal, ['detail', 'answer_hint', 'label'])
+  if (detail) return detail
   return freshnessDetailLabel(environmentFreshnessVisual(signal, nowMs))
+}
+
+const roomLightObservationState = (signal: any): string => {
+  return resolveProjectionVisualRoomLightSafeView(signal)?.state ?? 'DEGRADED'
+}
+
+const roomLightObservationFreshnessVisual = (
+  signal: any,
+  nowMs: number
+): EnvironmentFreshnessVisual => {
+  const safeView = resolveProjectionVisualRoomLightSafeView(signal)
+  if (!safeView || safeView.state === 'DEGRADED') {
+    return environmentFreshnessVisual({ stale: true }, nowMs)
+  }
+  return environmentFreshnessVisual({ observed_at: safeView.observedAt }, nowMs)
+}
+
+const roomLightObservationDetailLabel = (signal: any, nowMs: number): string => {
+  return (
+    resolveProjectionVisualRoomLightSafeView(signal)?.detail ??
+    'Camera room-light observation unavailable'
+  )
 }
 
 const hudUpdateSignalSource = (
@@ -805,6 +773,9 @@ const hudUpdateSignalSource = (
 }
 
 const hudUpdateSignalKind = (signal: any): HudUpdateSignal['kind'] => {
+  const roomLightKind = resolveProjectionVisualRoomLightSafeView(signal)?.kind
+  if (roomLightKind) return roomLightKind
+
   const state = environmentSignalState(signal, 'DEGRADED')
   if (state === 'ERROR' || state === 'DOWN') return 'warning'
   if (state === 'DEGRADED') return 'stale'
@@ -816,19 +787,13 @@ const hudUpdateSemanticToken = (
   target: string,
   signal: any
 ): string => {
-  const evidence = signal?.evidence ?? {}
+  const roomLightSafeView = resolveProjectionVisualRoomLightSafeView(signal)
+  if (roomLightSafeView) return roomLightSafeView.token
   const learning = signal?.learning ?? {}
-  const semanticState = environmentStateValueLabel(signal?.state ?? signal?.label)
-  const confidence = readStringField(signal, [
-    'confidence_label',
-    'confidenceLabel',
-  ])
-  const lightingType =
-    readStringField(evidence, ['lighting_type']) ??
-    readStringField(signal, ['lighting_type', 'label', 'daylight_state'])
+  const semanticState = environmentStateValueLabel(
+    signal?.state ?? signal?.label
+  )
   const learningLevel = readStringField(learning, ['level', 'status'])
-  const { electricLabel, daylightLabel } =
-    roomLightEstimateProbabilityLabels(signal)
   const snapshotId = readStringField(signal, [
     'source_snapshot_id',
     'sourceSnapshotId',
@@ -841,10 +806,6 @@ const hudUpdateSemanticToken = (
   return [
     target,
     semanticState.toLowerCase(),
-    confidence,
-    lightingType,
-    electricLabel,
-    daylightLabel,
     learningLevel,
     snapshotId,
   ]
@@ -859,6 +820,21 @@ const buildEnvironmentHudUpdateSignal = (
 ): HudUpdateSignal | undefined => {
   const target = HUD_UPDATE_TARGETS[`${source}:${key}`]
   if (!target || !signal) return undefined
+  const roomLightSafeView = resolveProjectionVisualRoomLightSafeView(signal)
+  if (target === 'environment.vision.room_light' && !roomLightSafeView) {
+    return undefined
+  }
+  if (roomLightSafeView) {
+    return {
+      target,
+      kind: roomLightSafeView.kind,
+      source: 'camera',
+      observedAt: roomLightSafeView.observedAt,
+      snapshotId: roomLightSafeView.snapshotId,
+      token: roomLightSafeView.token,
+      ttlMs: 1800,
+    }
+  }
   const observedAt = readStringField(signal, [
     'observed_at',
     'observedAt',
@@ -1481,15 +1457,12 @@ export const ProjectionVisualHud = ({
     }))
   const stateQueryIndicators = Object.entries(stateQueries)
     .filter((entry): entry is [string, Record<string, any>] =>
-      isRecordObject(entry[1])
+      entry[0] !== 'room_light' && isRecordObject(entry[1])
     )
     .map(([key, signal]) => ({
       id: `state-query-${key}`,
       label: environmentValueLabel(key, 'query'),
-      title:
-        key === 'room_light'
-          ? 'Camera room-light estimate'
-          : String(signal.answer_hint ?? `Environment state query: ${key}`),
+      title: String(signal.answer_hint ?? `Environment state query: ${key}`),
       state: environmentSignalState(signal, 'DEGRADED'),
       value: environmentStateValueLabel(signal.state),
       summary: compactSourceLabel(
@@ -1499,31 +1472,46 @@ export const ProjectionVisualHud = ({
       detail: environmentSignalDetailLabel(signal, nowMs, 'Vision'),
       freshnessVisual: environmentFreshnessVisual(signal, nowMs),
       updateSignal: buildEnvironmentHudUpdateSignal(key, 'query', signal),
-      liveMetrics:
-        key === 'room_light' ? roomLightLiveMetrics(signal, nowMs) : undefined,
+      liveMetrics: undefined,
     }))
   const visionEstimateIndicators = Object.entries(visionSignals)
     .filter(
       (entry): entry is [string, Record<string, any>] =>
         isRecordObject(entry[1]) &&
         !VISION_SOURCE_ONLY_KEYS.has(entry[0]) &&
-        !isRecordObject(stateQueries[entry[0]])
+        (entry[0] === 'room_light' || !isRecordObject(stateQueries[entry[0]])) &&
+        (entry[0] !== 'room_light' ||
+          resolveProjectionVisualRoomLightSafeView(entry[1]) !== undefined)
     )
     .map(([key, signal]) => ({
       id: `vision-${key}`,
       label: environmentValueLabel(key, 'vision'),
       title:
         key === 'room_light'
-          ? 'Camera room-light estimate'
+          ? 'Camera room-light observation'
           : `Camera estimate: ${key}`,
-      state: environmentSignalState(signal, 'DEGRADED'),
-      value: environmentStateValueLabel(signal.state ?? signal.label),
-      summary: compactSourceLabel(signal.source, 'Vision'),
-      detail: environmentSignalDetailLabel(signal, nowMs, 'Vision'),
-      freshnessVisual: environmentFreshnessVisual(signal, nowMs),
+      state:
+        key === 'room_light'
+          ? roomLightObservationState(signal)
+          : environmentSignalState(signal, 'DEGRADED'),
+      value:
+        key === 'room_light'
+          ? resolveProjectionVisualRoomLightSafeView(signal)?.value ?? 'Unknown'
+          : environmentStateValueLabel(signal.state ?? signal.label),
+      summary: key === 'room_light' ? 'Vision' : compactSourceLabel(signal.source, 'Vision'),
+      detail:
+        key === 'room_light'
+          ? roomLightObservationDetailLabel(signal, nowMs)
+          : environmentSignalDetailLabel(signal, nowMs, 'Vision'),
+      freshnessVisual:
+        key === 'room_light'
+          ? roomLightObservationFreshnessVisual(signal, nowMs)
+          : environmentFreshnessVisual(signal, nowMs),
       updateSignal: buildEnvironmentHudUpdateSignal(key, 'vision', signal),
       liveMetrics:
-        key === 'room_light' ? roomLightLiveMetrics(signal, nowMs) : undefined,
+        key === 'room_light'
+          ? roomLightObservationLiveMetrics(signal, nowMs)
+          : undefined,
     }))
   const environmentValueIndicators = [
     ...applianceIndicators,

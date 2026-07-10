@@ -630,6 +630,29 @@ const buildDemoIndicatorSnapshot = (
             active: swordActive,
             stale: false,
           },
+          room_light: {
+            available: true,
+            stale: false,
+            observation_bucket: step === 0 ? 'dark' : 'bright',
+            confidence: step === 0 ? 0.89 : 0.83,
+            daylight_ambiguity: step === 0 ? 'low' : 'medium',
+            cue_likelihoods: {
+              warm_light: step === 0 ? 0.18 : 0.42,
+              daylight: step === 0 ? 0.12 : 0.86,
+              darkness: step === 0 ? 0.91 : 0.09,
+            },
+            source: 'vision_snapshot_processor',
+            source_class: 'camera_environment_estimate',
+            freshness: {
+              level: 'fresh',
+              age_ms: 0,
+            },
+            proof_ceiling: 'camera_environment_estimate_only',
+            does_not_prove: [
+              'physical_room_light_state',
+              'home_assistant_light_state',
+            ],
+          },
         },
         appliances: {
           fan: {
@@ -639,14 +662,6 @@ const buildDemoIndicatorSnapshot = (
           door: {
             state: step === 4 ? 'open' : 'closed',
             stale: false,
-          },
-        },
-        state_queries: {
-          room_light: {
-            available: true,
-            stale: false,
-            state: step === 0 ? 'dark' : 'bright',
-            authority: 'vision_snapshot_processor',
           },
         },
         actions: [],
