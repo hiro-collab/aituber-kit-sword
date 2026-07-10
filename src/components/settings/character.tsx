@@ -699,7 +699,6 @@ const Character = () => {
     pngTuberChromaKeyTolerance,
     modelType,
     fixedCharacterPosition,
-    selectAIService,
     systemPrompt,
     characterPreset1,
     characterPreset2,
@@ -1430,15 +1429,9 @@ const Character = () => {
           <div className="my-4 text-xl font-bold">
             {t('CharacterSettingsPrompt')}
           </div>
-          {selectAIService === 'dify' ? (
-            <div className="my-2 text-sm whitespace-pre-wrap">
-              {t('DifyInstruction')}
-            </div>
-          ) : (
-            <div className="my-2 text-sm whitespace-pre-wrap">
-              {t('CharacterSettingsInfo')}
-            </div>
-          )}
+          <div className="my-2 text-sm whitespace-pre-wrap">
+            {t('CharacterSettingsInfo')}
+          </div>
         </div>
         <div className="my-2 text-sm whitespace-pre-wrap">
           {t('CharacterpresetInfo')}

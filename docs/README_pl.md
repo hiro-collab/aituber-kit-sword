@@ -116,7 +116,6 @@ Szczegółowe instrukcje użytkowania i konfiguracji można znaleźć w [dokumen
 - Fireworks
 - LM Studio
 - Ollama
-- Dify
 - xAI
 - DeepSeek
 - OpenRouter

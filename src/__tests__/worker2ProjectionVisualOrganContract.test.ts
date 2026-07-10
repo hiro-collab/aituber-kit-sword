@@ -226,7 +226,6 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain('selectAIService: configuredSystemCellAIService')
     expect(source).toContain('thoughtCoreUrl: configuredThoughtCoreUrl')
     expect(source).not.toContain('NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE')
-    expect(source).not.toContain("configured === 'dify'")
   })
 
   it('keeps Projection Visual display-only modes scoped through query mode', () => {
@@ -322,14 +321,11 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain('<GestureVoiceBridge />')
   })
 
-  it('does not mix legacy Projection Visual Dify force flags into current AI service routing', () => {
+  it('keeps Projection Visual routing configured for Thought Core', () => {
     const source = readSource('src/pages/projection-visual.tsx')
 
     expect(source).toContain('NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE')
     expect(source).toContain("configured === 'thought-core'")
-    expect(source).not.toContain("configured === 'dify'")
-    expect(source).not.toContain('NEXT_PUBLIC_PROJECTION_VISUAL_FORCE_DIFY')
-    expect(source).not.toContain('legacyForceDify')
   })
 
   it.each([
@@ -898,7 +894,7 @@ describe('worker-2 projection visual organ contract', () => {
     expect(cssSource).toContain('overflow-wrap: anywhere')
   })
 
-  it('keeps normal HUD focused on Thought Core without legacy Dify display grouping', () => {
+  it('keeps normal HUD focused on Thought Core and current provider grouping', () => {
     const source = readSource('src/components/projectionVisualHud.tsx')
     const cubeVaultSource = readSource('src/components/cubeVaultBackground.tsx')
     const roomLightSource = readSource('src/utils/projectionVisualRoomLight.ts')
@@ -906,10 +902,6 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain(
       "touchdesigner_control_gui: 'display / projection'"
     )
-    expect(source).not.toContain("dify: 'Dify compatibility'")
-    expect(source).not.toContain('LEGACY_SERVICE_KEYS')
-    expect(source).not.toContain('legacyServices')
-    expect(source).not.toContain('td-services-legacy')
     expect(source).toContain('readDeveloperHudDiagnosticsFlag')
     expect(source).toContain("['debug', 'developer', 'hudDebug']")
     expect(source).toContain('const [developerHudDiagnostics]')

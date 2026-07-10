@@ -116,7 +116,6 @@ AITuberKitは、誰でも簡単にAIキャラクターとチャットできるWe
 - Fireworks
 - LM Studio
 - Ollama
-- Dify
 - xAI
 - DeepSeek
 - OpenRouter

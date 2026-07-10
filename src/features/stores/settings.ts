@@ -68,7 +68,6 @@ interface APIKeys {
   azureKey: string
   xaiKey: string
   groqKey: string
-  difyKey: string
   cohereKey: string
   mistralaiKey: string
   perplexityKey: string
@@ -157,8 +156,6 @@ interface ModelProvider extends Live2DSettings {
 }
 
 interface Integrations {
-  difyUrl: string
-  difyConversationId: string
   thoughtCoreUrl: string
   thoughtCoreSessionId: string
   youtubeMode: boolean
@@ -353,7 +350,6 @@ const getInitialValuesFromEnv = (): SettingsState => ({
   mistralaiKey: '',
   perplexityKey: '',
   fireworksKey: '',
-  difyKey: '',
   deepseekKey: '',
   openrouterKey: '',
   lmstudioKey: '',
@@ -469,8 +465,6 @@ const getInitialValuesFromEnv = (): SettingsState => ({
     process.env.NEXT_PUBLIC_CUSTOM_API_INCLUDE_MIME_TYPE !== 'false',
 
   // Integrations
-  difyUrl: '',
-  difyConversationId: '',
   thoughtCoreUrl:
     process.env.NEXT_PUBLIC_THOUGHT_CORE_BASE_URL || 'http://127.0.0.1:18888',
   thoughtCoreSessionId:
@@ -861,17 +855,29 @@ const getInitialValuesFromEnv = (): SettingsState => ({
   surprisedMotionGroup: process.env.NEXT_PUBLIC_SURPRISED_MOTION_GROUP || '',
 })
 
-type PersistedSettingsState = Partial<SettingsState> & {
+type PersistedSettingsState = Omit<Partial<SettingsState>, 'selectAIService'> & {
+  selectAIService?: AIService | 'dify'
+  difyKey?: unknown
+  difyUrl?: unknown
+  difyConversationId?: unknown
   presenceGreetingMessage?: string
   presenceDepartureMessage?: string
 }
 
 const migratePersistedSettings = (
   state?: PersistedSettingsState
-): PersistedSettingsState | undefined => {
+): Partial<SettingsState> | undefined => {
   if (!state) return state
 
   const migrated = { ...state }
+
+  if (migrated.selectAIService === 'dify') {
+    migrated.selectAIService = 'thought-core'
+  }
+
+  delete migrated.difyKey
+  delete migrated.difyUrl
+  delete migrated.difyConversationId
 
   if (
     migrated.selectAIService === 'openai' &&
@@ -898,7 +904,7 @@ const migratePersistedSettings = (
     delete migrated.presenceDepartureMessage
   }
 
-  return migrated
+  return migrated as Partial<SettingsState>
 }
 
 const mergePersistedSettings = (
@@ -948,6 +954,11 @@ const settingsStore = create<SettingsState>()(
   exclusivityMiddleware(
     persist(() => getInitialValuesFromEnv(), {
       name: 'aitube-kit-settings',
+      version: 1,
+      migrate: (persistedState) =>
+        migratePersistedSettings(
+          persistedState as PersistedSettingsState | undefined
+        ),
       merge: mergePersistedSettings,
       partialize: (state) => ({
         openaiKey: state.openaiKey,
@@ -960,7 +971,6 @@ const settingsStore = create<SettingsState>()(
         mistralaiKey: state.mistralaiKey,
         perplexityKey: state.perplexityKey,
         fireworksKey: state.fireworksKey,
-        difyKey: state.difyKey,
         deepseekKey: state.deepseekKey,
         openrouterKey: state.openrouterKey,
         lmstudioKey: state.lmstudioKey,
@@ -1011,8 +1021,6 @@ const settingsStore = create<SettingsState>()(
         gsviTtsSpeechRate: state.gsviTtsSpeechRate,
         elevenlabsVoiceId: state.elevenlabsVoiceId,
         cartesiaVoiceId: state.cartesiaVoiceId,
-        difyUrl: state.difyUrl,
-        difyConversationId: state.difyConversationId,
         thoughtCoreUrl: state.thoughtCoreUrl,
         thoughtCoreSessionId: state.thoughtCoreSessionId,
         youtubeMode: state.youtubeMode,

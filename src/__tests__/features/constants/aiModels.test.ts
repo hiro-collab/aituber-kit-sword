@@ -38,7 +38,7 @@ describe('aiModels', () => {
     'openrouter',
     'lmstudio',
     'ollama',
-    'dify',
+    'thought-core',
     'custom-api',
   ]
 
@@ -47,7 +47,7 @@ describe('aiModels', () => {
     'openrouter',
     'lmstudio',
     'ollama',
-    'dify',
+    'thought-core',
     'custom-api',
   ]
 

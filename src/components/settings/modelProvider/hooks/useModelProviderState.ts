@@ -28,7 +28,6 @@ export const useModelProviderState = () => {
   const mistralaiKey = settingsStore((s) => s.mistralaiKey)
   const perplexityKey = settingsStore((s) => s.perplexityKey)
   const fireworksKey = settingsStore((s) => s.fireworksKey)
-  const difyKey = settingsStore((s) => s.difyKey)
   const useSearchGrounding = settingsStore((s) => s.useSearchGrounding)
   const dynamicRetrievalThreshold = settingsStore(
     (s) => s.dynamicRetrievalThreshold
@@ -52,7 +51,6 @@ export const useModelProviderState = () => {
   const localLlmUrl = settingsStore((s) => s.localLlmUrl)
   const imageDisplayPosition = settingsStore((s) => s.imageDisplayPosition)
   const customModel = settingsStore((s) => s.customModel)
-  const difyUrl = settingsStore((s) => s.difyUrl)
   const thoughtCoreUrl = settingsStore((s) => s.thoughtCoreUrl)
   const thoughtCoreSessionId = settingsStore((s) => s.thoughtCoreSessionId)
   const customApiUrl = settingsStore((s) => s.customApiUrl)
@@ -112,7 +110,6 @@ export const useModelProviderState = () => {
     mistralaiKey,
     perplexityKey,
     fireworksKey,
-    difyKey,
     useSearchGrounding,
     dynamicRetrievalThreshold,
     deepseekKey,
@@ -132,7 +129,6 @@ export const useModelProviderState = () => {
     localLlmUrl,
     imageDisplayPosition,
     customModel,
-    difyUrl,
     thoughtCoreUrl,
     thoughtCoreSessionId,
     customApiUrl,

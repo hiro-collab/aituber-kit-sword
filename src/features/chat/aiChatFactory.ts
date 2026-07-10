@@ -1,6 +1,5 @@
 import { Message } from '@/features/messages/messages'
 import { AIService } from '@/features/constants/settings'
-import { getDifyChatResponseStream } from './difyChat'
 import { getThoughtCoreChatResponseStream } from './thoughtCoreChat'
 import { getVercelAIChatResponseStream } from './vercelAIChat'
 import settingsStore from '@/features/stores/settings'
@@ -32,13 +31,6 @@ export async function getAIChatResponseStream(
     case 'ollama':
     case 'custom-api':
       return getVercelAIChatResponseStream(messages)
-    case 'dify':
-      return getDifyChatResponseStream(
-        messages,
-        ss.difyKey || '',
-        ss.difyUrl || '',
-        ss.difyConversationId
-      )
     case 'thought-core':
       return getThoughtCoreChatResponseStream(
         messages,

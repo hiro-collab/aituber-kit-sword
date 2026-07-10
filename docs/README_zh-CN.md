@@ -116,7 +116,6 @@ AITuberKit是一个开源工具包，任何人都可以轻松构建能与AI角�
 - Fireworks
 - LM Studio
 - Ollama
-- Dify
 - xAI
 - DeepSeek
 - OpenRouter

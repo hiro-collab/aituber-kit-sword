@@ -58,10 +58,9 @@ export const isVercelLocalAIService = (
   return localServices.includes(service as VercelLocalAIService)
 }
 
-export type DifyService = 'dify'
 export type ThoughtCoreService = 'thought-core'
 
-export type AIService = VercelAIService | DifyService | ThoughtCoreService
+export type AIService = VercelAIService | ThoughtCoreService
 
 export interface AIServiceConfig {
   openai: { key: string; model: string }
@@ -77,11 +76,6 @@ export interface AIServiceConfig {
   perplexity: { key: string; model: string }
   fireworks: { key: string; model: string }
   openrouter: { key: string; model: string }
-  dify: {
-    key: string
-    url: string
-    conversationId: string
-  }
   'thought-core': {
     url: string
     sessionId: string

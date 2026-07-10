@@ -333,7 +333,6 @@ const modelDefinitions: Record<AIService, ModelInfo[]> = {
   openrouter: [],
   lmstudio: [],
   ollama: [],
-  dify: [],
   'thought-core': [],
   'custom-api': [],
 }

@@ -143,44 +143,6 @@ const ModelProvider = () => {
           </>
         )
 
-      case 'dify':
-        return (
-          <>
-            <div className="my-6">
-              <div className="my-2 text-sm whitespace-pre-wrap">
-                {t('DifyInfo')}
-              </div>
-              <div className="my-4 text-xl font-bold">
-                {t('DifyAPIKeyLabel')}
-              </div>
-              <input
-                className="text-ellipsis px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
-                type="password"
-                placeholder="..."
-                value={state.difyKey}
-                onChange={(e) =>
-                  settingsStore.setState({ difyKey: e.target.value })
-                }
-              />
-            </div>
-            <div className="my-6">
-              <div className="my-4 text-xl font-bold">{t('EnterURL')}</div>
-              <div className="my-2 text-sm whitespace-pre-wrap">
-                {t('DifyInfo3')}
-              </div>
-              <input
-                className="text-ellipsis px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
-                type="text"
-                placeholder="..."
-                value={state.difyUrl}
-                onChange={(e) =>
-                  settingsStore.setState({ difyUrl: e.target.value })
-                }
-              />
-            </div>
-          </>
-        )
-
       case 'thought-core':
         return (
           <>
@@ -421,8 +383,7 @@ const ModelProvider = () => {
 
       {renderServiceConfiguration()}
 
-      {state.selectAIService !== 'dify' &&
-        state.selectAIService !== 'thought-core' && (
+      {state.selectAIService !== 'thought-core' && (
           <>
             {!state.realtimeAPIMode &&
               !state.audioMode &&

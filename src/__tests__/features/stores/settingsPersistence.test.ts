@@ -163,4 +163,45 @@ describe('settingsStore persistence', () => {
 
     expect(settingsStore.getState().selectAIService).toBe('openai')
   })
+
+  it('normalizes legacy persisted provider state and removes its keys', async () => {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        state: {
+          selectAIService: 'dify',
+          difyKey: 'synthetic-marker-key',
+          difyUrl: 'synthetic-marker-url',
+          difyConversationId: 'synthetic-marker-conversation',
+          characterName: 'persisted-character',
+        },
+        version: 0,
+      })
+    )
+
+    const settingsStore = loadStore()
+    await settingsStore.persist.rehydrate()
+    const state = settingsStore.getState()
+
+    expect(state.selectAIService).toBe('thought-core')
+    expect(state.characterName).toBe('persisted-character')
+    expect(state).not.toHaveProperty('difyKey')
+    expect(state).not.toHaveProperty('difyUrl')
+    expect(state).not.toHaveProperty('difyConversationId')
+
+    const serializedPersistedState = localStorage.getItem(storageKey) || ''
+    const persisted = JSON.parse(serializedPersistedState)
+
+    expect(persisted.version).toBe(1)
+    expect(persisted.state.selectAIService).toBe('thought-core')
+    expect(persisted.state.characterName).toBe('persisted-character')
+    expect(persisted.state).not.toHaveProperty('difyKey')
+    expect(persisted.state).not.toHaveProperty('difyUrl')
+    expect(persisted.state).not.toHaveProperty('difyConversationId')
+    expect(serializedPersistedState).not.toContain('synthetic-marker-key')
+    expect(serializedPersistedState).not.toContain('synthetic-marker-url')
+    expect(serializedPersistedState).not.toContain(
+      'synthetic-marker-conversation'
+    )
+  })
 })

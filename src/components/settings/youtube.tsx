@@ -15,7 +15,6 @@ const YouTube = () => {
   const youtubeCommentSource = settingsStore((s) => s.youtubeCommentSource)
   const onecommePort = settingsStore((s) => s.onecommePort)
   const externalLinkageMode = settingsStore((s) => s.externalLinkageMode)
-  const selectAIService = settingsStore((s) => s.selectAIService)
 
   const youtubeCommentInterval = settingsStore((s) => s.youtubeCommentInterval)
   const conversationContinuityMode = settingsStore(
@@ -202,7 +201,7 @@ const YouTube = () => {
               })
             }
             disabled={
-              slideMode || externalLinkageMode || selectAIService === 'dify'
+              slideMode || externalLinkageMode
             }
           />
           {conversationContinuityMode && (

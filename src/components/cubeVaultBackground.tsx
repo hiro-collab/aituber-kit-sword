@@ -210,7 +210,7 @@ const INDICATOR_NODE_ALIASES: Record<string, string[]> = {
   reflex_core: ['mediapipe_camera_hub', 'mediapipe', 'camera_hub'],
   gesture_gate: ['input_gate', 'gesture_rx', 'thought_core_watcher'],
   voice_app: ['thought_core_watcher', 'ai_talk_core', 'ai_talk'],
-  thought_core: ['thought_core_api', 'thought_core', 'dify'],
+  thought_core: ['thought_core_api', 'thought_core'],
   environment: ['environment_state_server'],
   home_control: ['home_assistant_bridge'],
   ha_driver: ['home_assistant'],

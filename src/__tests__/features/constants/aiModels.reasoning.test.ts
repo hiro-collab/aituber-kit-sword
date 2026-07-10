@@ -91,8 +91,8 @@ describe('isReasoningModel', () => {
       expect(isReasoningModel('cohere', 'command-a-03-2025')).toBe(false)
     })
 
-    it('difyは推論非対応', () => {
-      expect(isReasoningModel('dify', 'any-model')).toBe(false)
+    it('Thought Coreは推論非対応', () => {
+      expect(isReasoningModel('thought-core', 'any-model')).toBe(false)
     })
   })
 
@@ -105,8 +105,8 @@ describe('isReasoningModel', () => {
       expect(isReasoningModel('anthropic', 'custom-model', true)).toBe(true)
     })
 
-    it('difyカスタムモデルは推論非対応', () => {
-      expect(isReasoningModel('dify', 'custom-model', true)).toBe(false)
+    it('Thought Coreカスタムモデルは推論非対応', () => {
+      expect(isReasoningModel('thought-core', 'custom-model', true)).toBe(false)
     })
   })
 

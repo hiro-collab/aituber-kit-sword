@@ -12,9 +12,9 @@ describe('buildReasoningProviderOptions', () => {
     expect(result).toBeUndefined()
   })
 
-  it('returns undefined for unsupported service', () => {
+  it('returns undefined when Thought Core has no reasoning provider options', () => {
     const result = buildReasoningProviderOptions(
-      'dify',
+      'thought-core',
       'some-model',
       true,
       'medium',

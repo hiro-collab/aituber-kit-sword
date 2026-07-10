@@ -55,7 +55,6 @@ const MemorySettings = () => {
   const memorySearchLimit = settingsStore((s) => s.memorySearchLimit)
   const memoryMaxContextTokens = settingsStore((s) => s.memoryMaxContextTokens)
   const openaiKey = settingsStore((s) => s.openaiKey)
-  const selectAIService = settingsStore((s) => s.selectAIService)
   const maxPastMessages = settingsStore((s) => s.maxPastMessages)
 
   // 会話履歴
@@ -627,39 +626,34 @@ const MemorySettings = () => {
             <h3 className="text-xl font-bold">{t('ConversationHistory')}</h3>
           </div>
           <div className="my-2 text-sm whitespace-pre-wrap">
-            {selectAIService !== 'dify'
-              ? t('ConversationHistoryInfo', { count: maxPastMessages })
-              : t('DifyInfo2')}
+            {t('ConversationHistoryInfo', { count: maxPastMessages })}
           </div>
 
           {/* 過去のメッセージ保持数 */}
-          {selectAIService !== 'dify' && (
-            <div className="my-6">
-              <div className="my-4 text-xl font-bold">
-                {t('MaxPastMessages')}
-              </div>
-              <div className="my-4">
-                <input
-                  type="number"
-                  min="1"
-                  max="9999"
-                  className="w-24 px-4 py-2 bg-white border border-gray-300 rounded-lg"
-                  value={maxPastMessages}
-                  onChange={(e) => {
-                    const value = parseInt(e.target.value)
-                    if (!Number.isNaN(value) && value >= 1 && value <= 9999) {
-                      settingsStore.setState({ maxPastMessages: value })
-                    }
-                  }}
-                />
-              </div>
+          <div className="my-6">
+            <div className="my-4 text-xl font-bold">
+              {t('MaxPastMessages')}
             </div>
-          )}
+            <div className="my-4">
+              <input
+                type="number"
+                min="1"
+                max="9999"
+                className="w-24 px-4 py-2 bg-white border border-gray-300 rounded-lg"
+                value={maxPastMessages}
+                onChange={(e) => {
+                  const value = parseInt(e.target.value)
+                  if (!Number.isNaN(value) && value >= 1 && value <= 9999) {
+                    settingsStore.setState({ maxPastMessages: value })
+                  }
+                }}
+              />
+            </div>
+          </div>
 
           <TextButton
             onClick={async () => {
               homeStore.setState({ chatLog: [] })
-              settingsStore.setState({ difyConversationId: '' })
               resetSessionId()
               // IndexedDBの記憶もクリア
               try {

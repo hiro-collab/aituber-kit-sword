@@ -1,6 +1,5 @@
 import { getAIChatResponseStream } from '../../../features/chat/aiChatFactory'
 import { getVercelAIChatResponseStream } from '../../../features/chat/vercelAIChat'
-import { getDifyChatResponseStream } from '../../../features/chat/difyChat'
 import { getThoughtCoreChatResponseStream } from '../../../features/chat/thoughtCoreChat'
 import { getOpenAIAudioChatResponseStream } from '../../../features/chat/openAIAudioChat'
 import settingsStore from '../../../features/stores/settings'
@@ -8,10 +7,6 @@ import { Message } from '../../../features/messages/messages'
 
 jest.mock('../../../features/chat/vercelAIChat', () => ({
   getVercelAIChatResponseStream: jest.fn(),
-}))
-
-jest.mock('../../../features/chat/difyChat', () => ({
-  getDifyChatResponseStream: jest.fn(),
 }))
 
 jest.mock('../../../features/chat/thoughtCoreChat', () => ({
@@ -96,28 +91,6 @@ describe('aiChatFactory', () => {
       expect(getVercelAIChatResponseStream).toHaveBeenCalledWith(testMessages)
       expect(result).toBe(mockStream)
     }
-  })
-
-  it('Difyサービスの場合、getDifyChatResponseStreamを呼び出す', async () => {
-    const mockStream = createMockStream()
-    ;(getDifyChatResponseStream as jest.Mock).mockResolvedValue(mockStream)
-    ;(settingsStore.getState as jest.Mock).mockReturnValue({
-      selectAIService: 'dify',
-      audioMode: false,
-      difyKey: 'test-key',
-      difyUrl: 'https://test-url',
-      difyConversationId: 'test-conversation-id',
-    })
-
-    const result = await getAIChatResponseStream(testMessages)
-
-    expect(getDifyChatResponseStream).toHaveBeenCalledWith(
-      testMessages,
-      'test-key',
-      'https://test-url',
-      'test-conversation-id'
-    )
-    expect(result).toBe(mockStream)
   })
 
   it('Thought Coreサービスの場合、getThoughtCoreChatResponseStreamを呼び出す', async () => {

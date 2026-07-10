@@ -17,12 +17,6 @@ AITuberKit のローカル API は loopback 利用を前提に扱います。LAN
 - 外部 POST からの `systemPrompt` は既定で無視します。
 - 大量メッセージ、過大な本文、未対応の画像 data URI は拒否します。
 
-## Dify
-
-- Dify URL は `DIFY_API_URL` または `DIFY_URL` でサーバー側に固定する運用を推奨します。
-- リクエスト本文の `url` を使う場合は、許可リストに明示した URL だけを許可します。
-- HTTP URL は loopback ホストだけ許可します。外部 Dify には HTTPS を使ってください。
-
 ## API Keys
 
 - サーバー専用の秘密鍵は `NEXT_PUBLIC_` 付きの環境変数に置かないでください。

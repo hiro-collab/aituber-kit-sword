@@ -99,7 +99,6 @@ src/
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `vercelAIChat.ts` (Vercel AI SDK) | openai, anthropic, google, azure, xai, groq, cohere, mistralai, perplexity, fireworks, deepseek, openrouter, lmstudio, ollama, custom-api |
 | `openAIAudioChat.ts`              | openai（audioMode時）                                                                                                                     |
-| `difyChat.ts`                     | dify                                                                                                                                      |
 
 **サーバー側**: `/api/ai/vercel.ts`（Edge Runtime、`createAIRegistry`で動的プロバイダー登録）
 

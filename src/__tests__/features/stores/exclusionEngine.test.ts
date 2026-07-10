@@ -194,8 +194,8 @@ describe('排他エンジン (computeExclusions)', () => {
         conversationContinuityMode: true,
         multiModalMode: 'ai-decide',
       })
-      // difyはマルチモーダル非対応
-      const incoming = { selectAIService: 'dify' as const }
+      // Thought Coreはマルチモーダル非対応
+      const incoming = { selectAIService: 'thought-core' as const }
       const { corrections, crossStoreEffects } = computeExclusions(
         incoming,
         prev
@@ -370,7 +370,7 @@ describe('排他エンジン (computeExclusions)', () => {
         reasoningMode: true,
         reasoningEffort: 'high',
       })
-      const incoming = { selectAIService: 'dify' as const }
+      const incoming = { selectAIService: 'thought-core' as const }
       const { corrections } = computeExclusions(incoming, prev)
 
       expect(corrections.reasoningMode).toBe(false)

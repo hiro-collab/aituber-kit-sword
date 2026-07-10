@@ -27,7 +27,6 @@ export const aiServiceOptions: AIServiceConfig[] = [
   { value: 'openrouter', label: 'OpenRouter' },
   { value: 'lmstudio', label: 'LM Studio' },
   { value: 'ollama', label: 'Ollama' },
-  { value: 'dify', label: 'Dify' },
   { value: 'thought-core', label: 'Thought Core' },
   { value: 'custom-api', label: 'Custom API' },
 ]
@@ -149,16 +148,10 @@ export const getServiceConfigByKey = (
     showMultiModalToggle: true,
     customModelValidation: false,
   },
-  dify: {
-    value: 'dify',
-    label: 'Dify',
-    keyLabel: t('DifyAPIKeyLabel'),
-  },
   'thought-core': {
     value: 'thought-core',
     label: 'Thought Core',
-    description:
-      'Local Thought Core runtime. Legacy compatibility providers can still be configured separately.',
+    description: 'Local Thought Core runtime.',
   },
   'custom-api': {
     value: 'custom-api',

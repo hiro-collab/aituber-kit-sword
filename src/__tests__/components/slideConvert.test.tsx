@@ -26,7 +26,6 @@ jest.mock('@/features/stores/settings', () => ({
       fireworksKey: '',
       deepseekKey: '',
       openrouterKey: '',
-      difyKey: '',
     })),
     setState: jest.fn(),
   }),
