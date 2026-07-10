@@ -31,9 +31,128 @@ import {
   resolveProjectionVisualRoomLightUpdateKind,
 } from '@/utils/projectionVisualRoomLight'
 
-const chatConversationAttemptRef =
-  'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
-const displayConversationAttemptRef =
+const SHARED_VECTOR_FILE = 'm4_cross_repo_attempt_vectors.v0.json'
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+type SourceVector = {
+  assistantEventId: string
+  conversationAttemptRef: string
+}
+
+type JoinRow = { rowName: string; conversationAttemptRef: string }
+
+const readSharedVectors = () => {
+  const fixturePath = process.env.SWORD_M4_SHARED_VECTOR_PATH
+  if (!fixturePath) return null
+  if (
+    !fixturePath.endsWith(SHARED_VECTOR_FILE) ||
+    !fs.existsSync(fixturePath)
+  ) {
+    throw new Error(
+      'configured M4 shared vector fixture is missing or unexpected'
+    )
+  }
+  const size = fs.statSync(fixturePath).size
+  if (size < 1 || size > 64 * 1024) {
+    throw new Error('configured M4 shared vector fixture has an invalid size')
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(fs.readFileSync(fixturePath, 'utf8'))
+  } catch {
+    throw new Error('configured M4 shared vector fixture is malformed')
+  }
+  const sourceVectors = isRecord(value) ? value.ait_source_vectors : null
+  const joinContract = isRecord(value) ? value.join_contract : null
+  const requiredRowNames = isRecord(joinContract)
+    ? joinContract.required_row_names
+    : null
+  const joinCases = isRecord(joinContract) ? joinContract.cases : null
+  const validCase = isRecord(joinCases) ? joinCases.valid_all_rows : null
+  const missingCase = isRecord(joinCases) ? joinCases.missing_row : null
+  const mismatchedCase = isRecord(joinCases) ? joinCases.mismatched_ref : null
+  const sourceVector = (key: string): SourceVector | null => {
+    const source = isRecord(sourceVectors) ? sourceVectors[key] : null
+    return isRecord(source) &&
+      typeof source.assistant_event_id === 'string' &&
+      typeof source.conversation_attempt_ref === 'string'
+      ? {
+          assistantEventId: source.assistant_event_id,
+          conversationAttemptRef: source.conversation_attempt_ref,
+        }
+      : null
+  }
+  const validRows =
+    isRecord(validCase) && Array.isArray(validCase.rows) ? validCase.rows : null
+  if (
+    !isRecord(value) ||
+    value.schema_version !== 'm4_cross_repo_attempt_vectors.v0' ||
+    typeof value.canonical_conversation_attempt_ref !== 'string' ||
+    !Array.isArray(requiredRowNames) ||
+    requiredRowNames.length !== 10 ||
+    !requiredRowNames.every((name) => typeof name === 'string') ||
+    !validRows ||
+    validRows.length !== 10 ||
+    !validRows.every(
+      (row) =>
+        isRecord(row) &&
+        typeof row.row_name === 'string' &&
+        typeof row.conversation_attempt_ref === 'string'
+    ) ||
+    !isRecord(missingCase) ||
+    typeof missingCase.missing_row_name !== 'string' ||
+    !isRecord(mismatchedCase) ||
+    typeof mismatchedCase.row_name !== 'string' ||
+    typeof mismatchedCase.conversation_attempt_ref !== 'string' ||
+    !sourceVector('chat') ||
+    !sourceVector('passive') ||
+    !sourceVector('operator')
+  ) {
+    throw new Error('configured M4 shared vector fixture has an invalid shape')
+  }
+  return {
+    canonicalConversationAttemptRef: value.canonical_conversation_attempt_ref,
+    sourceVectors: {
+      chat: sourceVector('chat') as SourceVector,
+      passive: sourceVector('passive') as SourceVector,
+      operator: sourceVector('operator') as SourceVector,
+    },
+    requiredRowNames: requiredRowNames as string[],
+    validRows: validRows.map((row) => {
+      const safeRow = row as Record<string, string>
+      return {
+        rowName: safeRow.row_name,
+        conversationAttemptRef: safeRow.conversation_attempt_ref,
+      }
+    }) as JoinRow[],
+    missingRowName: missingCase.missing_row_name as string,
+    mismatchedRowName: mismatchedCase.row_name as string,
+    mismatchedConversationAttemptRef:
+      mismatchedCase.conversation_attempt_ref as string,
+  }
+}
+
+const sharedVectors = readSharedVectors()
+const chatVector = sharedVectors?.sourceVectors.chat ?? {
+  assistantEventId: 'evt_ait_chat_001',
+  conversationAttemptRef:
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+}
+const passiveVector = sharedVectors?.sourceVectors.passive ?? {
+  assistantEventId: 'evt_ait_passive_001',
+  conversationAttemptRef:
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+}
+const operatorVector = sharedVectors?.sourceVectors.operator ?? {
+  assistantEventId: 'evt_ait_operator_001',
+  conversationAttemptRef:
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+}
+const chatConversationAttemptRef = chatVector.conversationAttemptRef
+const displayConversationAttemptRef = passiveVector.conversationAttemptRef
+const mismatchedConversationAttemptRef =
+  sharedVectors?.mismatchedConversationAttemptRef ??
   'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
 
 let mockHomeState: { chatLog: Array<Record<string, unknown>> } = { chatLog: [] }
@@ -101,7 +220,7 @@ describe('worker-2 projection visual organ contract', () => {
     mockHomeState = {
       chatLog: [
         {
-          id: 'chat-message-1',
+          id: chatVector.assistantEventId,
           role: 'assistant',
           content: 'chat display',
           conversationAttemptRef: chatConversationAttemptRef,
@@ -120,22 +239,22 @@ describe('worker-2 projection visual organ contract', () => {
     mockHomeState = {
       chatLog: [
         {
-          id: 'chat-message-latest',
+          id: chatVector.assistantEventId,
           role: 'assistant',
           content: 'newer chat display',
-          conversationAttemptRef: chatConversationAttemptRef,
+          conversationAttemptRef: mismatchedConversationAttemptRef,
         },
       ],
     }
     mockProjectionDisplayState = {
       assistantMessage: 'passive display',
-      assistantMessageId: 'passive-message-1',
+      assistantMessageId: passiveVector.assistantEventId,
       speechOutputSummary: buildSpeechOutputSummary({
         surface: 'tts_talk_message',
         sourceField: 'passive.speech.summary',
         message: 'passive display',
-        messageId: 'passive-message-1',
-        conversationAttemptRef: displayConversationAttemptRef,
+        messageId: passiveVector.assistantEventId,
+        conversationAttemptRef: passiveVector.conversationAttemptRef,
       }),
       sequence: 1,
       updatedAt: null,
@@ -148,7 +267,7 @@ describe('worker-2 projection visual organ contract', () => {
     )
 
     expect(readParitySummary()?.bubble.conversation_attempt_ref).toBe(
-      displayConversationAttemptRef
+      passiveVector.conversationAttemptRef
     )
   })
 
@@ -156,7 +275,7 @@ describe('worker-2 projection visual organ contract', () => {
     mockHomeState = {
       chatLog: [
         {
-          id: 'chat-message-latest',
+          id: chatVector.assistantEventId,
           role: 'assistant',
           content: 'newer chat display',
           conversationAttemptRef: chatConversationAttemptRef,
@@ -167,8 +286,8 @@ describe('worker-2 projection visual organ contract', () => {
       buildSpeechOutputDisplayState({
         sourceField: 'Talk.displayMessage.spoken',
         message: 'operator display',
-        messageId: 'operator-message-1',
-        conversationAttemptRef: displayConversationAttemptRef,
+        messageId: operatorVector.assistantEventId,
+        conversationAttemptRef: operatorVector.conversationAttemptRef,
       })
     )
     writeWindowSpeechOutputSummary(
@@ -176,8 +295,8 @@ describe('worker-2 projection visual organ contract', () => {
         surface: 'tts_talk_message',
         sourceField: 'Talk.displayMessage.spoken',
         message: 'operator display',
-        messageId: 'operator-message-1',
-        conversationAttemptRef: chatConversationAttemptRef,
+        messageId: operatorVector.assistantEventId,
+        conversationAttemptRef: mismatchedConversationAttemptRef,
       })
     )
 
@@ -186,7 +305,7 @@ describe('worker-2 projection visual organ contract', () => {
     )
 
     expect(readParitySummary()?.bubble.conversation_attempt_ref).toBe(
-      displayConversationAttemptRef
+      operatorVector.conversationAttemptRef
     )
     expect(readParitySummary()?.conversation_attempt_ref_class).toBe('mismatch')
   })
@@ -194,12 +313,12 @@ describe('worker-2 projection visual organ contract', () => {
   it('leaves passive and operator refs unavailable when their source ids do not match', () => {
     mockProjectionDisplayState = {
       assistantMessage: 'passive display',
-      assistantMessageId: 'passive-message-1',
+      assistantMessageId: passiveVector.assistantEventId,
       speechOutputSummary: buildSpeechOutputSummary({
         surface: 'tts_talk_message',
         sourceField: 'passive.speech.summary',
         message: 'passive display',
-        messageId: 'other-passive-message',
+        messageId: `other-${passiveVector.assistantEventId}`,
         conversationAttemptRef: displayConversationAttemptRef,
       }),
       sequence: 1,
@@ -217,7 +336,7 @@ describe('worker-2 projection visual organ contract', () => {
       buildSpeechOutputDisplayState({
         sourceField: 'Talk.displayMessage.spoken',
         message: 'operator display',
-        messageId: 'operator-message-1',
+        messageId: operatorVector.assistantEventId,
         conversationAttemptRef: displayConversationAttemptRef,
       })
     )
@@ -226,7 +345,7 @@ describe('worker-2 projection visual organ contract', () => {
         surface: 'tts_talk_message',
         sourceField: 'Talk.displayMessage.spoken',
         message: 'operator display',
-        messageId: 'other-operator-message',
+        messageId: `other-${operatorVector.assistantEventId}`,
         conversationAttemptRef: displayConversationAttemptRef,
       })
     )
@@ -234,6 +353,93 @@ describe('worker-2 projection visual organ contract', () => {
       createElement(ProjectionVisualAssistantBubble, { variant: 'operator' })
     )
     expect(readParitySummary()?.bubble.conversation_attempt_ref).toBeNull()
+  })
+
+  it('leaves a chat ref unavailable when the matching source has no canonical ref', () => {
+    mockHomeState = {
+      chatLog: [
+        {
+          id: chatVector.assistantEventId,
+          role: 'assistant',
+          content: 'chat display',
+          conversationAttemptRef: 'injected:not_authoritative',
+        },
+      ],
+    }
+
+    render(createElement(ProjectionVisualAssistantBubble))
+
+    expect(readParitySummary()?.bubble.conversation_attempt_ref).toBeNull()
+  })
+
+  it('requires every shared join row to own the canonical ref without inference', () => {
+    const requiredRowNames = sharedVectors?.requiredRowNames ?? [
+      'recognition',
+      'input_gate',
+      'thought_core_turninput',
+      'canonical_assistant_response',
+      'bubble',
+      'tts',
+      'bubble_tts_parity',
+      'self_mirror_observation',
+      'self_output_session_correlation',
+      'user_heard',
+    ]
+    const validRows =
+      sharedVectors?.validRows ??
+      requiredRowNames.map((rowName) => ({
+        rowName,
+        conversationAttemptRef: chatConversationAttemptRef,
+      }))
+    const canonicalRef =
+      sharedVectors?.canonicalConversationAttemptRef ??
+      chatConversationAttemptRef
+    const joinsCanonicalAttempt = (rows: JoinRow[]) =>
+      rows.length === requiredRowNames.length &&
+      requiredRowNames.every(
+        (rowName) =>
+          rows.filter((row) => row.rowName === rowName).length === 1 &&
+          rows.some(
+            (row) =>
+              row.rowName === rowName &&
+              row.conversationAttemptRef === canonicalRef
+          )
+      )
+
+    expect(joinsCanonicalAttempt(validRows)).toBe(true)
+    for (const rowName of requiredRowNames) {
+      expect(
+        joinsCanonicalAttempt(
+          validRows.filter((row) => row.rowName !== rowName)
+        )
+      ).toBe(false)
+    }
+    expect(
+      joinsCanonicalAttempt(
+        validRows.map((row) =>
+          row.rowName === (sharedVectors?.mismatchedRowName ?? 'tts')
+            ? {
+                ...row,
+                conversationAttemptRef:
+                  sharedVectors?.mismatchedConversationAttemptRef ??
+                  mismatchedConversationAttemptRef,
+              }
+            : row
+        )
+      )
+    ).toBe(false)
+    expect(
+      joinsCanonicalAttempt(
+        validRows.map((row) =>
+          row.rowName === (sharedVectors?.missingRowName ?? 'user_heard')
+            ? {
+                ...row,
+                conversationAttemptRef: mismatchedConversationAttemptRef,
+              }
+            : row
+        )
+      )
+    ).toBe(false)
   })
 
   it('binds canonical assistant attempt refs to selected display sources only', () => {

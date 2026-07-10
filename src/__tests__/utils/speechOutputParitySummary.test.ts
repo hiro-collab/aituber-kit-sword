@@ -1,4 +1,5 @@
 import {
+  CONVERSATION_ATTEMPT_REF_PATTERN,
   buildSelfOutputSpeechObservationSummary,
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
@@ -6,13 +7,73 @@ import {
   safeConversationAttemptRef,
   sanitizeSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
+import { existsSync, readFileSync, statSync } from 'fs'
+
+const SHARED_VECTOR_FILE = 'm4_cross_repo_attempt_vectors.v0.json'
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const readSharedVectors = () => {
+  const fixturePath = process.env.SWORD_M4_SHARED_VECTOR_PATH
+  if (!fixturePath) return null
+  if (!fixturePath.endsWith(SHARED_VECTOR_FILE) || !existsSync(fixturePath)) {
+    throw new Error(
+      'configured M4 shared vector fixture is missing or unexpected'
+    )
+  }
+  const size = statSync(fixturePath).size
+  if (size < 1 || size > 64 * 1024) {
+    throw new Error('configured M4 shared vector fixture has an invalid size')
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(readFileSync(fixturePath, 'utf8'))
+  } catch {
+    throw new Error('configured M4 shared vector fixture is malformed')
+  }
+  if (
+    !isRecord(value) ||
+    value.schema_version !== 'm4_cross_repo_attempt_vectors.v0' ||
+    typeof value.canonical_conversation_attempt_ref !== 'string' ||
+    !isRecord(value.invalid_conversation_attempt_refs) ||
+    Object.keys(value.invalid_conversation_attempt_refs).length !== 7 ||
+    !Object.values(value.invalid_conversation_attempt_refs).every(
+      (ref) => typeof ref === 'string'
+    ) ||
+    !isRecord(value.ait_source_vectors) ||
+    !isRecord(value.assistant_event)
+  ) {
+    throw new Error('configured M4 shared vector fixture has an invalid shape')
+  }
+  return {
+    canonicalConversationAttemptRef: value.canonical_conversation_attempt_ref,
+    invalidConversationAttemptRefs: Object.values(
+      value.invalid_conversation_attempt_refs
+    ) as string[],
+    sourceVectors: value.ait_source_vectors,
+    injectedAssistantRef: isRecord(value.assistant_event.data)
+      ? value.assistant_event.data.conversation_attempt_ref
+      : null,
+  }
+}
+
+const sharedVectors = readSharedVectors()
 
 const conversationAttemptRef =
+  sharedVectors?.canonicalConversationAttemptRef ??
   'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
 const otherConversationAttemptRef =
   'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
+const invalidConversationAttemptRefs =
+  sharedVectors?.invalidConversationAttemptRefs ?? ['not-a-canonical-ref']
 
 describe('speechOutputParitySummary', () => {
+  it('keeps the canonical ref regex exact', () => {
+    expect(CONVERSATION_ATTEMPT_REF_PATTERN.source).toBe(
+      '^m4\\.prepared_sample_attempt:[a-f0-9]{32}$'
+    )
+  })
+
   it('compares bubble and TTS summaries without publishing raw text', () => {
     const bubble = buildSpeechOutputSummary({
       surface: 'projection_visual_assistant_bubble',
@@ -123,26 +184,21 @@ describe('speechOutputParitySummary', () => {
     )
   })
 
-  it.each([
-    'm4.prepared_sample_attempt0123456789abcdef0123456789abcdef',
-    'm4.prepared_sample_attempt:0123456789ABCDEF0123456789abcdef',
-    'm4.other_attempt:0123456789abcdef0123456789abcdef',
-    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcde',
-    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef0',
-    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef ',
-    'raw-private-marker',
-  ])('omits a non-canonical conversation attempt ref: %s', (invalidRef) => {
-    expect(safeConversationAttemptRef(invalidRef)).toBeNull()
-    expect(
-      buildSpeechOutputSummary({
-        surface: 'tts_talk_message',
-        sourceField: 'Talk.message',
-        message: 'text',
-        messageId: 'assistant-message-1',
-        conversationAttemptRef: invalidRef,
-      }).conversation_attempt_ref
-    ).toBeNull()
-  })
+  it.each(invalidConversationAttemptRefs)(
+    'omits a non-canonical conversation attempt ref: %s',
+    (invalidRef) => {
+      expect(safeConversationAttemptRef(invalidRef)).toBeNull()
+      expect(
+        buildSpeechOutputSummary({
+          surface: 'tts_talk_message',
+          sourceField: 'Talk.message',
+          message: 'text',
+          messageId: 'assistant-message-1',
+          conversationAttemptRef: invalidRef,
+        }).conversation_attempt_ref
+      ).toBeNull()
+    }
+  )
 
   it('preserves canonical refs and binds each display surface to its exact source', () => {
     expect(safeConversationAttemptRef(conversationAttemptRef)).toBe(
@@ -309,6 +365,22 @@ describe('speechOutputParitySummary', () => {
         private_data_published: false,
       })
     )
+  })
+
+  it('strips the shared fixture injected assistant ref instead of retaining it', () => {
+    const injectedRef =
+      sharedVectors?.injectedAssistantRef ?? 'injected:not_authoritative'
+    expect(
+      sanitizeSpeechOutputSummary({
+        schema_version: 'projection_visual_speech_output_parity.v0',
+        surface: 'tts_talk_message',
+        source_field: 'Talk.message',
+        text_hash: '00000000',
+        text_length: 0,
+        meaning_class: 'normal_conversation_fallback',
+        conversation_attempt_ref: injectedRef,
+      })?.conversation_attempt_ref
+    ).toBeNull()
   })
 
   it('classifies self-output STT as non-user-turn evidence for bubble/TTS drift', () => {

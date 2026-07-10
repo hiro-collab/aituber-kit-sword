@@ -1,10 +1,56 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync, statSync } from 'fs'
 import PreparedSampleSttOperator from '@/pages/operator/prepared-sample-stt'
 
+const SHARED_VECTOR_FILE = 'm4_cross_repo_attempt_vectors.v0.json'
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const readSharedVectors = () => {
+  const fixturePath = process.env.SWORD_M4_SHARED_VECTOR_PATH
+  if (!fixturePath) return null
+  if (!fixturePath.endsWith(SHARED_VECTOR_FILE) || !existsSync(fixturePath)) {
+    throw new Error(
+      'configured M4 shared vector fixture is missing or unexpected'
+    )
+  }
+  const size = statSync(fixturePath).size
+  if (size < 1 || size > 64 * 1024) {
+    throw new Error('configured M4 shared vector fixture has an invalid size')
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(readFileSync(fixturePath, 'utf8'))
+  } catch {
+    throw new Error('configured M4 shared vector fixture is malformed')
+  }
+  if (
+    !isRecord(value) ||
+    value.schema_version !== 'm4_cross_repo_attempt_vectors.v0' ||
+    typeof value.canonical_conversation_attempt_ref !== 'string' ||
+    !isRecord(value.invalid_conversation_attempt_refs) ||
+    Object.keys(value.invalid_conversation_attempt_refs).length !== 7 ||
+    !Object.values(value.invalid_conversation_attempt_refs).every(
+      (ref) => typeof ref === 'string'
+    )
+  ) {
+    throw new Error('configured M4 shared vector fixture has an invalid shape')
+  }
+  return {
+    canonicalConversationAttemptRef: value.canonical_conversation_attempt_ref,
+    invalidConversationAttemptRefs: Object.values(
+      value.invalid_conversation_attempt_refs
+    ) as string[],
+  }
+}
+
+const sharedVectors = readSharedVectors()
 let mockIsListening = false
 const conversationAttemptRef =
+  sharedVectors?.canonicalConversationAttemptRef ??
   'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+const invalidConversationAttemptRefs =
+  sharedVectors?.invalidConversationAttemptRefs ?? ['not-a-canonical-ref']
 const startListening = jest.fn(async () => {
   mockIsListening = true
   return true
@@ -199,12 +245,7 @@ describe('PreparedSampleSttOperator', () => {
     expect(startListening).not.toHaveBeenCalled()
   })
 
-  it.each([
-    'm4.prepared_sample_attempt0123456789abcdef0123456789abcdef',
-    'm4.prepared_sample_attempt:0123456789ABCDEF0123456789abcdef',
-    'm4.other_attempt:0123456789abcdef0123456789abcdef',
-    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcde',
-  ])(
+  it.each(invalidConversationAttemptRefs)(
     'fails closed before startListening for invalid conversation attempt ref %s',
     (invalidRef) => {
       setParentPreflightQuery(
