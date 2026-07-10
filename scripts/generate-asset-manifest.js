@@ -80,6 +80,19 @@ function generateBackgroundList() {
     .map((f) => path.basename(f))
 }
 
+// --- Poses ---
+
+function generatePoseList() {
+  const files = getTrackedFiles('poses')
+  return files
+    .filter((f) => f.endsWith('.json'))
+    .sort()
+    .map((f) => ({
+      name: path.posix.basename(f, '.json'),
+      path: `/${f.replace(/^public\//, '').replace(/\\/g, '/')}`,
+    }))
+}
+
 // --- Live2D ---
 
 function generateLive2dList() {
@@ -222,47 +235,44 @@ function generateSlides() {
   const rendered = {}
 
   for (const [folderName, folderFiles] of folders) {
-    const fileNames = folderFiles.map((f) => f.split('/').slice(1).join('/'))
-    const hasSlidesFile = fileNames.includes('slides.md')
-    const hasScriptsFile = fileNames.includes('scripts.json')
+    const trackedFileNames = new Set(
+      folderFiles.map((file) =>
+        path.posix.normalize(
+          file.split('/').slice(1).join('/').replace(/\\/g, '/')
+        )
+      )
+    )
+    const hasSlidesFile = trackedFileNames.has('slides.md')
+    const hasScriptsFile = trackedFileNames.has('scripts.json')
     if (!hasSlidesFile || !hasScriptsFile) continue
 
     validFolders.push(folderName)
+    const slideFolderPath = path.join(publicDir, 'slides', folderName)
 
-    // supplement.txt を読み取り
-    const supplementPath = path.join(
-      publicDir,
-      'slides',
-      folderName,
-      'supplement.txt'
-    )
-    try {
-      supplements[folderName] = fs.readFileSync(supplementPath, 'utf-8')
-    } catch {
+    if (trackedFileNames.has('supplement.txt')) {
+      const supplementPath = path.join(slideFolderPath, 'supplement.txt')
+      try {
+        supplements[folderName] = fs.readFileSync(supplementPath, 'utf-8')
+      } catch {
+        supplements[folderName] = ''
+      }
+    } else {
       supplements[folderName] = ''
     }
 
     // slides.md + theme.css → Marpit変換
-    const slidesPath = path.join(
-      publicDir,
-      'slides',
-      folderName,
-      'slides.md'
-    )
-    const themePath = path.join(
-      publicDir,
-      'slides',
-      folderName,
-      'theme.css'
-    )
+    const slidesPath = path.join(slideFolderPath, 'slides.md')
     try {
       const { Marpit } = require('@marp-team/marpit')
       const markdown = fs.readFileSync(slidesPath, 'utf-8')
       let css = ''
-      try {
-        css = fs.readFileSync(themePath, 'utf-8')
-      } catch {
-        // theme.cssが存在しない場合は空
+      if (trackedFileNames.has('theme.css')) {
+        const themePath = path.join(slideFolderPath, 'theme.css')
+        try {
+          css = fs.readFileSync(themePath, 'utf-8')
+        } catch {
+          // theme.cssが存在しない場合は空
+        }
       }
 
       const marpit = new Marpit({ inlineSVG: true })
@@ -288,6 +298,7 @@ function generateSlides() {
 const manifest = {
   vrm: generateVrmList(),
   backgrounds: generateBackgroundList(),
+  poses: generatePoseList(),
   live2d: generateLive2dList(),
   pngtuber: generatePngtuberList(),
   slides: generateSlides(),
