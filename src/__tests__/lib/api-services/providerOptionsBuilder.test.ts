@@ -1,204 +1,163 @@
+import {
+  aiServiceOptions,
+  getServiceConfigByKey,
+} from '@/components/settings/modelProvider/utils/aiServiceConfigs'
 import { buildReasoningProviderOptions } from '@/lib/api-services/providerOptionsBuilder'
 
-describe('buildReasoningProviderOptions', () => {
-  it('returns undefined when reasoningMode is false', () => {
-    const result = buildReasoningProviderOptions(
-      'openai',
-      'gpt-5',
-      false,
-      'medium',
-      8192
+const expectedCurrentProviders = [
+  'openai',
+  'anthropic',
+  'google',
+  'azure',
+  'xai',
+  'groq',
+  'cohere',
+  'mistralai',
+  'perplexity',
+  'fireworks',
+  'deepseek',
+  'openrouter',
+  'lmstudio',
+  'ollama',
+  'custom-api',
+  'thought-core',
+] as const
+
+describe('current provider options', () => {
+  const selectableProviders = aiServiceOptions.map(({ value }) => value)
+
+  it('exposes exactly the current provider set with no Dify option', () => {
+    expect([...selectableProviders].sort()).toEqual(
+      [...expectedCurrentProviders].sort()
     )
-    expect(result).toBeUndefined()
-  })
-
-  it('returns undefined when Thought Core has no reasoning provider options', () => {
-    const result = buildReasoningProviderOptions(
-      'thought-core',
-      'some-model',
-      true,
-      'medium',
-      8192
+    expect(new Set(selectableProviders).size).toBe(
+      expectedCurrentProviders.length
     )
-    expect(result).toBeUndefined()
+    expect(selectableProviders).not.toContain('dify')
   })
 
-  describe('OpenAI', () => {
-    it('returns openai providerOptions with reasoningEffort and reasoningSummary', () => {
-      const result = buildReasoningProviderOptions(
-        'openai',
-        'gpt-5',
-        true,
-        'high',
-        8192
-      )
-      expect(result).toEqual({
-        openai: { reasoningEffort: 'high', reasoningSummary: 'detailed' },
-      })
-    })
+  it('builds a matching keyed config for every selectable provider', () => {
+    const configs = getServiceConfigByKey((key: string) => key)
+
+    expect(Object.keys(configs).sort()).toEqual(
+      [...expectedCurrentProviders].sort()
+    )
+    expect(configs).not.toHaveProperty('dify')
+    for (const provider of selectableProviders) {
+      expect(configs[provider].value).toBe(provider)
+    }
+  })
+})
+
+describe('buildReasoningProviderOptions current provider matrix', () => {
+  const expectedOptions = {
+    openai: {
+      openai: { reasoningEffort: 'medium', reasoningSummary: 'detailed' },
+    },
+    anthropic: {
+      anthropic: {
+        thinking: { type: 'enabled', budgetTokens: 8192 },
+      },
+    },
+    google: {
+      google: {
+        thinkingConfig: { thinkingBudget: 8192, includeThoughts: true },
+      },
+    },
+    azure: { azure: { reasoningEffort: 'medium' } },
+    xai: { xai: { reasoningEffort: 'medium' } },
+    groq: { openai: { reasoningEffort: 'medium' } },
+    cohere: {
+      cohere: { thinking: { type: 'enabled', tokenBudget: 8192 } },
+    },
+  } as const
+
+  it.each(aiServiceOptions.map(({ value }) => value))(
+    'builds the current %s reasoning option behavior',
+    (provider) => {
+      expect(
+        buildReasoningProviderOptions(
+          provider,
+          provider === 'google' ? 'gemini-2.5-flash' : 'current-model',
+          true,
+          'medium',
+          8192
+        )
+      ).toEqual(expectedOptions[provider as keyof typeof expectedOptions])
+    }
+  )
+
+  it('returns undefined for every provider when reasoning mode is disabled', () => {
+    for (const provider of expectedCurrentProviders) {
+      expect(
+        buildReasoningProviderOptions(
+          provider,
+          'current-model',
+          false,
+          'medium',
+          8192
+        )
+      ).toBeUndefined()
+    }
   })
 
-  describe('Azure', () => {
-    it('returns azure providerOptions with reasoningEffort', () => {
-      const result = buildReasoningProviderOptions(
-        'azure',
-        'gpt-5',
-        true,
-        'low',
-        8192
-      )
-      expect(result).toEqual({
-        azure: { reasoningEffort: 'low' },
-      })
-    })
-  })
-
-  describe('xAI', () => {
-    it('returns xai providerOptions with reasoningEffort', () => {
-      const result = buildReasoningProviderOptions(
-        'xai',
-        'grok-3-mini',
-        true,
-        'medium',
-        8192
-      )
-      expect(result).toEqual({
-        xai: { reasoningEffort: 'medium' },
-      })
-    })
-  })
-
-  describe('Groq', () => {
-    it('returns openai-namespaced providerOptions (OpenAI compatible)', () => {
-      const result = buildReasoningProviderOptions(
-        'groq',
-        'qwen-qwq-32b',
-        true,
-        'high',
-        8192
-      )
-      expect(result).toEqual({
-        openai: { reasoningEffort: 'high' },
-      })
-    })
-
-    it('returns default effort for qwen3 models', () => {
-      const result = buildReasoningProviderOptions(
+  it('uses Groq qwen3 default effort', () => {
+    expect(
+      buildReasoningProviderOptions(
         'groq',
         'qwen/qwen3-32b',
         true,
-        'medium',
+        'high',
         8192
       )
-      expect(result).toEqual({
-        openai: { reasoningEffort: 'default' },
-      })
-    })
+    ).toEqual({ openai: { reasoningEffort: 'default' } })
   })
 
-  describe('Anthropic', () => {
-    it('returns anthropic providerOptions with thinking only for non-opus models', () => {
-      const result = buildReasoningProviderOptions(
-        'anthropic',
-        'claude-sonnet-4-5',
-        true,
-        'medium',
-        12000
-      )
-      expect(result).toEqual({
-        anthropic: {
-          thinking: { type: 'enabled', budgetTokens: 12000 },
-        },
-      })
-    })
-
-    it('returns anthropic providerOptions with thinking and effort for opus-4-5', () => {
-      const result = buildReasoningProviderOptions(
+  it('adds Anthropic effort only for Opus 4.5', () => {
+    expect(
+      buildReasoningProviderOptions(
         'anthropic',
         'claude-opus-4-5',
         true,
         'medium',
         12000
       )
-      expect(result).toEqual({
-        anthropic: {
-          thinking: { type: 'enabled', budgetTokens: 12000 },
-          effort: 'medium',
-        },
-      })
+    ).toEqual({
+      anthropic: {
+        thinking: { type: 'enabled', budgetTokens: 12000 },
+        effort: 'medium',
+      },
     })
   })
 
-  describe('Cohere', () => {
-    it('returns cohere providerOptions with thinking', () => {
-      const result = buildReasoningProviderOptions(
-        'cohere',
-        'command-a-reasoning-08-2025',
-        true,
-        'high',
-        5000
-      )
-      expect(result).toEqual({
-        cohere: {
-          thinking: { type: 'enabled', tokenBudget: 5000 },
-        },
-      })
-    })
-  })
-
-  describe('Google', () => {
-    it('returns thinkingBudget for Gemini 2.5 series', () => {
-      const result = buildReasoningProviderOptions(
-        'google',
-        'gemini-2.5-flash',
-        true,
-        'medium',
-        8192
-      )
-      expect(result).toEqual({
-        google: {
-          thinkingConfig: {
-            thinkingBudget: 8192,
-            includeThoughts: true,
-          },
-        },
-      })
-    })
-
-    it('returns thinkingLevel for Gemini 3 series', () => {
-      const result = buildReasoningProviderOptions(
+  it('uses Google thinking level for Gemini 3 models', () => {
+    expect(
+      buildReasoningProviderOptions(
         'google',
         'gemini-3-pro-preview',
         true,
         'high',
         8192
       )
-      expect(result).toEqual({
-        google: {
-          thinkingConfig: {
-            thinkingLevel: 'high',
-            includeThoughts: true,
-          },
-        },
-      })
-    })
-
-    it('returns thinkingBudget for non-3 series models', () => {
-      const result = buildReasoningProviderOptions(
-        'google',
-        'gemini-2.0-flash',
-        true,
-        'low',
-        4096
-      )
-      expect(result).toEqual({
-        google: {
-          thinkingConfig: {
-            thinkingBudget: 4096,
-            includeThoughts: true,
-          },
-        },
-      })
+    ).toEqual({
+      google: {
+        thinkingConfig: { thinkingLevel: 'high', includeThoughts: true },
+      },
     })
   })
+
+  it.each(['unsupported-service', 'dify'])(
+    'returns undefined for unsupported runtime provider %s',
+    (provider) => {
+      expect(
+        buildReasoningProviderOptions(
+          provider,
+          'current-model',
+          true,
+          'medium',
+          8192
+        )
+      ).toBeUndefined()
+    }
+  )
 })
