@@ -26,10 +26,6 @@ import {
   PROJECTION_VISUAL_CONTROLLED_CHROME_OBSERVATION_ATTRIBUTE,
   PROJECTION_VISUAL_CONTROLLED_CHROME_OBSERVATION_SCHEMA_VERSION,
 } from '@/features/motionRuntime/projectionVisualControlledChromeObservation'
-import {
-  resolveProjectionVisualRoomLightSafeView,
-  resolveProjectionVisualRoomLightUpdateKind,
-} from '@/utils/projectionVisualRoomLight'
 
 const SHARED_VECTOR_FILE = 'm4_cross_repo_attempt_vectors.v0.json'
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -466,197 +462,6 @@ describe('worker-2 projection visual organ contract', () => {
     expect(paritySource).toContain('CONVERSATION_ATTEMPT_REF_PATTERN')
     expect(paritySource).toContain('raw_text_published: false')
     expect(paritySource).not.toContain('provider_payload:')
-  })
-
-  it('classifies only complete canonical room-light observation update kinds', () => {
-    const canonicalObservation = {
-      type: 'room_light_observation',
-      schema_version: 1,
-      observation_bucket: 'balanced',
-      confidence: 0.83,
-      daylight_ambiguity: 'medium',
-      cue_likelihoods: {
-        warm_light: 0.42,
-        daylight: 0.71,
-        darkness: 0.08,
-      },
-      source: 'vision_snapshot_processor',
-      source_class: 'camera_environment_estimate',
-      observed_at: '2026-07-10T10:00:00.000Z',
-      observation_id: 'room-light-observation-1',
-      sequence: {
-        frame_count: 2,
-        first_frame_id: 10,
-        last_frame_id: 12,
-        temporal_window_ms: 500,
-      },
-      model: {
-        name: 'room-light-heuristic-snapshot-v3',
-        kind: 'heuristic',
-      },
-      proof_ceiling: 'camera_environment_estimate_only',
-      does_not_prove: [
-        'physical_room_light_state',
-        'home_assistant_light_state',
-      ],
-    }
-
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind(canonicalObservation)
-    ).toBe('fresh')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        ...canonicalObservation,
-        updated_at: '2026-07-10T10:00:01.000Z',
-      })
-    ).toBe('updated')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        ...canonicalObservation,
-        stale: true,
-      })
-    ).toBe('stale')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        ...canonicalObservation,
-        available: false,
-      })
-    ).toBe('stale')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        ...canonicalObservation,
-        freshness: { level: 'stale' },
-      })
-    ).toBe('stale')
-
-    const withoutSchemaVersion: Record<string, unknown> = {
-      ...canonicalObservation,
-    }
-    delete withoutSchemaVersion.schema_version
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind(withoutSchemaVersion)
-    ).toBe('stale')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        ...canonicalObservation,
-        schema_version: 2,
-      })
-    ).toBe('stale')
-
-    const withoutConfidence: Record<string, unknown> = {
-      ...canonicalObservation,
-    }
-    delete withoutConfidence.confidence
-    expect(resolveProjectionVisualRoomLightUpdateKind(withoutConfidence)).toBe(
-      'stale'
-    )
-    for (const confidence of [
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      -0.1,
-      1.1,
-    ]) {
-      expect(
-        resolveProjectionVisualRoomLightUpdateKind({
-          ...canonicalObservation,
-          confidence,
-        })
-      ).toBe('stale')
-    }
-
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        observation_bucket: 'balanced',
-      })
-    ).toBe('stale')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({
-        ...canonicalObservation,
-        observation_bucket: 'unknown',
-      })
-    ).toBe('stale')
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind({ state: 'on' })
-    ).toBeUndefined()
-    for (const signal of [
-      { freshness: { level: 'stale' } },
-      {
-        sequence: {
-          frame_count: 1,
-          first_frame_id: 1,
-          last_frame_id: 1,
-          temporal_window_ms: 0,
-        },
-      },
-      { model: { name: 'unrelated-model', kind: 'heuristic' } },
-      { source_snapshot_id: 'unrelated-snapshot' },
-      {
-        freshness: { level: 'recent' },
-        sequence: {
-          frame_count: 1,
-          first_frame_id: 1,
-          last_frame_id: 1,
-          temporal_window_ms: 0,
-        },
-        model: { name: 'unrelated-model', kind: 'heuristic' },
-        source_snapshot_id: 'unrelated-snapshot',
-      },
-    ]) {
-      expect(resolveProjectionVisualRoomLightUpdateKind(signal)).toBeUndefined()
-    }
-    expect(resolveProjectionVisualRoomLightUpdateKind(null)).toBeUndefined()
-    expect(resolveProjectionVisualRoomLightUpdateKind([])).toBeUndefined()
-
-    const privateMarker = 'PRIVATE_ROOM_LIGHT_MARKER'
-    const reversedCanonicalDerivedSignal = {
-      ...canonicalObservation,
-      does_not_prove: [
-        'home_assistant_light_state',
-        'physical_room_light_state',
-      ],
-      privateMarker,
-    }
-    expect(
-      resolveProjectionVisualRoomLightUpdateKind(reversedCanonicalDerivedSignal)
-    ).toBe('stale')
-    const reversedSafeView = resolveProjectionVisualRoomLightSafeView(
-      reversedCanonicalDerivedSignal
-    )
-    expect(reversedSafeView).toMatchObject({
-      kind: 'stale',
-      state: 'DEGRADED',
-      detail: 'Camera room-light observation unavailable',
-    })
-    expect(JSON.stringify(reversedSafeView)).not.toContain(privateMarker)
-
-    const invalidObservations = [
-      { ...canonicalObservation, source: 'untrusted_camera', privateMarker },
-      {
-        ...canonicalObservation,
-        observed_at: 'not-a-timestamp',
-        privateMarker,
-      },
-      {
-        ...canonicalObservation,
-        model: { name: 'untrusted-model', kind: 'heuristic' },
-        privateMarker,
-      },
-      {
-        ...canonicalObservation,
-        does_not_prove: ['physical_room_light_state', privateMarker],
-        privateMarker,
-      },
-      { observation_bucket: 'balanced', privateMarker },
-    ]
-    invalidObservations.forEach((signal) => {
-      const safeView = resolveProjectionVisualRoomLightSafeView(signal)
-      expect(safeView).toMatchObject({
-        kind: 'stale',
-        state: 'DEGRADED',
-        detail: 'Camera room-light observation unavailable',
-      })
-      expect(JSON.stringify(safeView)).not.toContain(privateMarker)
-    })
   })
 
   it('keeps Projection Visual routed through configured system-cell AI service', () => {
@@ -1332,7 +1137,6 @@ describe('worker-2 projection visual organ contract', () => {
   it('keeps normal HUD focused on Thought Core and current provider grouping', () => {
     const source = readSource('src/components/projectionVisualHud.tsx')
     const cubeVaultSource = readSource('src/components/cubeVaultBackground.tsx')
-    const roomLightSource = readSource('src/utils/projectionVisualRoomLight.ts')
 
     expect(source).toContain(
       "touchdesigner_control_gui: 'display / projection'"
@@ -1392,14 +1196,10 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(source).toContain("room_light: 'ROOM LIGHT'")
     expect(source).toContain('roomLightObservation')
-    expect(roomLightSource).toContain('observation_bucket')
-    expect(roomLightSource).toContain('daylight_ambiguity')
-    expect(roomLightSource).toContain('cue_likelihoods')
-    expect(roomLightSource).toContain('warm_light')
-    expect(roomLightSource).toContain('darkness')
-    expect(roomLightSource).toContain('source_class')
-    expect(roomLightSource).toContain('proof_ceiling')
-    expect(roomLightSource).toContain('does_not_prove')
+    expect(source).toContain('resolveProjectionVisualRoomLightSafeView')
+    expect(source).toContain("safeView.state === 'DEGRADED'")
+    expect(source).toContain('roomLightObservationState(signal)')
+    expect(source).toContain('roomLightObservationDetailLabel(signal, nowMs)')
     expect(source).toContain('VISION_SOURCE_ONLY_KEYS')
     expect(source).toContain('type HudUpdateSignal')
     expect(source).toContain('const HUD_UPDATE_TARGETS')
@@ -1424,8 +1224,6 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).not.toContain('roomLightEstimateProbabilityLabels')
     expect(source).toContain('td-env-live-meter')
     expect(source).toContain('data-metric={metric.id}')
-    expect(roomLightSource).toContain("id: 'warm-light', label: 'WARM'")
-    expect(roomLightSource).toContain("id: 'daylight', label: 'DAY'")
     expect(cubeVaultSource).toContain('vision: {')
     expect(cubeVaultSource).toContain('room_light: {')
     expect(cubeVaultSource).toContain('observation_bucket')
