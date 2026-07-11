@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
@@ -8,6 +10,7 @@ import {
   ROUTE_CANCEL_SETTLE_MS,
   ROUTE_TIMEOUT_MS,
   ControllerError,
+  buildOperatorServerOwnerInspectionScript,
   createPublicChildEnvironment,
   requireBrowserAudioAvailability,
   resolveOperatorServerMode,
@@ -16,6 +19,95 @@ import {
 } from './collect-prepared-sample-browser-stt-playback.mjs'
 
 const privateExpectedText = 'PRIVATE_EXPECTED_TEXT_SENTINEL'
+const fixtureAitRoot = 'C:\\fixture\\ait'
+const fixtureStart = '2025-01-01T00:00:00.000Z'
+
+const toDotNetTicks = (value) =>
+  (BigInt(Date.parse(value)) * 10_000n + 621_355_968_000_000_000n).toString()
+
+const runOwnerInspectionFixture = ({ listeners, processes }) => {
+  const windowsPowerShell = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe'
+  )
+  const fixturePrelude = [
+    "$fixture=$env:SWORD_TEST_PROCESS_FIXTURE | ConvertFrom-Json",
+    'function Get-NetTCPConnection {',
+    '  param($State,$LocalPort,$ErrorAction)',
+    '  @($fixture.listeners | ForEach-Object { [pscustomobject]@{ LocalAddress=[string]$_.localAddress; OwningProcess=[int]$_.owningProcess } })',
+    '}',
+    'function Get-CimInstance {',
+    '  param($ClassName,$Filter,$ErrorAction)',
+    "  $processId=[int]([regex]::Match([string]$Filter,'\\d+').Value)",
+    '  $row=@($fixture.processes | Where-Object { [int]$_.processId -eq $processId } | Select-Object -First 1)',
+    '  if($row.Count -eq 0){return $null}',
+    '  $item=$row[0]',
+    '  [pscustomobject]@{',
+    '    ProcessId=[int]$item.processId',
+    '    ParentProcessId=[int]$item.parentProcessId',
+    '    Name=[string]$item.name',
+    '    CommandLine=[string]$item.commandLine',
+    '    CreationDate=[datetime]::Parse([string]$item.creationDate,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)',
+    '  }',
+    '}',
+  ].join('\n')
+  const result = spawnSync(
+    windowsPowerShell,
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `${fixturePrelude}\n${buildOperatorServerOwnerInspectionScript(3000)}`,
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SWORD_EXPECTED_AIT_ROOT: fixtureAitRoot,
+        SWORD_TEST_PROCESS_FIXTURE: JSON.stringify({ listeners, processes }),
+      },
+      timeout: 5_000,
+      windowsHide: true,
+    }
+  )
+  assert.equal(result.status, 0, result.stderr)
+  return result.stdout.trim()
+}
+
+const processFixture = ({
+  processId,
+  parentProcessId = 0,
+  name = 'node.exe',
+  commandLine,
+  creationDate = fixtureStart,
+}) => ({
+  processId,
+  parentProcessId,
+  name,
+  commandLine,
+  creationDate,
+})
+
+const listenerFixture = (owningProcess) => ({
+  localAddress: '127.0.0.1',
+  owningProcess,
+})
+
+const nextDevCommand = ({
+  root = fixtureAitRoot,
+  host = '127.0.0.1',
+  port = 3000,
+} = {}) =>
+  `${root}\\node_modules\\next\\dist\\bin\\next dev -H ${host} -p ${port}`
+
+const nextChildCommand = ({
+  root = fixtureAitRoot,
+  module = 'start-server.js',
+} = {}) =>
+  `${root}\\node_modules\\next\\dist\\server\\lib\\${module}`
 
 const createFakeAdapter = ({
   outcomeClass = 'final_result',
@@ -321,6 +413,151 @@ test('rejects an external operator owner swap after SSR probing', async () => {
   )
 })
 
+test('accepts only a direct Next dev owner or its sealed listener child', () => {
+  const script = buildOperatorServerOwnerInspectionScript(3000)
+
+  assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort 3000/)
+  assert.match(script, /ParentProcessId/)
+  assert.match(script, /\$directOwned=/)
+  assert.match(script, /\$parentOwned=/)
+  assert.match(script, /\$sealedChild=/)
+  assert.match(script, /node_modules\\next\\dist\\server\\lib\\start-server/)
+  assert.match(script, /node_modules\\next\\dist\\bin\\next/)
+  assert.match(script, /-H 127\.0\.0\.1/)
+  assert.match(script, /-p 3000/)
+  assert.match(script, /\$owned=\$directOwned -or \$sealedChild/)
+})
+
+test('classifies direct and sealed-child Next ownership behaviorally', () => {
+  const expectedTicks = toDotNetTicks(fixtureStart)
+  const directOwner = processFixture({
+    processId: 99,
+    commandLine: nextDevCommand(),
+  })
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [directOwner],
+    }),
+    `owned:99:${expectedTicks}`
+  )
+
+  const exactParent = processFixture({
+    processId: 55,
+    commandLine: nextDevCommand(),
+  })
+  const exactChild = processFixture({
+    processId: 99,
+    parentProcessId: 55,
+    commandLine: nextChildCommand(),
+  })
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [exactChild, exactParent],
+    }),
+    `owned:99:${expectedTicks}`
+  )
+
+  const rejectedCases = [
+    {
+      name: 'missing immediate parent',
+      listeners: [listenerFixture(99)],
+      processes: [exactChild],
+    },
+    {
+      name: 'exact grandparent only',
+      listeners: [listenerFixture(99)],
+      processes: [
+        exactChild,
+        processFixture({
+          processId: 55,
+          parentProcessId: 44,
+          commandLine: `${fixtureAitRoot}\\metadata-only.js`,
+        }),
+        processFixture({
+          processId: 44,
+          commandLine: nextDevCommand(),
+        }),
+      ],
+    },
+    {
+      name: 'metadata sibling',
+      listeners: [listenerFixture(77)],
+      processes: [
+        processFixture({
+          processId: 77,
+          parentProcessId: 55,
+          commandLine: `${fixtureAitRoot}\\camera_hub_stack metadata`,
+        }),
+        exactParent,
+        exactChild,
+      ],
+    },
+    {
+      name: 'wrong root',
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          parentProcessId: 55,
+          commandLine: nextChildCommand({ root: 'C:\\other' }),
+        }),
+        exactParent,
+      ],
+    },
+    {
+      name: 'wrong child module',
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          parentProcessId: 55,
+          commandLine: nextChildCommand({ module: 'other.js' }),
+        }),
+        exactParent,
+      ],
+    },
+    {
+      name: 'wrong child process name',
+      listeners: [listenerFixture(99)],
+      processes: [{ ...exactChild, name: 'python.exe' }, exactParent],
+    },
+    {
+      name: 'wrong parent host',
+      listeners: [listenerFixture(99)],
+      processes: [
+        exactChild,
+        { ...exactParent, commandLine: nextDevCommand({ host: '0.0.0.0' }) },
+      ],
+    },
+    {
+      name: 'wrong parent port',
+      listeners: [listenerFixture(99)],
+      processes: [
+        exactChild,
+        { ...exactParent, commandLine: nextDevCommand({ port: 3001 }) },
+      ],
+    },
+    {
+      name: 'multiple loopback owners',
+      listeners: [listenerFixture(99), listenerFixture(100)],
+      processes: [
+        exactChild,
+        exactParent,
+        processFixture({ processId: 100, commandLine: nextDevCommand() }),
+      ],
+    },
+  ]
+  for (const fixture of rejectedCases) {
+    assert.equal(
+      runOwnerInspectionFixture(fixture),
+      'unowned',
+      fixture.name
+    )
+  }
+})
+
 test('waits for cooperative cancellation before route-timeout cleanup', async () => {
   const adapter = createFakeAdapter({
     startServerBarrier: new Promise((resolve) => setTimeout(resolve, 10)),
@@ -532,6 +769,8 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
   assert.match(source, /Get-NetTCPConnection/)
   assert.match(source, /parseOperatorServerIdentity/)
   assert.match(source, /CreationDate\.ToUniversalTime\(\)\.Ticks/)
+  assert.match(source, /buildOperatorServerOwnerInspectionScript/)
+  assert.match(source, /node_modules\\\\next\\\\dist\\\\server\\\\lib\\\\start-server/)
   assert.match(source, /revalidateExternalServer/)
   assert.match(source, /clearPrivateProcessEnvironment\(\)/)
   assert.match(source, /lockClass !== 'held_by_parent'/)

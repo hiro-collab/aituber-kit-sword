@@ -388,6 +388,31 @@ const parseOperatorServerIdentity = (output) => {
   return Object.freeze({ pid, startTicks })
 }
 
+export const buildOperatorServerOwnerInspectionScript = (
+  port = OPERATOR_PORT
+) =>
+  [
+      "$ErrorActionPreference='Stop'",
+      'try {',
+      "  $root=[IO.Path]::GetFullPath($env:SWORD_EXPECTED_AIT_ROOT).TrimEnd('\\')",
+      `  $listeners=@(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Where-Object { $_.LocalAddress -in @('127.0.0.1','::1') })`,
+      '  $owners=@($listeners | ForEach-Object { [int]$_.OwningProcess } | Sort-Object -Unique)',
+      "  if($owners.Count -ne 1){'unowned';exit 0}",
+      "  $process=Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $owners[0]) -ErrorAction Stop",
+      '  $name=[string]$process.Name',
+      '  $ticks=[Int64]$process.CreationDate.ToUniversalTime().Ticks',
+      "  $command=([string]$process.CommandLine).Replace('/','\\')",
+      "  $parent=if([int]$process.ParentProcessId -gt 0){Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$process.ParentProcessId) -ErrorAction SilentlyContinue}else{$null}",
+      "  $parentName=if($null -ne $parent){[string]$parent.Name}else{''}",
+      "  $parentCommand=if($null -ne $parent){([string]$parent.CommandLine).Replace('/','\\')}else{''}",
+      `  $directOwned=($name -in @('node','node.exe')) -and $command.Contains($root + '\\') -and $command.Contains('node_modules\\next\\dist\\bin\\next') -and ($command -match '(?i)(^|\\s)dev(\\s|$)') -and $command.Contains('-H 127.0.0.1') -and $command.Contains('-p ${port}')`,
+      `  $parentOwned=($parentName -in @('node','node.exe')) -and $parentCommand.Contains($root + '\\') -and $parentCommand.Contains('node_modules\\next\\dist\\bin\\next') -and ($parentCommand -match '(?i)(^|\\s)dev(\\s|$)') -and $parentCommand.Contains('-H 127.0.0.1') -and $parentCommand.Contains('-p ${port}')`,
+      "  $sealedChild=($name -in @('node','node.exe')) -and $command.Contains($root + '\\node_modules\\next\\dist\\server\\lib\\start-server') -and ($null -ne $parent) -and ([int]$process.ParentProcessId -eq [int]$parent.ProcessId) -and $parentOwned",
+      '  $owned=$directOwned -or $sealedChild',
+      "  if($owned){'owned:{0}:{1}' -f $owners[0],$ticks}else{'unowned'}",
+      "} catch {'unowned'}",
+    ].join(';')
+
 const inspectOperatorServerOwner = () =>
   new Promise((resolve) => {
     const windowsPowerShell = path.join(
@@ -397,21 +422,7 @@ const inspectOperatorServerOwner = () =>
       'v1.0',
       'powershell.exe'
     )
-    const script = [
-      "$ErrorActionPreference='Stop'",
-      'try {',
-      "  $root=[IO.Path]::GetFullPath($env:SWORD_EXPECTED_AIT_ROOT).TrimEnd('\\')",
-      `  $listeners=@(Get-NetTCPConnection -State Listen -LocalPort ${OPERATOR_PORT} -ErrorAction Stop | Where-Object { $_.LocalAddress -in @('127.0.0.1','::1') })`,
-      '  $owners=@($listeners | ForEach-Object { [int]$_.OwningProcess } | Sort-Object -Unique)',
-      "  if($owners.Count -ne 1){'unowned';exit 0}",
-      "  $process=Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $owners[0]) -ErrorAction Stop",
-      '  $name=[string]$process.Name',
-      '  $ticks=[Int64]$process.CreationDate.ToUniversalTime().Ticks',
-      "  $command=([string]$process.CommandLine).Replace('/','\\')",
-      "  $owned=($name -in @('node','node.exe')) -and $command.Contains($root + '\\') -and $command.Contains('node_modules\\next\\dist\\bin\\next') -and ($command -match '(?i)(^|\\s)dev(\\s|$)') -and $command.Contains('-H 127.0.0.1') -and $command.Contains('-p ${OPERATOR_PORT}')",
-      "  if($owned){'owned:{0}:{1}' -f $owners[0],$ticks}else{'unowned'}",
-      "} catch {'unowned'}",
-    ].join(';')
+    const script = buildOperatorServerOwnerInspectionScript()
     const environment = createPublicChildEnvironment()
     environment.SWORD_EXPECTED_AIT_ROOT = process.cwd()
     let timer = null
