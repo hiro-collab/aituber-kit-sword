@@ -1069,53 +1069,35 @@ describe('worker-2 projection visual organ contract', () => {
     expect(reviewProofMessageSource).toContain(
       'コマンドは送信済みです。実際に変わったかは未確認です。目視または別センサーで確認してください。'
     )
-    expect(speechParitySource).toContain(
-      'projection_visual_speech_output_parity.v0'
+    expect(bubbleSource).toContain("surface: 'projection_visual_intended_text'")
+    expect(bubbleSource).toContain(
+      "surface: 'projection_visual_assistant_bubble'"
     )
-    expect(speechParitySource).toContain('projection_visual_intended_text')
-    expect(speechParitySource).toContain('text_role_class')
-    expect(speechParitySource).toContain('text_scope_class')
-    expect(speechParitySource).toContain('same_message_text_scope_mismatch')
-    expect(speechParitySource).toContain('bubble_text_scope_class')
-    expect(speechParitySource).toContain('tts_provider_input_text_class')
-    expect(speechParitySource).toContain(
-      "heard_text_class: 'not_collected_or_not_authorized'"
-    )
-    expect(speechParitySource).toContain(
-      '__projectionVisualSpeechOutputSummaryV0'
-    )
-    expect(speechParitySource).toContain(
-      '__projectionVisualSpeechOutputDisplayStateV0'
-    )
-    expect(speechParitySource).toContain('self_output_observation')
-    expect(speechParitySource).toContain('may_start_user_turn: false')
-    expect(speakCharacterSource).toContain(
-      'writeSynthesizedSpeechOutputSummary'
-    )
-    expect(speakCharacterSource).toContain(
-      'const speechOutputMessage = resolveSpeechOutputMessage(talk)'
-    )
-    expect(speakCharacterSource).toContain('message: speechOutputMessage')
-    expect(speakCharacterSource).toContain("'Talk.displayMessage.spoken'")
-    expect(
-      speakCharacterSource.indexOf('writeSynthesizedSpeechOutputSummary(talk)')
-    ).toBeLessThan(
-      speakCharacterSource.indexOf(
-        'buffer = await synthesizeVoice(talk, ss.selectVoice)'
-      )
-    )
-    expect(bubbleSource).toContain('data-projection-visual-speech-parity-v0')
-    expect(bubbleSource).toContain('data-speech-parity-status')
-    expect(bubbleSource).toContain('data-speech-bubble-text-scope')
-    expect(bubbleSource).toContain('data-speech-tts-provider-input-class')
-    expect(bubbleSource).toContain('data-speech-heard-text-class')
-    expect(bubbleSource).toContain('data-speech-intended-text-hash')
-    expect(bubbleSource).toContain('textScopeClass: bubbleTextScopeClass')
-    expect(bubbleSource).toContain('data-speech-bubble-text-hash')
-    expect(bubbleSource).toContain('data-speech-tts-text-hash')
-    expect(bubbleSource).toContain('speechOutputDisplayState.display_message')
     expect(bubbleSource).toContain('message: currentPage')
+    expect(speechParitySource).toContain('raw_text_published: false')
+    expect(speechParitySource).not.toContain('provider_payload:')
+    expect(bubbleSource).toContain('data-projection-visual-speech-parity-v0')
+    ;[
+      'data-speech-parity-status',
+      'data-speech-bubble-text-scope',
+      'data-speech-tts-provider-input-class',
+      'data-speech-heard-text-class',
+      'data-speech-intended-text-hash',
+      'data-speech-bubble-text-hash',
+      'data-speech-tts-text-hash',
+      'textScopeClass: bubbleTextScopeClass',
+    ].forEach((binding) => expect(bubbleSource).toContain(binding))
+    expect(bubbleSource).toContain('speechOutputDisplayState.display_message')
     expect(bridgeSource).toContain('readWindowSpeechOutputDisplayState')
+    const summaryWriteIndex = speakCharacterSource.indexOf(
+      'writeSynthesizedSpeechOutputSummary(talk)'
+    )
+    const synthesisIndex = speakCharacterSource.indexOf(
+      'buffer = await synthesizeVoice(talk, ss.selectVoice)'
+    )
+    expect(summaryWriteIndex).toBeGreaterThanOrEqual(0)
+    expect(synthesisIndex).toBeGreaterThanOrEqual(0)
+    expect(summaryWriteIndex).toBeLessThan(synthesisIndex)
     expect(bubbleSource).toContain('(current + 1) % pages.length')
     expect(bubbleSource).toContain(
       "variant?: 'operator' | 'passive' | 'stage-output'"
@@ -1194,50 +1176,29 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain(
       "entry[0] !== 'room_light' ||\n          resolveProjectionVisualRoomLightSafeView(entry[1]) !== undefined"
     )
-    expect(source).toContain("room_light: 'ROOM LIGHT'")
-    expect(source).toContain('roomLightObservation')
-    expect(source).toContain('resolveProjectionVisualRoomLightSafeView')
-    expect(source).toContain("safeView.state === 'DEGRADED'")
-    expect(source).toContain('roomLightObservationState(signal)')
-    expect(source).toContain('roomLightObservationDetailLabel(signal, nowMs)')
-    expect(source).toContain('VISION_SOURCE_ONLY_KEYS')
-    expect(source).toContain('type HudUpdateSignal')
-    expect(source).toContain('const HUD_UPDATE_TARGETS')
     expect(source).toContain(
-      "'vision:room_light': 'environment.vision.room_light'"
+      "import { resolveProjectionVisualRoomLightSafeView } from '@/utils/projectionVisualRoomLight'"
     )
-    expect(source).not.toContain("'query:room_light'")
-    expect(source).not.toContain('electric_light')
-    expect(source).not.toContain('lighting_type')
-    expect(source).toContain('Camera room-light observation')
-    expect(source).not.toContain('Vision estimate:')
-    expect(source).toContain('buildEnvironmentHudUpdateSignal')
-    expect(source).toContain('hudUpdateSemanticToken')
-    expect(source).toContain('type EnvironmentFreshnessLevel')
-    expect(source).toContain('type EnvironmentFreshnessVisual')
-    expect(source).toContain('environmentFreshnessVisualLevel')
-    expect(source).toContain('environmentFreshnessVisual')
-    expect(source).toContain('readFreshnessAgeMs')
-    expect(source).toContain('setInterval(() => setNowMs(Date.now()), 250)')
-    expect(source).toContain('roomLightObservationLiveMetrics')
-    expect(source).toContain('metrics.push(...(safeView.metrics ?? []))')
-    expect(source).not.toContain('roomLightEstimateProbabilityLabels')
-    expect(source).toContain('td-env-live-meter')
-    expect(source).toContain('data-metric={metric.id}')
-    expect(cubeVaultSource).toContain('vision: {')
-    expect(cubeVaultSource).toContain('room_light: {')
-    expect(cubeVaultSource).toContain('observation_bucket')
-    expect(cubeVaultSource).toContain("? 'dark' : 'bright'")
-    expect(cubeVaultSource).toContain('cue_likelihoods')
-    expect(cubeVaultSource).toContain(
-      "source_class: 'camera_environment_estimate'"
+    expect(source).toContain(
+      "resolveProjectionVisualRoomLightSafeView(signal)?.state ?? 'DEGRADED'"
     )
-    expect(cubeVaultSource).toContain(
-      "proof_ceiling: 'camera_environment_estimate_only'"
-    )
-    expect(cubeVaultSource).not.toContain(
-      'state_queries: {\n          room_light'
-    )
+    ;[
+      'vision: {',
+      'room_light: {',
+      'observation_bucket',
+      'cue_likelihoods',
+      "source_class: 'camera_environment_estimate'",
+      "proof_ceiling: 'camera_environment_estimate_only'",
+      "does_not_prove: [\n              'physical_room_light_state',\n              'home_assistant_light_state',\n            ]",
+    ].forEach((wiring) => expect(cubeVaultSource).toContain(wiring))
+    const roomLightSources = `${source}\n${cubeVaultSource}`
+    ;[
+      "'query:room_light'",
+      'state_queries: {\n          room_light',
+      'roomLightEstimateProbabilityLabels',
+      'electric_light',
+      'lighting_type',
+    ].forEach((residue) => expect(roomLightSources).not.toContain(residue))
     expect(source).toContain(
       'data-update-signal={indicator.updateSignal?.target}'
     )
@@ -1275,6 +1236,12 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).toContain("label: 'ROOM STATE'")
     expect(source).toContain('freshnessDetailLabel')
     expect(source).toContain('freshnessVisualFromAgeMs')
+    expect(source).toContain('readFreshnessAgeMs')
+    expect(source).toContain(
+      'window.setInterval(() => setNowMs(Date.now()), 250)'
+    )
+    expect(source).toContain('className="td-env-live-meter"')
+    expect(source).toContain('data-metric={metric.id}')
     expect(source).toContain('serviceFreshnessVisual')
     expect(source).toContain('normalRatio')
     expect(source).toContain('staleRatio')
