@@ -8,10 +8,8 @@ import {
   type MotionStimulusReceiverAdapter,
 } from '../motionStimulusReceiver'
 
-const CONFIGURED_DANCE_MOTION_ASSET_PATH =
-  '/local-vrma/configured-dance.vrma'
-const originalDanceMotionAssetPath =
-  process.env[DANCE_MOTION_ASSET_PATH_ENV]
+const CONFIGURED_DANCE_MOTION_ASSET_PATH = '/local-vrma/configured-dance.vrma'
+const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
 
 describe('receiveMotionStimulusV0', () => {
   beforeEach(() => {
@@ -173,14 +171,20 @@ describe('receiveMotionStimulusV0', () => {
     ['/local-vrma/../secret.vrma', undefined],
     ['/local-vrma/subdir/dance.vrma', undefined],
     ['/local-vrma/.hidden.vrma', undefined],
-  ])('resolves only safe local dance motion asset paths: %s', (value, expected) => {
-    expect(resolveDanceMotionAssetPath(value)).toBe(expected)
-  })
+  ])(
+    'resolves only safe local dance motion asset paths: %s',
+    (value, expected) => {
+      expect(resolveDanceMotionAssetPath(value)).toBe(expected)
+    }
+  )
 
   it('uses the statically analyzable public dance motion env key by default', () => {
-    process.env[DANCE_MOTION_ASSET_PATH_ENV] = CONFIGURED_DANCE_MOTION_ASSET_PATH
+    process.env[DANCE_MOTION_ASSET_PATH_ENV] =
+      CONFIGURED_DANCE_MOTION_ASSET_PATH
 
-    expect(resolveDanceMotionAssetPath()).toBe(CONFIGURED_DANCE_MOTION_ASSET_PATH)
+    expect(resolveDanceMotionAssetPath()).toBe(
+      CONFIGURED_DANCE_MOTION_ASSET_PATH
+    )
   })
 
   it('does not start dance_sequence play requests without the safe dance payload ref', async () => {

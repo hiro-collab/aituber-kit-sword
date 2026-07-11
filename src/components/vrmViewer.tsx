@@ -10,10 +10,16 @@ import {
   MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
   type MotionStimulusReceiverResult,
 } from '@/features/motionRuntime/motionStimulusReceiver'
+import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motionRuntime/motionRuntimeSession'
 
 type VrmViewerProps = {
   visualTestMode?: ProjectionVisualTestMode
   motionStimulusAssetPath?: string
+  onDanceLifecycleAcceptanceReady?: (
+    predicate:
+      | ((candidate: MotionRuntimeLifecycleAcceptanceCandidate) => boolean)
+      | undefined
+  ) => void
 }
 
 type VrmLoadError = {
@@ -39,7 +45,8 @@ const getVrmFileNameFromPath = (selectedVrmPath: string) => {
 
 const getVrmPathClass = (selectedVrmPath: string) => {
   if (selectedVrmPath.startsWith('blob:')) return 'browser_blob_vrm'
-  if (getVrmFileNameFromPath(selectedVrmPath)) return 'configured_vrm_public_path'
+  if (getVrmFileNameFromPath(selectedVrmPath))
+    return 'configured_vrm_public_path'
   if (selectedVrmPath.startsWith('/vrm/')) return 'invalid_vrm_public_path'
   return 'unsupported_vrm_path'
 }
@@ -55,6 +62,7 @@ const createVrmLoadError = (selectedVrmPath: string): VrmLoadError => {
 export default function VrmViewer({
   visualTestMode,
   motionStimulusAssetPath,
+  onDanceLifecycleAcceptanceReady,
 }: VrmViewerProps = {}) {
   const loadedVrmPathRef = useRef<string | null>(null)
   const loadedVisualTestModeRef = useRef<ProjectionVisualTestMode | undefined>(
@@ -197,6 +205,9 @@ export default function VrmViewer({
       void viewer
         .loadVrm(selectedVrmPath, options)
         .then(() => {
+          onDanceLifecycleAcceptanceReady?.(
+            viewer.getDanceLifecycleAcceptancePredicate()
+          )
           ;(window as any).__projectionVisualVrmLoadError = null
           setVrmLoadError((current) =>
             current?.selectedVrmPathClass === getVrmPathClass(selectedVrmPath)
@@ -217,7 +228,7 @@ export default function VrmViewer({
           setVrmLoadError(loadError)
         })
     },
-    []
+    [onDanceLifecycleAcceptanceReady]
   )
 
   const canvasRef = useCallback(
@@ -324,6 +335,10 @@ export default function VrmViewer({
     bindMotionStimulusReceiver()
     return unbindMotionStimulusReceiver
   }, [bindMotionStimulusReceiver, unbindMotionStimulusReceiver])
+
+  useEffect(() => {
+    return () => onDanceLifecycleAcceptanceReady?.(undefined)
+  }, [onDanceLifecycleAcceptanceReady])
 
   const poseAdjustMode = settingsStore((s) => s.poseAdjustMode)
 

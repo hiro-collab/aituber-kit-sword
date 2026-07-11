@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Model, type MotionRuntimeDebugSnapshot } from './model'
+import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motionRuntime/motionRuntimeSession'
 import { loadVRMAnimation } from '@/lib/VRMAnimation/loadVRMAnimation'
 import { buildUrl } from '@/utils/buildUrl'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -255,6 +256,12 @@ export class Viewer {
     }
   }
 
+  public getDanceLifecycleAcceptancePredicate():
+    | ((candidate: MotionRuntimeLifecycleAcceptanceCandidate) => boolean)
+    | undefined {
+    return this.model?.getDanceLifecycleAcceptancePredicate()
+  }
+
   private async startMotionRuntimeDanceFromStimulus(
     request: MotionStimulusRuntimeStartRequest
   ): Promise<MotionStimulusRuntimeStartResult> {
@@ -294,6 +301,9 @@ export class Viewer {
         groupKey: request.groupKey,
         requestedAtMs: request.requestedAtMs,
         loop: request.loop,
+        stimulusInstanceId: request.stimulusInstanceId,
+        runtimeResultId:
+          request.trace.runtime_result_id ?? request.trace.driver_result_id,
       })
       return {
         status: 'started',
@@ -333,7 +343,12 @@ export class Viewer {
     const releasedInstanceIds = model.stopMotionRuntimeGroup(
       request.groupKey || DANCE_SEQUENCE_GROUP_KEY,
       request.requestedAtMs,
-      'motion_runtime_stop_requested'
+      'motion_runtime_stop_requested',
+      {
+        stimulusInstanceId: request.stimulusInstanceId,
+        runtimeResultId:
+          request.trace.runtime_result_id ?? request.trace.driver_result_id,
+      }
     )
     model.queueMotionRuntimeFrame({
       stimulusInstanceId: request.stimulusInstanceId,

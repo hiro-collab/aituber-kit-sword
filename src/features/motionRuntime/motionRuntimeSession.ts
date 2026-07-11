@@ -13,6 +13,28 @@ import {
   type MotionStimulusRequest,
 } from './motionRuntimeTypes'
 
+export type MotionRuntimeLifecycleAcceptanceCandidate = {
+  eventKind: 'runtime_result' | 'frame'
+  stimulusInstanceId?: string
+  runtimeResultId?: string
+  candidateState: 'active' | 'idle'
+}
+
+export type MotionRuntimeDanceLifecycleCandidateAssessment =
+  | 'accepted_active'
+  | 'accepted_idle'
+  | 'rejected_stale'
+  | 'rejected_late_after_stop'
+  | 'rejected_unmatched'
+
+type AdmittedDanceLifecycle = {
+  sequence: number
+  runtimeResultId?: string
+}
+
+const SAFE_DANCE_LIFECYCLE_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,128}$/
+const MAX_ADMITTED_DANCE_LIFECYCLES = 64
+
 export interface MotionRuntimeSlot {
   slotId: string
   instanceId: string | null
@@ -30,6 +52,13 @@ export class MotionRuntimeSession {
   private lastPoseFrame: MotionRuntimePoseFrame =
     createEmptyMotionRuntimePoseFrame()
   private nextInstanceId = 1
+  private nextDanceLifecycleSequence = 1
+  private currentDanceLifecycleSequence = 0
+  private danceStopped = false
+  private readonly admittedDanceByStimulusInstanceId = new Map<
+    string,
+    AdmittedDanceLifecycle
+  >()
   private lastTickMs: number | null = null
 
   public constructor(
@@ -70,6 +99,7 @@ export class MotionRuntimeSession {
     }
 
     if (request.interruptPolicy === 'queue_same_group') {
+      this.admitDanceRequest(request)
       instance.markQueued('queued_same_group')
       this.queuedInstanceIds.push(instance.instanceId)
       return {
@@ -91,6 +121,7 @@ export class MotionRuntimeSession {
           : []
 
     if (request.requiresAsset) {
+      this.admitDanceRequest(request)
       if (replacementTargets.length > 0) {
         this.pendingReplacementByInstanceId.set(
           instance.instanceId,
@@ -108,6 +139,7 @@ export class MotionRuntimeSession {
     }
 
     instance.markReady('asset_ready')
+    this.admitDanceRequest(request)
     const replacedInstanceIds = this.releaseInstances(
       replacementTargets,
       request.requestedAtMs,
@@ -158,6 +190,60 @@ export class MotionRuntimeSession {
       .map((instance) => instance.instanceId)
 
     return this.releaseInstances(matchingInstanceIds, nowMs, reasonCode)
+  }
+
+  public admitDanceStop(
+    stimulusInstanceId: string | undefined,
+    runtimeResultId?: string
+  ): void {
+    if (!isSafeDanceLifecycleCorrelation(stimulusInstanceId, runtimeResultId)) {
+      return
+    }
+    const sequence = this.nextDanceLifecycleSequence++
+    this.currentDanceLifecycleSequence = sequence
+    this.danceStopped = true
+    this.retainAdmittedDanceLifecycle(
+      stimulusInstanceId,
+      sequence,
+      runtimeResultId
+    )
+  }
+
+  public assessDanceLifecycleCandidate(
+    candidate: MotionRuntimeLifecycleAcceptanceCandidate
+  ): MotionRuntimeDanceLifecycleCandidateAssessment {
+    if (
+      !isSafeDanceLifecycleCorrelation(
+        candidate.stimulusInstanceId,
+        candidate.runtimeResultId
+      )
+    ) {
+      return 'rejected_unmatched'
+    }
+    const admitted = this.admittedDanceByStimulusInstanceId.get(
+      candidate.stimulusInstanceId
+    )
+    if (!admitted) return 'rejected_unmatched'
+    if (admitted.runtimeResultId !== candidate.runtimeResultId) {
+      return 'rejected_unmatched'
+    }
+    if (admitted.sequence < this.currentDanceLifecycleSequence) {
+      return 'rejected_stale'
+    }
+    if (this.danceStopped) {
+      return candidate.candidateState === 'idle'
+        ? 'accepted_idle'
+        : 'rejected_late_after_stop'
+    }
+    return candidate.candidateState === 'active'
+      ? 'accepted_active'
+      : 'rejected_unmatched'
+  }
+
+  public acceptDanceLifecycleCandidate(
+    candidate: MotionRuntimeLifecycleAcceptanceCandidate
+  ): boolean {
+    return this.assessDanceLifecycleCandidate(candidate).startsWith('accepted_')
   }
 
   public tick(nowMs: number): void {
@@ -322,7 +408,61 @@ export class MotionRuntimeSession {
     if (index !== -1) this.queuedInstanceIds.splice(index, 1)
   }
 
+  private admitDanceRequest(request: MotionStimulusRequest): void {
+    if (
+      request.groupKey !== 'dance.sequence' ||
+      !isSafeDanceLifecycleCorrelation(
+        request.stimulusInstanceId,
+        request.runtimeResultId
+      )
+    ) {
+      return
+    }
+    const sequence = this.nextDanceLifecycleSequence++
+    this.currentDanceLifecycleSequence = sequence
+    this.danceStopped = false
+    this.retainAdmittedDanceLifecycle(
+      request.stimulusInstanceId,
+      sequence,
+      request.runtimeResultId
+    )
+  }
+
+  private retainAdmittedDanceLifecycle(
+    stimulusInstanceId: string,
+    sequence: number,
+    runtimeResultId?: string
+  ): void {
+    this.admittedDanceByStimulusInstanceId.delete(stimulusInstanceId)
+    this.admittedDanceByStimulusInstanceId.set(stimulusInstanceId, {
+      sequence,
+      runtimeResultId,
+    })
+    while (
+      this.admittedDanceByStimulusInstanceId.size >
+      MAX_ADMITTED_DANCE_LIFECYCLES
+    ) {
+      const oldestStimulusInstanceId = this.admittedDanceByStimulusInstanceId
+        .keys()
+        .next().value
+      if (oldestStimulusInstanceId === undefined) return
+      this.admittedDanceByStimulusInstanceId.delete(oldestStimulusInstanceId)
+    }
+  }
+
   private createInstanceId(): string {
     return `mot_inst_local_${this.nextInstanceId++}`
   }
+}
+
+function isSafeDanceLifecycleCorrelation(
+  stimulusInstanceId: string | undefined,
+  runtimeResultId?: string
+): stimulusInstanceId is string {
+  return Boolean(
+    stimulusInstanceId &&
+    SAFE_DANCE_LIFECYCLE_ID_PATTERN.test(stimulusInstanceId) &&
+    (runtimeResultId === undefined ||
+      SAFE_DANCE_LIFECYCLE_ID_PATTERN.test(runtimeResultId))
+  )
 }

@@ -1,6 +1,6 @@
 import dynamic from 'next/dynamic'
 import { useRouter } from 'next/router'
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Form } from '@/components/form'
 import MessageReceiver from '@/components/messageReceiver'
@@ -34,6 +34,7 @@ import {
   resolveProjectionVisualQueryState,
 } from '@/utils/projectionVisualQuery'
 import { ProjectionVisualStimulusRefBridge } from '@/features/motionRuntime/projectionVisualStimulusRefBridge'
+import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motionRuntime/motionRuntimeSession'
 import '@/lib/i18n'
 
 const projectionVisualAIService = ((): 'thought-core' | null => {
@@ -51,6 +52,21 @@ const shouldForceContinuousMicForProjectionVisual =
   process.env.NEXT_PUBLIC_PROJECTION_VISUAL_CONTINUOUS_MIC === 'true'
 
 const ProjectionVisual = () => {
+  const [
+    danceLifecycleAcceptancePredicate,
+    setDanceLifecycleAcceptancePredicate,
+  ] = useState<
+    | ((candidate: MotionRuntimeLifecycleAcceptanceCandidate) => boolean)
+    | undefined
+  >()
+  const handleDanceLifecycleAcceptanceReady = useCallback(
+    (
+      predicate:
+        | ((candidate: MotionRuntimeLifecycleAcceptanceCandidate) => boolean)
+        | undefined
+    ) => setDanceLifecycleAcceptancePredicate(() => predicate),
+    []
+  )
   const router = useRouter()
   const routeQuery = useMemo(
     () =>
@@ -185,11 +201,13 @@ const ProjectionVisual = () => {
         <VrmViewer
           visualTestMode={projectionVisualTestMode}
           motionStimulusAssetPath={motionStimulusAssetPath}
+          onDanceLifecycleAcceptanceReady={handleDanceLifecycleAcceptanceReady}
         />
       )}
       <ProjectionVisualStimulusRefBridge
         enabled={modelType === 'vrm'}
         stimulusRef={projectionVisualStimulusRef}
+        acceptDanceLifecycleCandidate={danceLifecycleAcceptancePredicate}
       />
       {!isPassiveMode &&
         !isStageOutputMode &&

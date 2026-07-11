@@ -24,6 +24,7 @@ import {
   type ProjectionVisualStimulusDispatchTimeline,
   type ProjectionVisualStimulusRef,
 } from './projectionVisualStimulusTransport'
+import type { MotionRuntimeLifecycleAcceptanceCandidate } from './motionRuntimeSession'
 
 const DISPATCH_READY_RETRY_INTERVAL_MS = 100
 const DISPATCH_READY_TIMEOUT_MS = 15_000
@@ -31,14 +32,24 @@ const DISPATCH_READY_TIMEOUT_MS = 15_000
 export function ProjectionVisualStimulusRefBridge({
   enabled,
   stimulusRef,
+  acceptDanceLifecycleCandidate,
 }: {
   enabled: boolean
   stimulusRef?: ProjectionVisualStimulusRef
+  acceptDanceLifecycleCandidate?: (
+    candidate: MotionRuntimeLifecycleAcceptanceCandidate
+  ) => boolean
 }) {
   const dispatchedKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!enabled || !stimulusRef || typeof window === 'undefined') return
+    if (
+      !enabled ||
+      !stimulusRef ||
+      !acceptDanceLifecycleCandidate ||
+      typeof window === 'undefined'
+    )
+      return
 
     const dispatchKey = `${stimulusRef}:${window.location.href}`
     if (dispatchedKeyRef.current === dispatchKey) return
@@ -54,6 +65,9 @@ export function ProjectionVisualStimulusRefBridge({
       | ProjectionVisualControlledChromeObservationSession
       | undefined
     let latestState: ProjectionVisualStimulusDispatchAdapterState | undefined
+    let acceptedResultCorrelation:
+      | { stimulusInstanceId?: string; runtimeResultId?: string }
+      | undefined
     let dispatchTimeline: ProjectionVisualStimulusDispatchTimeline = {
       capture_started_at_ms: 0,
       motion_requested_at_ms: CONTROLLED_CHROME_OBSERVATION_PRETRIGGER_MS,
@@ -143,7 +157,14 @@ export function ProjectionVisualStimulusRefBridge({
             observationSession?.recordSample({
               postRenderAnchorSource: 'record_sample_call',
             })
-            if (latestState && observationSession) {
+            if (
+              latestState &&
+              observationSession &&
+              acceptsFrame(
+                acceptedResultCorrelation,
+                acceptDanceLifecycleCandidate
+              )
+            ) {
               publishControlledChromeObservationSummary(
                 latestState,
                 observationSession
@@ -158,7 +179,14 @@ export function ProjectionVisualStimulusRefBridge({
           observationSession?.recordSample({
             postRenderAnchorSource: 'request_animation_frame',
           })
-          if (latestState && observationSession) {
+          if (
+            latestState &&
+            observationSession &&
+            acceptsFrame(
+              acceptedResultCorrelation,
+              acceptDanceLifecycleCandidate
+            )
+          ) {
             publishControlledChromeObservationSummary(
               latestState,
               observationSession
@@ -181,7 +209,11 @@ export function ProjectionVisualStimulusRefBridge({
         observationSession?.complete()
         if (observationTimer) window.clearInterval(observationTimer)
         observationTimer = undefined
-        if (latestState && observationSession) {
+        if (
+          latestState &&
+          observationSession &&
+          acceptsFrame(acceptedResultCorrelation, acceptDanceLifecycleCandidate)
+        ) {
           publishControlledChromeObservationSummary(
             latestState,
             observationSession
@@ -198,6 +230,24 @@ export function ProjectionVisualStimulusRefBridge({
             event instanceof CustomEvent
               ? (event.detail as MotionStimulusReceiverResult | undefined)
               : undefined
+          if (
+            !result ||
+            !acceptDanceLifecycleCandidate({
+              eventKind: 'runtime_result',
+              stimulusInstanceId: result.stimulus_instance_id,
+              runtimeResultId: result.runtime_result_id,
+              candidateState:
+                result.safe_visible_state === 'neutral_idle_requested'
+                  ? 'idle'
+                  : 'active',
+            })
+          ) {
+            return
+          }
+          acceptedResultCorrelation = {
+            stimulusInstanceId: result.stimulus_instance_id,
+            runtimeResultId: result.runtime_result_id,
+          }
           dispatchTimeline = {
             ...dispatchTimeline,
             result_event_observed_at_ms:
@@ -310,9 +360,28 @@ export function ProjectionVisualStimulusRefBridge({
       )
       if (root) clearProjectionVisualControlledChromeObservationDomSummary(root)
     }
-  }, [enabled, stimulusRef])
+  }, [acceptDanceLifecycleCandidate, enabled, stimulusRef])
 
   return null
+}
+
+function acceptsFrame(
+  correlation:
+    | { stimulusInstanceId?: string; runtimeResultId?: string }
+    | undefined,
+  acceptDanceLifecycleCandidate: (
+    candidate: MotionRuntimeLifecycleAcceptanceCandidate
+  ) => boolean
+): boolean {
+  return Boolean(
+    correlation &&
+    acceptDanceLifecycleCandidate({
+      eventKind: 'frame',
+      stimulusInstanceId: correlation.stimulusInstanceId,
+      runtimeResultId: correlation.runtimeResultId,
+      candidateState: 'active',
+    })
+  )
 }
 
 function isProjectionVisualVrmReady(): boolean {

@@ -27,6 +27,7 @@ import {
   type MotionRuntimeAsset,
 } from '@/features/motionRuntime/motionAsset'
 import { MotionRuntimeSession } from '@/features/motionRuntime/motionRuntimeSession'
+import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motionRuntime/motionRuntimeSession'
 import { applyMotionRuntimePoseFrameToVRM } from '@/features/motionRuntime/vrmPoseFrameDriver'
 import { createHumanoidRotationChannelId } from '@/features/motionRuntime/motionChannels'
 import { MotionRuntimeCompiledTrack } from '@/features/motionRuntime/motionTrackSampler'
@@ -90,6 +91,10 @@ export class Model {
   private _yOffsetQuat = new THREE.Quaternion()
   private _motionAdapter = new VRMMotionAdapter()
   private _motionRuntimeSession = new MotionRuntimeSession()
+  private readonly _danceLifecycleAcceptancePredicate =
+    this._motionRuntimeSession.acceptDanceLifecycleCandidate.bind(
+      this._motionRuntimeSession
+    )
   private _queuedMotionFrame: MotionRuntimeFrameRequest | null = null
   private _queuedMotionFrameSequence: MotionRuntimeFrameRequest[] = []
   private _lastMotionDriverResult: MotionDriverResult | null = null
@@ -156,6 +161,8 @@ export class Model {
       groupKey?: string
       requestedAtMs?: number
       loop?: boolean
+      stimulusInstanceId?: string
+      runtimeResultId?: string
     } = {}
   ): void {
     const requestedAtMs = args.requestedAtMs ?? Date.now()
@@ -168,6 +175,8 @@ export class Model {
 
     const feedback = this._motionRuntimeSession.request({
       stimulusId: args.stimulusId ?? 'dance_sequence.local_vrma',
+      stimulusInstanceId: args.stimulusInstanceId,
+      runtimeResultId: args.runtimeResultId,
       groupKey: args.groupKey ?? 'dance.sequence',
       requestedAtMs,
       channelIds,
@@ -187,9 +196,20 @@ export class Model {
   public stopMotionRuntimeGroup(
     groupKey = 'dance.sequence',
     nowMs = Date.now(),
-    reasonCode = 'query_asset_cleared'
+    reasonCode = 'query_asset_cleared',
+    lifecycle?: { stimulusInstanceId?: string; runtimeResultId?: string }
   ): string[] {
+    this._motionRuntimeSession.admitDanceStop(
+      lifecycle?.stimulusInstanceId,
+      lifecycle?.runtimeResultId
+    )
     return this._motionRuntimeSession.releaseGroup(groupKey, nowMs, reasonCode)
+  }
+
+  public getDanceLifecycleAcceptancePredicate(): (
+    candidate: MotionRuntimeLifecycleAcceptanceCandidate
+  ) => boolean {
+    return this._danceLifecycleAcceptancePredicate
   }
 
   public playMotionRuntimeContextNod(

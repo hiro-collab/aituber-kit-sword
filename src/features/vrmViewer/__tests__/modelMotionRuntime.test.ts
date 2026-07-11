@@ -1,9 +1,11 @@
 import {
+  Model,
   createEmptyMotionRuntimeExpressionValueSummary,
   createExpressionWeightFrameSequence,
   createMotionRuntimeExpressionValueSummary,
   shouldApplyQueuedMotionFrameInFrozenVisualTestMode,
 } from '../model'
+import { MotionRuntimeSession } from '@/features/motionRuntime/motionRuntimeSession'
 
 describe('Model Motion Runtime frozen visual-test routing', () => {
   it('allows expression-only frames in frozen visual-test mode', () => {
@@ -66,16 +68,20 @@ describe('Model Motion Runtime expression-visible frame signal', () => {
     })
 
     expect(frames).toHaveLength(4)
-    expect(frames[0]).toEqual({
-      stimulusInstanceId: 'stimulus-expression-visible',
-      frameCount: 4,
-      expressionWeights: { happy: 0.25, relaxed: 0.125 },
-    })
-    expect(frames[3]).toEqual({
-      stimulusInstanceId: 'stimulus-expression-visible',
-      frameCount: 4,
-      expressionWeights: { happy: 1, relaxed: 0.5 },
-    })
+    expect(frames[0]).toEqual(
+      expect.objectContaining({
+        stimulusInstanceId: 'stimulus-expression-visible',
+        frameCount: 4,
+        expressionWeights: { happy: 0.25, relaxed: 0.125 },
+      })
+    )
+    expect(frames[3]).toEqual(
+      expect.objectContaining({
+        stimulusInstanceId: 'stimulus-expression-visible',
+        frameCount: 4,
+        expressionWeights: { happy: 1, relaxed: 0.5 },
+      })
+    )
   })
 
   it('does not expand mixed gaze/reset frames into the expression-visible ramp', () => {
@@ -99,11 +105,40 @@ describe('Model Motion Runtime expression-visible frame signal', () => {
     })
 
     expect(frames).toHaveLength(30)
-    expect(frames[29]).toEqual({
-      stimulusInstanceId: 'stimulus-expression-visible-long',
-      frameCount: 30,
-      expressionWeights: { happy: 1 },
+    expect(frames[29]).toEqual(
+      expect.objectContaining({
+        stimulusInstanceId: 'stimulus-expression-visible-long',
+        frameCount: 30,
+        expressionWeights: { happy: 1 },
+      })
+    )
+  })
+})
+
+describe('Model dance lifecycle authority', () => {
+  it('returns one session-owned predicate and routes stop admission through that same session', () => {
+    const session = new MotionRuntimeSession()
+    // The constructor needs browser audio; this test injects only the owned session.
+    const model = Object.create(Model.prototype) as Model
+    const predicate = session.acceptDanceLifecycleCandidate.bind(session)
+    ;(model as any)._motionRuntimeSession = session
+    ;(model as any)._danceLifecycleAcceptancePredicate = predicate
+
+    expect(model.getDanceLifecycleAcceptancePredicate()).toBe(predicate)
+    expect(model.getDanceLifecycleAcceptancePredicate()).toBe(predicate)
+
+    model.stopMotionRuntimeGroup('dance.sequence', 1000, 'stop', {
+      stimulusInstanceId: 'stimulus-stop',
+      runtimeResultId: 'result-stop',
     })
+    expect(
+      predicate({
+        eventKind: 'runtime_result',
+        stimulusInstanceId: 'stimulus-stop',
+        runtimeResultId: 'result-stop',
+        candidateState: 'idle',
+      })
+    ).toBe(true)
   })
 })
 
@@ -138,20 +173,22 @@ describe('Model Motion Runtime expression-value diagnostics', () => {
       12
     )
 
-    expect(summary).toEqual({
-      expression_weight_applied: true,
-      channel_names: ['happy', 'relaxed'],
-      frame_applied_count: 1,
-      last_weight_count: 2,
-      last_weight_min: 0.25,
-      last_weight_max: 0.5,
-      last_driver_result_id: 'driver-result-expression-1',
-      last_driver_result: 'applied',
-      last_driver_reason_code: 'motion_driver_applied',
-      last_safe_visible_state: 'expression_changed',
-      last_observed_at: 'post_vrm_update_pre_render',
-      last_frame_seq: 12,
-    })
+    expect(summary).toEqual(
+      expect.objectContaining({
+        expression_weight_applied: true,
+        channel_names: ['happy', 'relaxed'],
+        frame_applied_count: 1,
+        last_weight_count: 2,
+        last_weight_min: 0.25,
+        last_weight_max: 0.5,
+        last_driver_result_id: 'driver-result-expression-1',
+        last_driver_result: 'applied',
+        last_driver_reason_code: 'motion_driver_applied',
+        last_safe_visible_state: 'expression_changed',
+        last_observed_at: 'post_vrm_update_pre_render',
+        last_frame_seq: 12,
+      })
+    )
     expect(summary).not.toHaveProperty('expressionWeights')
   })
 })

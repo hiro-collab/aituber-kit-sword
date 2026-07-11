@@ -3,8 +3,7 @@ export const MOTION_STIMULUS_RECEIVER_EVENT =
 export const MOTION_STIMULUS_RECEIVER_RESULT_EVENT =
   'projection-visual-motion-stimulus-result'
 
-export const DANCE_MOTION_ASSET_PATH_ENV =
-  'NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
+export const DANCE_MOTION_ASSET_PATH_ENV = 'NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
 const SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN =
   /^\/local-vrma\/[a-z0-9_-][a-z0-9._-]*\.vrma$/i
 

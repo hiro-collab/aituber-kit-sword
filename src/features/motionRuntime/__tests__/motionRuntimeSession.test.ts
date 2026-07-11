@@ -420,6 +420,191 @@ describe('MotionRuntimeSession', () => {
       })
     )
   })
+
+  it('admits correlated dance results, rejects stale admission before late stop handling, and settles the stop idly', () => {
+    const session = new MotionRuntimeSession()
+    const active = session.request({
+      stimulusId: 'dance_alpha',
+      stimulusInstanceId: 'stimulus-alpha',
+      runtimeResultId: 'result-alpha',
+      groupKey: 'dance.sequence',
+      requestedAtMs: 1000,
+      channelIds: ['humanoid:hips:rotation'],
+      interruptPolicy: 'coexist',
+    })
+
+    expect(active.accepted).toBe(true)
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'runtime_result',
+        stimulusInstanceId: 'stimulus-alpha',
+        runtimeResultId: 'result-alpha',
+        candidateState: 'active',
+      })
+    ).toBe(true)
+
+    session.admitDanceStop('stimulus-stop', 'result-stop')
+
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'runtime_result',
+        stimulusInstanceId: 'stimulus-alpha',
+        runtimeResultId: 'result-alpha',
+        candidateState: 'active',
+      })
+    ).toBe(false)
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'frame',
+        stimulusInstanceId: 'stimulus-alpha',
+        runtimeResultId: 'result-alpha',
+        candidateState: 'active',
+      })
+    ).toBe(false)
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'runtime_result',
+        stimulusInstanceId: 'stimulus-stop',
+        runtimeResultId: 'result-stop',
+        candidateState: 'idle',
+      })
+    ).toBe(true)
+  })
+
+  it('fails closed for unmatched, missing, and malformed dance lifecycle correlation', () => {
+    const session = new MotionRuntimeSession()
+    session.request({
+      stimulusId: 'dance_alpha',
+      stimulusInstanceId: 'stimulus-alpha',
+      runtimeResultId: 'result-alpha',
+      groupKey: 'dance.sequence',
+      requestedAtMs: 1000,
+      channelIds: ['humanoid:hips:rotation'],
+      interruptPolicy: 'coexist',
+    })
+
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'runtime_result',
+        stimulusInstanceId: 'unknown',
+        runtimeResultId: 'result-alpha',
+        candidateState: 'active',
+      })
+    ).toBe(false)
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'runtime_result',
+        runtimeResultId: 'result-alpha',
+        candidateState: 'active',
+      })
+    ).toBe(false)
+    expect(
+      session.acceptDanceLifecycleCandidate({
+        eventKind: 'runtime_result',
+        stimulusInstanceId: 'invalid/value',
+        runtimeResultId: 'result-alpha',
+        candidateState: 'active',
+      })
+    ).toBe(false)
+  })
+
+  it('keeps only the newest 64 dance correlations with deterministic refreshed-key retention', () => {
+    const session = new MotionRuntimeSession()
+    const requestDance = (
+      stimulusInstanceId: string,
+      runtimeResultId: string,
+      requestedAtMs: number
+    ) =>
+      session.request({
+        stimulusId: `dance_${stimulusInstanceId}`,
+        stimulusInstanceId,
+        runtimeResultId,
+        groupKey: 'dance.sequence',
+        requestedAtMs,
+        channelIds: ['humanoid:hips:rotation'],
+        interruptPolicy: 'coexist',
+      })
+    const candidate = (
+      stimulusInstanceId: string,
+      runtimeResultId: string,
+      candidateState: 'active' | 'idle' = 'active'
+    ) => ({
+      eventKind: 'runtime_result' as const,
+      stimulusInstanceId,
+      runtimeResultId,
+      candidateState,
+    })
+
+    for (let index = 1; index <= 65; index += 1) {
+      expect(
+        requestDance(`stimulus-${index}`, `result-${index}`, index).accepted
+      ).toBe(true)
+    }
+
+    expect(
+      session.assessDanceLifecycleCandidate(candidate('stimulus-1', 'result-1'))
+    ).toBe('rejected_unmatched')
+    expect(
+      session.assessDanceLifecycleCandidate(candidate('stimulus-2', 'result-2'))
+    ).toBe('rejected_stale')
+    expect(
+      session.acceptDanceLifecycleCandidate(
+        candidate('stimulus-65', 'result-65')
+      )
+    ).toBe(true)
+
+    session.admitDanceStop('stimulus-stop', 'result-stop')
+    const stateAfterStop = session.snapshot()
+    expect(
+      session.assessDanceLifecycleCandidate(
+        candidate('stimulus-stop', 'result-stop')
+      )
+    ).toBe('rejected_late_after_stop')
+    expect(
+      session.acceptDanceLifecycleCandidate(
+        candidate('stimulus-stop', 'result-stop', 'idle')
+      )
+    ).toBe(true)
+    expect(session.snapshot()).toEqual(stateAfterStop)
+
+    const refreshedSession = new MotionRuntimeSession()
+    const requestRefreshedDance = (
+      stimulusInstanceId: string,
+      runtimeResultId: string,
+      requestedAtMs: number
+    ) =>
+      refreshedSession.request({
+        stimulusId: `dance_${stimulusInstanceId}`,
+        stimulusInstanceId,
+        runtimeResultId,
+        groupKey: 'dance.sequence',
+        requestedAtMs,
+        channelIds: ['humanoid:hips:rotation'],
+        interruptPolicy: 'coexist',
+      })
+
+    requestRefreshedDance('stimulus-refreshed', 'result-initial', 1)
+    for (let index = 1; index <= 63; index += 1) {
+      requestRefreshedDance(
+        `stimulus-filler-${index}`,
+        `result-filler-${index}`,
+        index + 1
+      )
+    }
+    requestRefreshedDance('stimulus-refreshed', 'result-refreshed', 65)
+    requestRefreshedDance('stimulus-filler-64', 'result-filler-64', 66)
+
+    expect(
+      refreshedSession.assessDanceLifecycleCandidate(
+        candidate('stimulus-refreshed', 'result-refreshed')
+      )
+    ).toBe('rejected_stale')
+    expect(
+      refreshedSession.assessDanceLifecycleCandidate(
+        candidate('stimulus-filler-1', 'result-filler-1')
+      )
+    ).toBe('rejected_unmatched')
+  })
 })
 
 function createRotationAsset(

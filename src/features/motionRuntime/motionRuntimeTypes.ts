@@ -44,6 +44,8 @@ export const DEFAULT_MOTION_RUNTIME_CONFIG: MotionRuntimeConfig = {
 
 export interface MotionStimulusRequest {
   stimulusId: string
+  stimulusInstanceId?: string
+  runtimeResultId?: string
   requestedAtMs: number
   groupKey?: string
   channelIds: MotionRuntimeChannelId[]

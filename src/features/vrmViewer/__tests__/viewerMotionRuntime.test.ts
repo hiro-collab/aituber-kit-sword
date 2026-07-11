@@ -19,8 +19,7 @@ jest.mock('@/lib/VRMAnimation/loadVRMAnimation', () => ({
 const mockedLoadVRMAnimation = loadVRMAnimation as jest.MockedFunction<
   typeof loadVRMAnimation
 >
-const originalDanceMotionAssetPath =
-  process.env[DANCE_MOTION_ASSET_PATH_ENV]
+const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
 
 describe('Viewer Motion Runtime asset lifecycle', () => {
   beforeEach(() => {
@@ -166,6 +165,19 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     )
   })
 
+  it('exposes the exact model-owned dance lifecycle predicate without a viewer shadow state', () => {
+    const viewer = new Viewer()
+    const model = createReadyModel()
+    const predicate = jest.fn(() => true)
+    ;(model as any).getDanceLifecycleAcceptancePredicate = jest
+      .fn()
+      .mockReturnValue(predicate)
+    viewer.model = model
+
+    expect(viewer.getDanceLifecycleAcceptancePredicate()).toBe(predicate)
+    expect(viewer.getDanceLifecycleAcceptancePredicate()).toBe(predicate)
+  })
+
   it('returns unavailable without raw error logging when a configured dance VRMA is missing', async () => {
     const viewer = new Viewer()
     const model = createReadyModel()
@@ -222,7 +234,11 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     expect(model.stopMotionRuntimeGroup).toHaveBeenCalledWith(
       DANCE_SEQUENCE_GROUP_KEY,
       Date.parse('2026-06-15T02:15:00.000Z'),
-      'motion_runtime_stop_requested'
+      'motion_runtime_stop_requested',
+      {
+        stimulusInstanceId: 'stimulus-instance-stop-1',
+        runtimeResultId: 'runtime-result-stop-planned-1',
+      }
     )
     expect(model.queueMotionRuntimeFrame).toHaveBeenCalledWith({
       stimulusInstanceId: 'stimulus-instance-stop-1',
