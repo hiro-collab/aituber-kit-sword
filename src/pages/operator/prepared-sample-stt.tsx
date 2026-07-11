@@ -28,6 +28,11 @@ type ParentPreflightQuery = {
   sampleIndexPreflight: PreparedSampleIndexPreflight
 }
 
+type ParentPreflightState = {
+  value: ParentPreflightQuery | null
+  error: string | null
+}
+
 const OPAQUE_REF_PATTERN = /^[a-z][a-z0-9_.:-]{2,127}$/
 const PREPARED_SAMPLE_ID_PATTERN = /^[a-z][a-z0-9_.-]{2,127}$/
 
@@ -71,28 +76,36 @@ const ignoreSubmission = () => {}
 const PreparedSampleSttOperator = () => {
   const { isListening, startListening, stopListening } =
     useBrowserSpeechRecognition(ignoreSubmission)
-  const [parentPreflight] = useState(() => {
-    try {
-      return { value: readParentPreflightQuery(), error: null }
-    } catch (error) {
-      return {
-        value: null,
-        error:
-          error instanceof Error
-            ? error.message
-            : 'parent_preflight_query_invalid',
-      }
-    }
+  const [parentPreflight, setParentPreflight] = useState<ParentPreflightState>({
+    value: null,
+    error: 'parent_preflight_mount_pending',
   })
   const [expectedText, setExpectedText] = useState('')
   const [run, setRun] = useState<PreparedSampleRun | null>(null)
-  const [status, setStatus] = useState('ready')
+  const [status, setStatus] = useState('mount_pending')
   const resultEventCountRef = useRef(0)
   const finalResultCountRef = useRef(0)
   const latestTranscriptRef = useRef('')
   const attemptActiveRef = useRef(false)
   const completionInFlightRef = useRef(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    try {
+      setParentPreflight({ value: readParentPreflightQuery(), error: null })
+      setStatus('ready')
+    } catch (error) {
+      const errorClass =
+        error instanceof Error
+          ? error.message
+          : 'parent_preflight_query_invalid'
+      setParentPreflight({
+        value: null,
+        error: errorClass,
+      })
+      setStatus(errorClass)
+    }
+  }, [])
 
   const clearAttemptTimeout = () => {
     if (timeoutRef.current) {
@@ -257,6 +270,8 @@ const PreparedSampleSttOperator = () => {
         <dt>sample_index_preflight_class</dt>
         <dd>
           {run?.sampleIndexPreflight.sampleIndexPreflightClass ??
+            parentPreflight.value?.sampleIndexPreflight
+              .sampleIndexPreflightClass ??
             'not_verified'}
         </dd>
         <dt>last_attempt_content_match_class</dt>

@@ -1,6 +1,12 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { existsSync, readFileSync, statSync } from 'fs'
+import { hydrateRoot } from 'react-dom/client'
+import { TextEncoder } from 'util'
 import PreparedSampleSttOperator from '@/pages/operator/prepared-sample-stt'
+
+Object.assign(global, { TextEncoder })
+const { renderToString } =
+  require('react-dom/server') as typeof import('react-dom/server')
 
 const SHARED_VECTOR_FILE = 'm4_cross_repo_attempt_vectors.v0.json'
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -102,6 +108,60 @@ describe('PreparedSampleSttOperator', () => {
 
   afterEach(() => {
     jest.useRealTimers()
+  })
+
+  it('keeps SSR and the first client render query-independent and non-actionable', async () => {
+    jest.useRealTimers()
+    setParentPreflightQuery()
+    const validQueryServerHtml = renderToString(<PreparedSampleSttOperator />)
+    window.history.replaceState({}, '', '/operator/prepared-sample-stt')
+    const missingQueryServerHtml = renderToString(<PreparedSampleSttOperator />)
+
+    expect(validQueryServerHtml).toBe(missingQueryServerHtml)
+
+    const container = document.createElement('div')
+    container.innerHTML = validQueryServerHtml
+    document.body.appendChild(container)
+    expect(
+      within(container).getByTestId('prepared-sample-parent-preflight')
+    ).toHaveTextContent('parent_preflight_mount_pending')
+    expect(
+      within(container).getByRole('button', {
+        name: 'Start bounded attempt',
+      })
+    ).toBeDisabled()
+    expect(container).not.toHaveTextContent('voice.local_sample_001')
+
+    setParentPreflightQuery()
+    const recoverableErrors: unknown[] = []
+    let root: ReturnType<typeof hydrateRoot> | null = null
+    try {
+      await act(async () => {
+        root = hydrateRoot(container, <PreparedSampleSttOperator />, {
+          onRecoverableError: (error) => recoverableErrors.push(error),
+        })
+      })
+
+      expect(recoverableErrors).toEqual([])
+      expect(
+        within(container).getByTestId('prepared-sample-parent-preflight')
+      ).toHaveTextContent(
+        'selected_sample_id=voice.local_sample_001 sample_index_preflight_class=prepared_sample_index_verified'
+      )
+      expect(
+        within(container).getByRole('button', {
+          name: 'Start bounded attempt',
+        })
+      ).toBeEnabled()
+      expect(startListening).not.toHaveBeenCalled()
+    } finally {
+      if (root) {
+        await act(async () => {
+          root?.unmount()
+        })
+      }
+      container.remove()
+    }
   })
 
   it('uses the latest active browser-STT diagnostic transcript for matching', async () => {
