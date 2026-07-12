@@ -38,6 +38,7 @@ export class ControllerError extends Error {
 export const requireBrowserAudioAvailability = ({
   permissionAvailable,
   live,
+  explicitDeviceSelected,
   inputCount,
   outputCount,
 }) => {
@@ -48,6 +49,9 @@ export const requireBrowserAudioAvailability = ({
   }
   if (!live) {
     throw new ControllerError('browser_audio_input_track_not_live')
+  }
+  if (!explicitDeviceSelected) {
+    throw new ControllerError('explicit_audio_input_device_required')
   }
   if (outputCount < 1) {
     throw new ControllerError('browser_audio_output_device_unavailable')
@@ -543,10 +547,12 @@ export const createRuntimeAdapter = ({
   ffplayPath,
   lockClass,
   inspectOwner = inspectOperatorServerOwner,
+  initialContext = null,
+  initialPage = null,
 }) => {
   let serverChild = null
-  let context = null
-  let page = null
+  let context = initialContext
+  let page = initialPage
   let profileDirectory = null
   let serverMode = 'none'
   let externalServerIdentity = null
@@ -658,19 +664,54 @@ export const createRuntimeAdapter = ({
     },
     async requireLiveAudioInput() {
       const result = await page.evaluate(async () => {
+        let stream = null
+        let availability = {
+          permissionAvailable: false,
+          live: false,
+          explicitDeviceSelected: false,
+          inputCount: 0,
+          outputCount: 0,
+        }
+        const acquiredTracks = []
+        let cleanupIncomplete = false
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
+          stream = await navigator.mediaDevices.getUserMedia({
             audio: true,
           })
+          const streamTracks = stream.getTracks()
+          acquiredTracks.push(...streamTracks)
           const tracks = stream.getAudioTracks()
+          for (const track of tracks) {
+            if (!acquiredTracks.includes(track)) acquiredTracks.push(track)
+          }
           const live =
-            tracks.length > 0 &&
-            tracks.every((track) => track.readyState === 'live')
+            tracks.length === 1 &&
+            tracks[0].kind === 'audio' &&
+            tracks[0].readyState === 'live'
+          const deviceId = tracks[0]?.getSettings().deviceId
           const devices = await navigator.mediaDevices.enumerateDevices()
-          tracks.forEach((track) => track.stop())
-          return {
+          const explicitDeviceSelected =
+            live &&
+            typeof deviceId === 'string' &&
+            deviceId.length > 0 &&
+            deviceId.length <= 512 &&
+            !/[\u0000-\u001f\u007f]/.test(deviceId)
+          if (explicitDeviceSelected) {
+            Object.defineProperty(
+              window,
+              '__preparedSampleSttAudioInputDeviceId',
+              {
+                value: deviceId,
+                writable: true,
+                configurable: true,
+                enumerable: false,
+              }
+            )
+          }
+          availability = {
             permissionAvailable: true,
             live,
+            explicitDeviceSelected,
             inputCount: devices.filter((device) => device.kind === 'audioinput')
               .length,
             outputCount: devices.filter(
@@ -678,14 +719,21 @@ export const createRuntimeAdapter = ({
             ).length,
           }
         } catch {
-          return {
-            permissionAvailable: false,
-            live: false,
-            inputCount: 0,
-            outputCount: 0,
+          // Availability failures stay within the existing fixed result classes.
+        } finally {
+          for (const track of new Set(acquiredTracks)) {
+            try {
+              track.stop()
+            } catch {
+              cleanupIncomplete = true
+            }
           }
         }
+        return { ...availability, cleanupIncomplete }
       })
+      if (result.cleanupIncomplete) {
+        throw new ControllerError('cleanup_incomplete')
+      }
       requireBrowserAudioAvailability(result)
     },
     async fillExpectedText(expectedText) {
@@ -828,9 +876,41 @@ export const createRuntimeAdapter = ({
       }
     },
     async closeBrowser() {
-      await context?.close()
-      context = null
-      page = null
+      const closingPage = page
+      const closingContext = context
+      let cleanupFailed = false
+      try {
+        if (closingPage) {
+          try {
+            await closingPage.evaluate(() => {
+              const privateWindow = window
+              try {
+                const cleanupClass =
+                  privateWindow.__preparedSampleSttReleaseAudioTrack?.()
+                if (
+                  cleanupClass === 'explicit_audio_track_cleanup_failed'
+                ) {
+                  throw new Error('explicit_audio_track_cleanup_failed')
+                }
+              } finally {
+                delete privateWindow.__preparedSampleSttReleaseAudioTrack
+                delete privateWindow.__preparedSampleSttAudioInputDeviceId
+              }
+            })
+          } catch {
+            cleanupFailed = true
+          }
+        }
+        try {
+          await closingContext?.close()
+        } catch {
+          cleanupFailed = true
+        }
+      } finally {
+        context = null
+        page = null
+      }
+      if (cleanupFailed) throw new ControllerError('cleanup_incomplete')
     },
     async deleteTempResources() {
       if (profileDirectory) {

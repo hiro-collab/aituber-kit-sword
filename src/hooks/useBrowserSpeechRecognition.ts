@@ -13,6 +13,59 @@ const isInvalidStateError = (error: unknown): boolean =>
   'name' in error &&
   (error as { name?: unknown }).name === 'InvalidStateError'
 
+type SpeechRecognitionWithAudioTrack = SpeechRecognition & {
+  start(audioTrack?: MediaStreamTrack): void
+}
+
+const MIN_EXPLICIT_AUDIO_TRACK_CHROME_MAJOR = 135
+const EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE =
+  'explicit_audio_track_cleanup_complete' as const
+const EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED =
+  'explicit_audio_track_cleanup_failed' as const
+
+type ExplicitAudioTrackCleanupClass =
+  | typeof EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
+  | typeof EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+
+type ExplicitAudioTrackStartResult =
+  | boolean
+  | typeof EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+
+const isOwnedLiveAudioTrack = (
+  track: MediaStreamTrack | null | undefined
+): track is MediaStreamTrack =>
+  Boolean(
+    track &&
+    track.kind === 'audio' &&
+    track.readyState === 'live' &&
+    typeof track.stop === 'function'
+  )
+
+const stopTrackIfPresent = (
+  track: MediaStreamTrack | null | undefined
+): ExplicitAudioTrackCleanupClass => {
+  if (!track || typeof track.stop !== 'function') {
+    return EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
+  }
+  try {
+    track.stop()
+    return EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
+  } catch {
+    // Ownership refs are cleared before cleanup; native track details stay private.
+    return EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+  }
+}
+
+const supportsExplicitSpeechAudioTrack = (): boolean => {
+  if (typeof navigator === 'undefined') return false
+  const match = navigator.userAgent.match(/\b(?:Chrome|Chromium)\/(\d+)/)
+  return (
+    Boolean(match) &&
+    Number.parseInt(match?.[1] ?? '0', 10) >=
+      MIN_EXPLICIT_AUDIO_TRACK_CHROME_MAJOR
+  )
+}
+
 const isProjectionVisualSurface = (): boolean => {
   if (typeof window === 'undefined') {
     return false
@@ -156,7 +209,8 @@ const formatRecognitionError = (error: unknown): string => {
  * ブラウザの音声認識APIを使用するためのカスタムフック
  */
 export function useBrowserSpeechRecognition(
-  onChatProcessStart: (text: string) => void
+  onChatProcessStart: (text: string) => void,
+  onExplicitAudioTrackCleanupFailed?: () => void
 ) {
   const { t } = useTranslation()
   const selectLanguage = settingsStore((s) => s.selectLanguage)
@@ -189,6 +243,18 @@ export function useBrowserSpeechRecognition(
   const startGenerationRef = useRef(0)
   const audioRetryCountRef = useRef(0)
   const controlledRestartRef = useRef(false)
+  const explicitAudioTrackRef = useRef<MediaStreamTrack | null>(null)
+  const explicitAudioTrackModeRef = useRef(false)
+  const explicitAudioTrackStartCleanupRef =
+    useRef<ExplicitAudioTrackCleanupClass>(
+      EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
+    )
+  const explicitAudioTrackInitialStartRef = useRef(false)
+  const explicitAudioTrackCleanupFailedCallbackRef = useRef(
+    onExplicitAudioTrackCleanupFailed
+  )
+  explicitAudioTrackCleanupFailedCallbackRef.current =
+    onExplicitAudioTrackCleanupFailed
   // ----- Chrome Web Speech API の入力段階診断 -----
   const recognitionProgressTimerRef = useRef<NodeJS.Timeout | null>(null)
   const recognitionSignalRef = useRef({
@@ -199,6 +265,9 @@ export function useBrowserSpeechRecognition(
   })
   const startListeningRef = useRef<() => Promise<boolean>>(async () => false)
   const stopListeningRef = useRef<() => Promise<void>>(async () => {})
+  const releaseExplicitAudioTrackRef = useRef<
+    () => ExplicitAudioTrackCleanupClass
+  >(() => EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE)
   const setupInitialSpeechTimerRef = useRef<
     (stopListeningFn: () => Promise<void>) => void
   >(() => {})
@@ -343,6 +412,63 @@ export function useBrowserSpeechRecognition(
     return null
   }, [])
 
+  const releaseExplicitAudioTrack =
+    useCallback((): ExplicitAudioTrackCleanupClass => {
+      const track = explicitAudioTrackRef.current
+      explicitAudioTrackRef.current = null
+      explicitAudioTrackModeRef.current = false
+      const cleanupClass = stopTrackIfPresent(track)
+      if (cleanupClass === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+        explicitAudioTrackStartCleanupRef.current = cleanupClass
+      }
+      return cleanupClass
+    }, [])
+
+  const failClosedExplicitAudioTrackStart = useCallback(
+    (event: string): boolean => {
+      if (!explicitAudioTrackModeRef.current) {
+        return false
+      }
+
+      recognitionActiveRef.current = false
+      isListeningRef.current = false
+      setIsListening(false)
+      setRecognitionPhase('error', event, {
+        detail: 'explicit speech audio track start failed',
+        listening: false,
+        recognitionActive: false,
+      })
+      const cleanupClass = releaseExplicitAudioTrack()
+      if (
+        cleanupClass === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED &&
+        !explicitAudioTrackInitialStartRef.current
+      ) {
+        explicitAudioTrackCleanupFailedCallbackRef.current?.()
+      }
+      return true
+    },
+    [releaseExplicitAudioTrack, setRecognitionPhase]
+  )
+
+  const startRecognitionWithCurrentSource = useCallback(
+    (recognition: SpeechRecognition) => {
+      if (!explicitAudioTrackModeRef.current) {
+        recognition.start()
+        return
+      }
+
+      const track = explicitAudioTrackRef.current
+      if (!isOwnedLiveAudioTrack(track)) {
+        throw new DOMException(
+          'Explicit speech audio track is not live audio',
+          'NotSupportedError'
+        )
+      }
+      ;(recognition as SpeechRecognitionWithAudioTrack).start(track)
+    },
+    []
+  )
+
   // ----- 音声認識停止処理 -----
   const stopListening = useCallback(async () => {
     startGenerationRef.current += 1
@@ -371,6 +497,9 @@ export function useBrowserSpeechRecognition(
 
     const recognition = recognitionRef.current
     if (!recognition) {
+      if (releaseExplicitAudioTrack() === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+        explicitAudioTrackCleanupFailedCallbackRef.current?.()
+      }
       setRecognitionPhase('idle', 'stop_complete', {
         detail: 'SpeechRecognition instance is not ready',
         listening: false,
@@ -404,12 +533,16 @@ export function useBrowserSpeechRecognition(
       }
       isKeyboardTriggered.current = false
     }
+    if (releaseExplicitAudioTrack() === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+      explicitAudioTrackCleanupFailedCallbackRef.current?.()
+    }
   }, [
     clearSilenceDetection,
     clearInitialSpeechCheckTimer,
     clearRecognitionProgressTimer,
     isSpeechEnded,
     onChatProcessStart,
+    releaseExplicitAudioTrack,
     setRecognitionPhase,
   ])
 
@@ -464,7 +597,7 @@ export function useBrowserSpeechRecognition(
   }, [setRecognitionPhase, t])
 
   // ----- 音声認識開始処理 -----
-  const startListening = useCallback(async () => {
+  const startListeningInternal = useCallback(async () => {
     // 排他制御: 既に開始処理中の場合は何もしない
     if (isStartingRef.current) {
       console.log('Recognition start already in progress, skipping')
@@ -519,7 +652,10 @@ export function useBrowserSpeechRecognition(
       }
 
       setRecognitionPhase('permission_checking', 'permission_checking')
-      const hasPermission = await checkMicrophonePermission()
+      const explicitTrack = explicitAudioTrackRef.current
+      const hasPermission = explicitAudioTrackModeRef.current
+        ? isOwnedLiveAudioTrack(explicitTrack)
+        : await checkMicrophonePermission()
       if (!hasPermission) {
         setRecognitionPhase('error', 'start_failed', {
           detail: 'microphone permission denied',
@@ -594,7 +730,7 @@ export function useBrowserSpeechRecognition(
             staleActiveRestartTimeoutRef.current = null
             controlledRestartRef.current = false
             if (startGenerationRef.current === staleRestartGeneration) {
-              startListening()
+              startListeningRef.current()
             }
           }, getBrowserSttRetryDelayMs())
           return false
@@ -616,7 +752,7 @@ export function useBrowserSpeechRecognition(
       setUserMessage('')
 
       try {
-        recognition.start()
+        startRecognitionWithCurrentSource(recognition)
         console.log('Recognition started successfully')
         setRecognitionPhase('engine_starting', 'start_called', {
           detail: 'recognition.start() returned',
@@ -628,7 +764,17 @@ export function useBrowserSpeechRecognition(
         setIsListening(true)
         return true
       } catch (error) {
-        // InvalidStateErrorの場合は、既に開始されているとみなす
+        if (
+          failClosedExplicitAudioTrackStart(
+            isInvalidStateError(error)
+              ? 'explicit_audio_track_invalid_state'
+              : 'explicit_audio_track_start_error'
+          )
+        ) {
+          return false
+        }
+
+        // Argument-free start() preserves the existing already-active behavior.
         if (isInvalidStateError(error)) {
           console.warn('Recognition is already running, skipping retry')
           // 既に実行中なので、リスニング状態を更新する
@@ -669,7 +815,7 @@ export function useBrowserSpeechRecognition(
                   // 停止後に短い遅延
                   setTimeout(() => {
                     try {
-                      recognition.start()
+                      startRecognitionWithCurrentSource(recognition)
                       console.log('Recognition started on retry')
                       dispatchSttDiagnostic({
                         event: 'retry_started',
@@ -681,6 +827,15 @@ export function useBrowserSpeechRecognition(
                       isListeningRef.current = true
                       setIsListening(true)
                     } catch (startError) {
+                      if (
+                        failClosedExplicitAudioTrackStart(
+                          isInvalidStateError(startError)
+                            ? 'explicit_audio_track_retry_invalid_state'
+                            : 'explicit_audio_track_retry_error'
+                        )
+                      ) {
+                        return
+                      }
                       if (isInvalidStateError(startError)) {
                         console.warn(
                           'Recognition is already running on delayed retry, skipping'
@@ -714,7 +869,7 @@ export function useBrowserSpeechRecognition(
                 } catch (stopError) {
                   // 停止できなかった場合は直接スタート
                   try {
-                    recognition.start()
+                    startRecognitionWithCurrentSource(recognition)
                     console.log('Recognition started on retry without stopping')
                     dispatchSttDiagnostic({
                       event: 'retry_started',
@@ -726,6 +881,15 @@ export function useBrowserSpeechRecognition(
                     isListeningRef.current = true
                     setIsListening(true)
                   } catch (startError) {
+                    if (
+                      failClosedExplicitAudioTrackStart(
+                        isInvalidStateError(startError)
+                          ? 'explicit_audio_track_retry_invalid_state'
+                          : 'explicit_audio_track_retry_error'
+                      )
+                    ) {
+                      return
+                    }
                     if (isInvalidStateError(startError)) {
                       console.warn(
                         'Recognition is already running on retry, skipping'
@@ -758,6 +922,13 @@ export function useBrowserSpeechRecognition(
                 }
               }
             } catch (retryError) {
+              if (
+                failClosedExplicitAudioTrackStart(
+                  'explicit_audio_track_retry_exception'
+                )
+              ) {
+                return
+              }
               console.error('Failed to start recognition on retry:', retryError)
               dispatchSttDiagnostic({
                 event: 'retry_exception',
@@ -780,12 +951,71 @@ export function useBrowserSpeechRecognition(
     }
   }, [
     checkMicrophonePermission,
+    failClosedExplicitAudioTrackStart,
+    releaseExplicitAudioTrack,
     setRecognitionPhase,
     setupInitialSpeechTimer,
     startSilenceDetection,
+    startRecognitionWithCurrentSource,
     stopListening,
     waitForRecognitionReady,
   ])
+
+  const startListening = useCallback(async () => {
+    releaseExplicitAudioTrack()
+    return startListeningInternal()
+  }, [releaseExplicitAudioTrack, startListeningInternal])
+
+  const startListeningWithAudioTrack = useCallback(
+    async (track: MediaStreamTrack): Promise<ExplicitAudioTrackStartResult> => {
+      if (
+        !supportsExplicitSpeechAudioTrack() ||
+        !isOwnedLiveAudioTrack(track)
+      ) {
+        stopTrackIfPresent(track)
+        setRecognitionPhase('error', 'explicit_audio_track_unsupported', {
+          detail: 'explicit speech audio track unavailable',
+          listening: false,
+          recognitionActive: false,
+        })
+        return false
+      }
+
+      const currentTrack = explicitAudioTrackRef.current
+      if (currentTrack && currentTrack !== track) {
+        stopTrackIfPresent(track)
+        setRecognitionPhase('error', 'explicit_audio_track_replaced', {
+          detail: 'explicit speech audio track replacement rejected',
+          listening: isListeningRef.current,
+          recognitionActive: recognitionActiveRef.current,
+        })
+        return false
+      }
+
+      explicitAudioTrackStartCleanupRef.current =
+        EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
+      explicitAudioTrackRef.current = track
+      explicitAudioTrackModeRef.current = true
+      explicitAudioTrackInitialStartRef.current = true
+      let started: boolean
+      try {
+        started = await startListeningInternal()
+      } finally {
+        explicitAudioTrackInitialStartRef.current = false
+      }
+      if (!started && !isListeningRef.current && !pendingStartRef.current) {
+        releaseExplicitAudioTrack()
+      }
+      if (
+        (explicitAudioTrackStartCleanupRef.current as ExplicitAudioTrackCleanupClass) ===
+        EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+      ) {
+        return EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+      }
+      return started
+    },
+    [releaseExplicitAudioTrack, setRecognitionPhase, startListeningInternal]
+  )
 
   // ----- 音声認識トグル処理 -----
   const toggleListening = useCallback(() => {
@@ -825,8 +1055,9 @@ export function useBrowserSpeechRecognition(
   )
 
   useEffect(() => {
-    startListeningRef.current = startListening
+    startListeningRef.current = startListeningInternal
     stopListeningRef.current = stopListening
+    releaseExplicitAudioTrackRef.current = releaseExplicitAudioTrack
     setupInitialSpeechTimerRef.current = setupInitialSpeechTimer
     startSilenceDetectionRef.current = startSilenceDetection
     updateSpeechTimestampRef.current = updateSpeechTimestamp
@@ -838,10 +1069,12 @@ export function useBrowserSpeechRecognition(
     initialSpeechTimeout,
     setupInitialSpeechTimer,
     startListening,
+    startListeningInternal,
     startSilenceDetection,
     stopListening,
     t,
     updateSpeechTimestamp,
+    releaseExplicitAudioTrack,
   ])
 
   useEffect(() => {
@@ -1181,6 +1414,8 @@ export function useBrowserSpeechRecognition(
           }
           restartTimeoutRef.current = null
         }, 1000)
+      } else {
+        releaseExplicitAudioTrackRef.current()
       }
     }
 
@@ -1248,6 +1483,7 @@ export function useBrowserSpeechRecognition(
           )
           isListeningRef.current = false
           setIsListening(false)
+          releaseExplicitAudioTrackRef.current()
         }
       } else {
         // その他のエラーの場合は通常の終了処理
@@ -1296,6 +1532,7 @@ export function useBrowserSpeechRecognition(
       clearInitialSpeechCheckTimer()
       clearRecognitionProgressTimer()
       pendingStartRef.current = false
+      releaseExplicitAudioTrackRef.current()
       if (recognitionRef.current === newRecognition) {
         recognitionRef.current = null
       }
@@ -1321,6 +1558,8 @@ export function useBrowserSpeechRecognition(
       handleSendMessage,
       toggleListening,
       startListening,
+      startListeningWithAudioTrack,
+      releaseExplicitAudioTrack,
       stopListening,
       checkRecognitionActive,
     }),
@@ -1332,6 +1571,8 @@ export function useBrowserSpeechRecognition(
       handleSendMessage,
       toggleListening,
       startListening,
+      startListeningWithAudioTrack,
+      releaseExplicitAudioTrack,
       stopListening,
       checkRecognitionActive,
     ]

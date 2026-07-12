@@ -99,6 +99,19 @@ const mockGetUserMedia = jest.fn().mockResolvedValue({
   getTracks: () => [{ stop: jest.fn() }],
 })
 
+const createMockAudioTrack = ({
+  kind = 'audio',
+  readyState = 'live',
+}: {
+  kind?: string
+  readyState?: MediaStreamTrackState
+} = {}) =>
+  ({
+    kind,
+    readyState,
+    stop: jest.fn(),
+  }) as unknown as MediaStreamTrack
+
 describe('useBrowserSpeechRecognition', () => {
   // グローバル変数のオリジナルを保存（副作用防止）
   const originalSpeechRecognition = (
@@ -440,14 +453,9 @@ describe('useBrowserSpeechRecognition', () => {
     })
 
     it('4.1-regression: 認識中に送信callbackが変わってもrecognitionをabortしない', async () => {
-      const { result, rerender } = renderHook(
-        ({ onChatProcessStart }) =>
-          useBrowserSpeechRecognition(onChatProcessStart),
-        {
-          initialProps: {
-            onChatProcessStart: jest.fn(),
-          },
-        }
+      let onChatProcessStart = jest.fn()
+      const { result, rerender } = renderHook(() =>
+        useBrowserSpeechRecognition(onChatProcessStart)
       )
 
       await act(async () => {
@@ -462,7 +470,8 @@ describe('useBrowserSpeechRecognition', () => {
         mockSpeechRecognition.abort.mock.calls.length
 
       act(() => {
-        rerender({ onChatProcessStart: jest.fn() })
+        onChatProcessStart = jest.fn()
+        rerender()
       })
 
       expect(mockSpeechRecognition.abort.mock.calls.length).toBe(
@@ -499,6 +508,391 @@ describe('useBrowserSpeechRecognition', () => {
       // stopListeningにより再起動がキャンセルされたことを確認
       // （startが呼ばれていないか、または状態が適切に管理されている）
       expect(result.current.isListening).toBe(false)
+    })
+  })
+
+  describe('prepared-sample explicit audio track', () => {
+    it('keeps ordinary user speech on argument-free recognition.start()', async () => {
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      await act(async () => {
+        await result.current.startListening()
+      })
+
+      expect(mockSpeechRecognition.start).toHaveBeenCalledWith()
+    })
+
+    it('retains start_reused for argument-free InvalidStateError', async () => {
+      const diagnosticEvents: string[] = []
+      const handleDiagnostic = (event: Event) => {
+        const detail = (event as CustomEvent<{ event?: string }>).detail
+        if (detail?.event) diagnosticEvents.push(detail.event)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      mockSpeechRecognition.start.mockImplementationOnce(() => {
+        throw new DOMException('Already running', 'InvalidStateError')
+      })
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListening()).toBe(true)
+        })
+
+        expect(mockSpeechRecognition.start).toHaveBeenCalledWith()
+        expect(result.current.isListening).toBe(true)
+        expect(result.current.checkRecognitionActive()).toBe(true)
+        expect(diagnosticEvents).toContain('start_reused')
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it('fails closed when explicit-track start throws InvalidStateError', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const diagnosticEvents: string[] = []
+      const handleDiagnostic = (event: Event) => {
+        const detail = (event as CustomEvent<{ event?: string }>).detail
+        if (detail?.event) diagnosticEvents.push(detail.event)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const track = createMockAudioTrack()
+      mockSpeechRecognition.start.mockImplementationOnce(() => {
+        throw new DOMException('Already running', 'InvalidStateError')
+      })
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+            false
+          )
+        })
+
+        expect(mockSpeechRecognition.start).toHaveBeenCalledWith(track)
+        expect(result.current.isListening).toBe(false)
+        expect(result.current.checkRecognitionActive()).toBe(false)
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        expect(diagnosticEvents).toContain('explicit_audio_track_invalid_state')
+        expect(diagnosticEvents).not.toContain('start_reused')
+        expect(diagnosticEvents).not.toContain('retry_reused')
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it('returns a fixed failure class and stays idempotent when owned track stop throws', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const privateMarker =
+        'PRIVATE_DEVICE C:\\private\\sample.wav native-cause native-stack'
+      const diagnostics: Array<Record<string, unknown>> = []
+      const handleDiagnostic = (event: Event) => {
+        diagnostics.push((event as CustomEvent<Record<string, unknown>>).detail)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const track = createMockAudioTrack()
+      track.stop = jest.fn(() => {
+        throw new Error(privateMarker)
+      })
+      mockSpeechRecognition.start.mockImplementationOnce(() => {
+        throw new DOMException(privateMarker, 'InvalidStateError')
+      })
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+            'explicit_audio_track_cleanup_failed'
+          )
+        })
+
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        expect(result.current.isListening).toBe(false)
+        expect(result.current.checkRecognitionActive()).toBe(false)
+        expect(JSON.stringify(diagnostics)).not.toContain(privateMarker)
+        expect(result.current.releaseExplicitAudioTrack()).toBe(
+          'explicit_audio_track_cleanup_complete'
+        )
+        expect(track.stop).toHaveBeenCalledTimes(1)
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it('reports normal-stop cleanup failure once after clearing owned track state', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const privateMarker =
+        'PRIVATE_STOP C:\\private\\normal-stop.wav native-cause native-stack'
+      const diagnostics: Array<Record<string, unknown>> = []
+      const handleDiagnostic = (event: Event) => {
+        diagnostics.push((event as CustomEvent<Record<string, unknown>>).detail)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const track = createMockAudioTrack()
+      track.stop = jest.fn(() => {
+        throw new Error(privateMarker)
+      })
+      const onCleanupFailed = jest.fn()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn(), onCleanupFailed)
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+            true
+          )
+        })
+
+        await act(async () => {
+          await result.current.stopListening()
+        })
+
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        expect(onCleanupFailed).toHaveBeenCalledTimes(1)
+        expect(JSON.stringify(diagnostics)).not.toContain(privateMarker)
+        expect(result.current.releaseExplicitAudioTrack()).toBe(
+          'explicit_audio_track_cleanup_complete'
+        )
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        expect(onCleanupFailed).toHaveBeenCalledTimes(1)
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it('uses the same owned live audio track across automatic retries', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const track = createMockAudioTrack()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      await act(async () => {
+        expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+          true
+        )
+      })
+      expect(mockSpeechRecognition.start).toHaveBeenLastCalledWith(track)
+
+      act(() => {
+        mockSpeechRecognition.onend?.()
+      })
+      await act(async () => {
+        jest.advanceTimersByTime(1000)
+        await Promise.resolve()
+      })
+
+      expect(mockSpeechRecognition.start).toHaveBeenCalledTimes(2)
+      expect(mockSpeechRecognition.start.mock.calls[1]).toEqual([track])
+
+      await act(async () => {
+        await result.current.stopListening()
+      })
+      expect(track.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('fails closed on explicit-track InvalidStateError during automatic restart', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const diagnosticEvents: string[] = []
+      const diagnosticDetails: Array<Record<string, unknown>> = []
+      const handleDiagnostic = (event: Event) => {
+        const detail = (
+          event as CustomEvent<{ event?: string } & Record<string, unknown>>
+        ).detail
+        diagnosticDetails.push(detail)
+        if (detail?.event) diagnosticEvents.push(detail.event)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const privateMarker =
+        'PRIVATE_RETRY C:\\private\\retry-track.wav native-cause native-stack'
+      const track = createMockAudioTrack()
+      track.stop = jest.fn(() => {
+        throw new Error(privateMarker)
+      })
+      mockSpeechRecognition.start
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => {
+          throw new DOMException(privateMarker, 'InvalidStateError')
+        })
+      const onCleanupFailed = jest.fn()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn(), onCleanupFailed)
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+            true
+          )
+        })
+
+        act(() => {
+          mockSpeechRecognition.onend?.()
+        })
+        await act(async () => {
+          jest.advanceTimersByTime(1000)
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(mockSpeechRecognition.start).toHaveBeenCalledTimes(2)
+        expect(mockSpeechRecognition.start.mock.calls[1]).toEqual([track])
+        expect(result.current.isListening).toBe(false)
+        expect(result.current.checkRecognitionActive()).toBe(false)
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        expect(onCleanupFailed).toHaveBeenCalledTimes(1)
+        expect(diagnosticEvents).toContain('explicit_audio_track_invalid_state')
+        expect(diagnosticEvents).not.toContain('start_reused')
+        expect(diagnosticEvents).not.toContain('retry_reused')
+        expect(JSON.stringify(diagnosticDetails)).not.toContain(privateMarker)
+        expect(result.current.releaseExplicitAudioTrack()).toBe(
+          'explicit_audio_track_cleanup_complete'
+        )
+        expect(track.stop).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+          jest.advanceTimersByTime(5000)
+          await Promise.resolve()
+        })
+        expect(mockSpeechRecognition.start).toHaveBeenCalledTimes(2)
+        expect(onCleanupFailed).toHaveBeenCalledTimes(1)
+        expect(track.stop).toHaveBeenCalledTimes(1)
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it.each([
+      ['omitted', undefined],
+      ['non-audio', createMockAudioTrack({ kind: 'video' })],
+      ['dead', createMockAudioTrack({ readyState: 'ended' })],
+    ])('fails closed for an %s explicit track', async (_name, track) => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      await act(async () => {
+        expect(
+          await result.current.startListeningWithAudioTrack(
+            track as MediaStreamTrack
+          )
+        ).toBe(false)
+      })
+
+      expect(mockSpeechRecognition.start).not.toHaveBeenCalled()
+      if (track) expect(track.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('fails closed before recognition on an unsupported Chrome baseline', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/134.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const track = createMockAudioTrack()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      await act(async () => {
+        expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+          false
+        )
+      })
+
+      expect(mockSpeechRecognition.start).not.toHaveBeenCalled()
+      expect(track.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects a replacement track while the owned track is active', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const firstTrack = createMockAudioTrack()
+      const replacementTrack = createMockAudioTrack()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      await act(async () => {
+        expect(
+          await result.current.startListeningWithAudioTrack(firstTrack)
+        ).toBe(true)
+        expect(
+          await result.current.startListeningWithAudioTrack(replacementTrack)
+        ).toBe(false)
+      })
+
+      expect(mockSpeechRecognition.start).toHaveBeenCalledTimes(1)
+      expect(mockSpeechRecognition.start).toHaveBeenCalledWith(firstTrack)
+      expect(replacementTrack.stop).toHaveBeenCalledTimes(1)
+      expect(firstTrack.stop).not.toHaveBeenCalled()
     })
   })
 })

@@ -12,6 +12,7 @@ import {
   ControllerError,
   buildOperatorServerOwnerInspectionScript,
   createPublicChildEnvironment,
+  createRuntimeAdapter,
   requireBrowserAudioAvailability,
   resolveOperatorServerMode,
   runPreparedSampleController,
@@ -21,6 +22,50 @@ import {
 const privateExpectedText = 'PRIVATE_EXPECTED_TEXT_SENTINEL'
 const fixtureAitRoot = 'C:\\fixture\\ait'
 const fixtureStart = '2025-01-01T00:00:00.000Z'
+
+const createBrowserCleanupFixture = ({
+  privateMarker,
+  releaseTrack,
+  closeContext,
+}) => {
+  const counts = { evaluate: 0, release: 0, contextClose: 0 }
+  const privateWindow = {
+    __preparedSampleSttAudioInputDeviceId: privateMarker,
+    __preparedSampleSttReleaseAudioTrack() {
+      counts.release += 1
+      return releaseTrack()
+    },
+  }
+  const page = {
+    async evaluate(operation) {
+      counts.evaluate += 1
+      const originalWindow = globalThis.window
+      globalThis.window = privateWindow
+      try {
+        return await operation()
+      } finally {
+        if (originalWindow === undefined) delete globalThis.window
+        else globalThis.window = originalWindow
+      }
+    },
+  }
+  const context = {
+    async close() {
+      counts.contextClose += 1
+      return closeContext()
+    },
+  }
+  const adapter = createRuntimeAdapter({
+    operatorUrl: 'http://127.0.0.1:3000/operator/prepared-sample-stt',
+    audioPath: 'private-audio-path',
+    locale: 'en-US',
+    ffplayPath: 'private-player-path',
+    lockClass: 'held_by_parent',
+    initialContext: context,
+    initialPage: page,
+  })
+  return { adapter, counts, privateWindow }
+}
 
 const toDotNetTicks = (value) =>
   (BigInt(Date.parse(value)) * 10_000n + 621_355_968_000_000_000n).toString()
@@ -845,6 +890,161 @@ test('reports cleanup failure as a fixed non-echoing result', async () => {
   assert.equal(JSON.stringify(result).includes('private detail'), false)
 })
 
+test('preflight stops every unique acquired track and fixes stop failures', async () => {
+  const privateMarker =
+    'PRIVATE_TRACK C:\\private\\preflight.wav native-cause native-stack'
+  const stopCounts = { failing: 0, healthy: 0 }
+  const failingTrack = {
+    kind: 'audio',
+    readyState: 'live',
+    getSettings() {
+      return { deviceId: 'private-audio-input-device-id' }
+    },
+    stop() {
+      stopCounts.failing += 1
+      throw new Error(privateMarker)
+    },
+  }
+  const healthyTrack = {
+    kind: 'video',
+    readyState: 'live',
+    stop() {
+      stopCounts.healthy += 1
+    },
+  }
+  const privateWindow = {}
+  const privateNavigator = {
+    mediaDevices: {
+      async getUserMedia() {
+        return {
+          getTracks: () => [failingTrack, healthyTrack, failingTrack],
+          getAudioTracks: () => [failingTrack],
+        }
+      },
+      async enumerateDevices() {
+        return [{ kind: 'audioinput' }, { kind: 'audiooutput' }]
+      },
+    },
+  }
+  const page = {
+    async evaluate(operation) {
+      const navigatorDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'navigator'
+      )
+      const windowDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'window'
+      )
+      Object.defineProperty(globalThis, 'navigator', {
+        value: privateNavigator,
+        configurable: true,
+      })
+      Object.defineProperty(globalThis, 'window', {
+        value: privateWindow,
+        configurable: true,
+      })
+      try {
+        return await operation()
+      } finally {
+        if (navigatorDescriptor) {
+          Object.defineProperty(globalThis, 'navigator', navigatorDescriptor)
+        } else {
+          delete globalThis.navigator
+        }
+        if (windowDescriptor) {
+          Object.defineProperty(globalThis, 'window', windowDescriptor)
+        } else {
+          delete globalThis.window
+        }
+      }
+    },
+  }
+  const adapter = createRuntimeAdapter({
+    operatorUrl: 'http://127.0.0.1:3000/operator/prepared-sample-stt',
+    audioPath: 'private-audio-path',
+    locale: 'en-US',
+    ffplayPath: 'private-player-path',
+    lockClass: 'held_by_parent',
+    initialPage: page,
+  })
+
+  await assert.rejects(adapter.requireLiveAudioInput(), (error) => {
+    assert.equal(error instanceof ControllerError, true)
+    assert.equal(error.resultClass, 'cleanup_incomplete')
+    assert.equal(error.message, 'cleanup_incomplete')
+    assert.equal(String(error).includes(privateMarker), false)
+    return true
+  })
+  assert.deepEqual(stopCounts, { failing: 1, healthy: 1 })
+})
+
+test('closeBrowser continues through page release failure and clears owned refs', async () => {
+  const privateMarker =
+    'PRIVATE_DEVICE C:\\private\\cleanup.wav native-cause native-stack'
+  const { adapter, counts, privateWindow } = createBrowserCleanupFixture({
+    privateMarker,
+    releaseTrack() {
+      throw new Error(privateMarker)
+    },
+    closeContext() {},
+  })
+
+  await assert.rejects(adapter.closeBrowser(), (error) => {
+    assert.equal(error instanceof ControllerError, true)
+    assert.equal(error.resultClass, 'cleanup_incomplete')
+    assert.equal(error.message, 'cleanup_incomplete')
+    assert.equal(String(error).includes(privateMarker), false)
+    return true
+  })
+  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleSttReleaseAudioTrack'),
+    false
+  )
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleSttAudioInputDeviceId'),
+    false
+  )
+
+  await adapter.closeBrowser()
+  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+})
+
+test('closeBrowser fixes context close failure and still clears both refs', async () => {
+  const privateMarker =
+    'PRIVATE_CONTEXT C:\\private\\profile native-cause native-stack'
+  const { adapter, counts, privateWindow } = createBrowserCleanupFixture({
+    privateMarker,
+    releaseTrack() {
+      return 'explicit_audio_track_cleanup_complete'
+    },
+    closeContext() {
+      throw new Error(privateMarker)
+    },
+  })
+
+  await assert.rejects(adapter.closeBrowser(), (error) => {
+    assert.equal(error instanceof ControllerError, true)
+    assert.equal(error.resultClass, 'cleanup_incomplete')
+    assert.equal(error.message, 'cleanup_incomplete')
+    assert.equal(String(error).includes(privateMarker), false)
+    return true
+  })
+  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleSttReleaseAudioTrack'),
+    false
+  )
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleSttAudioInputDeviceId'),
+    false
+  )
+
+  await adapter.closeBrowser()
+  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+})
+
 test('strips all route-private values from server and browser children', () => {
   const privateEnvironment = {
     PUBLIC_MARKER: 'retained',
@@ -870,21 +1070,50 @@ test('requires normal-browser input, live track, and output availability', () =>
     requireBrowserAudioAvailability({
       permissionAvailable: true,
       live: true,
+      explicitDeviceSelected: true,
       inputCount: 1,
       outputCount: 1,
     })
   )
   for (const [value, blockerClass] of [
     [
-      { permissionAvailable: false, live: false, inputCount: 0, outputCount: 0 },
+      {
+        permissionAvailable: false,
+        live: false,
+        explicitDeviceSelected: false,
+        inputCount: 0,
+        outputCount: 0,
+      },
       'browser_microphone_permission_or_device_unavailable',
     ],
     [
-      { permissionAvailable: true, live: false, inputCount: 1, outputCount: 1 },
+      {
+        permissionAvailable: true,
+        live: false,
+        explicitDeviceSelected: false,
+        inputCount: 1,
+        outputCount: 1,
+      },
       'browser_audio_input_track_not_live',
     ],
     [
-      { permissionAvailable: true, live: true, inputCount: 1, outputCount: 0 },
+      {
+        permissionAvailable: true,
+        live: true,
+        explicitDeviceSelected: false,
+        inputCount: 1,
+        outputCount: 1,
+      },
+      'explicit_audio_input_device_required',
+    ],
+    [
+      {
+        permissionAvailable: true,
+        live: true,
+        explicitDeviceSelected: true,
+        inputCount: 1,
+        outputCount: 0,
+      },
       'browser_audio_output_device_unavailable',
     ],
   ]) {
@@ -920,6 +1149,14 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
   assert.match(source, /buildOperatorServerOwnerInspectionScript/)
   assert.match(source, /node_modules\\\\next\\\\dist\\\\server\\\\lib\\\\start-server/)
   assert.match(source, /revalidateExternalServer/)
+  assert.match(source, /getSettings\(\)\.deviceId/)
+  assert.match(source, /__preparedSampleSttAudioInputDeviceId/)
+  assert.match(source, /explicitDeviceSelected/)
+  assert.match(source, /delete privateWindow\.__preparedSampleSttAudioInputDeviceId/)
+  assert.doesNotMatch(
+    source.match(/const fixedOutput = [\s\S]*?\n\}\)/)?.[0] ?? '',
+    /deviceId|device_label|device_id/
+  )
   assert.match(source, /clearPrivateProcessEnvironment\(\)/)
   assert.match(source, /lockClass !== 'held_by_parent'/)
   const privateEnvironmentBlock =
