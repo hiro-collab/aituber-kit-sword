@@ -113,7 +113,7 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
     const owner = jest.fn(async () => {})
     const registration = registerAcceptedPreparedSamplePresentationOwner(owner)
     registration.openOperator(
-      `${window.location.origin}/operator/prepared-sample-stt`
+      `${window.location.origin}/operator/prepared-sample-stt/`
     )
     const spoofChannel = new MemoryMessageChannel()
     const spoofEvent = new Event('message')

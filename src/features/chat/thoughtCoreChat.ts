@@ -666,7 +666,7 @@ export function registerAcceptedPreparedSamplePresentationOwner(
       const parsed = new URL(url, window.location.href)
       if (
         parsed.origin !== window.location.origin ||
-        parsed.pathname !== '/operator/prepared-sample-stt'
+        parsed.pathname !== '/operator/prepared-sample-stt/'
       ) {
         throw new Error(ACCEPTED_PRESENTATION_FAILED)
       }
