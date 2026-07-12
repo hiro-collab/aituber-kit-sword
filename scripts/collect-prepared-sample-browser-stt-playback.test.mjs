@@ -101,11 +101,18 @@ const nextDevCommand = ({
   host = '127.0.0.1',
   port = 3000,
   optionStyle = 'short',
+  moduleStyle = 'direct',
+  quoteModule = false,
   suffix = '',
-} = {}) =>
-  `${root}\\node_modules\\next\\dist\\bin\\next dev ${
+} = {}) => {
+  const modulePath =
+    moduleStyle === 'npm-shim'
+      ? `${root}\\node_modules\\.bin\\\\..\\next\\dist\\bin\\next`
+      : `${root}\\node_modules\\next\\dist\\bin\\next`
+  return `${quoteModule ? `"${modulePath}"` : modulePath} dev ${
     optionStyle === 'long' ? '--hostname' : '-H'
   } ${host} ${optionStyle === 'long' ? '--port' : '-p'} ${port}${suffix}`
+}
 
 const nextChildCommand = ({
   root = fixtureAitRoot,
@@ -426,7 +433,8 @@ test('accepts only a direct Next dev owner or its sealed listener child', () => 
   assert.match(script, /\$parentOwned=/)
   assert.match(script, /\$sealedChild=/)
   assert.match(script, /node_modules\\next\\dist\\server\\lib\\start-server/)
-  assert.match(script, /node_modules\\next\\dist\\bin\\next/)
+  assert.match(script, /GetFullPath/)
+  assert.match(script, /\$moduleOwned=/)
   assert.match(script, /-H\|--hostname/)
   assert.match(script, /-p\|--port/)
   assert.match(script, /hostFlags\.Count -eq 1/)
@@ -457,6 +465,32 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
     parentProcessId: 55,
     commandLine: nextChildCommand(),
   })
+
+  const quotedCanonicalCommand = nextDevCommand({
+    optionStyle: 'long',
+    moduleStyle: 'npm-shim',
+    quoteModule: true,
+  })
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({ processId: 99, commandLine: quotedCanonicalCommand }),
+      ],
+    }),
+    `owned:99:${expectedTicks}`
+  )
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [
+        exactChild,
+        processFixture({ processId: 55, commandLine: quotedCanonicalCommand }),
+      ],
+    }),
+    `owned:99:${expectedTicks}`
+  )
+
   assert.equal(
     runOwnerInspectionFixture({
       listeners: [listenerFixture(99)],
@@ -467,7 +501,10 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
 
   const canonicalParent = processFixture({
     processId: 55,
-    commandLine: nextDevCommand({ optionStyle: 'long' }),
+    commandLine: nextDevCommand({
+      optionStyle: 'long',
+      moduleStyle: 'npm-shim',
+    }),
   })
   assert.equal(
     runOwnerInspectionFixture({
@@ -483,7 +520,10 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       processes: [
         processFixture({
           processId: 99,
-          commandLine: nextDevCommand({ optionStyle: 'long' }),
+          commandLine: nextDevCommand({
+            optionStyle: 'long',
+            moduleStyle: 'npm-shim',
+          }),
         }),
       ],
     }),
@@ -574,6 +614,30 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
 
   const nextBin = `${fixtureAitRoot}\\node_modules\\next\\dist\\bin\\next`
   const invalidCommands = [
+    {
+      name: 'missing dev token',
+      commandLine: `${nextBin} -H 127.0.0.1 -p 3000`,
+    },
+    {
+      name: 'duplicate dev token',
+      commandLine: `${nextBin} dev dev -H 127.0.0.1 -p 3000`,
+    },
+    {
+      name: 'noncanonical dev case',
+      commandLine: `${nextBin} DEV -H 127.0.0.1 -p 3000`,
+    },
+    {
+      name: 'exact module decoy before wrong immediate module',
+      commandLine: `${nextBin} ${fixtureAitRoot}\\scripts\\other.js dev -H 127.0.0.1 -p 3000`,
+    },
+    {
+      name: 'wrong module under exact root',
+      commandLine: `${fixtureAitRoot}\\scripts\\other.js dev -H 127.0.0.1 -p 3000`,
+    },
+    {
+      name: 'different package through npm shim traversal',
+      commandLine: `${fixtureAitRoot}\\node_modules\\.bin\\\\..\\other\\dist\\bin\\next dev -H 127.0.0.1 -p 3000`,
+    },
     { name: 'missing host', commandLine: `${nextBin} dev -p 3000` },
     { name: 'missing port', commandLine: `${nextBin} dev -H 127.0.0.1` },
     { name: 'wrong host', commandLine: nextDevCommand({ host: '0.0.0.0' }) },
