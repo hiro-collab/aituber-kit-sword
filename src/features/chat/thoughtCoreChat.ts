@@ -568,13 +568,14 @@ async function dispatchAcceptedPresentationMotionAndAwaitLifecycle(
   if (!stimulus || typeof window === 'undefined' || signal.aborted) {
     throw new Error(ACCEPTED_PRESENTATION_FAILED)
   }
-  const baselineSnapshot = readAcceptedPresentationMotionRuntimeSnapshot()
-  if (
+  let baselineSnapshot = readAcceptedPresentationMotionRuntimeSnapshot()
+  while (
     !baselineSnapshot ||
     !baselineSnapshot.vrmReady ||
     !baselineSnapshot.sceneVisible
   ) {
-    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+    await waitForAcceptedPresentationMotionPoll(signal)
+    baselineSnapshot = readAcceptedPresentationMotionRuntimeSnapshot()
   }
   const baselineFrameSeq = baselineSnapshot.frameSeq
   const result = await new Promise<MotionStimulusReceiverResult>(

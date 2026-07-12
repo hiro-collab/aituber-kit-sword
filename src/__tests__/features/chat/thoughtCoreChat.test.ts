@@ -314,19 +314,23 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
   it('waits for a rendered motion lifecycle and a 12-second no-late window', async () => {
     jest.useFakeTimers()
     let handleMotionStimulus: ((event: Event) => void) | undefined
+    let motionStimulusDispatchCount = 0
     try {
       const present = jest.fn(async () => {})
-      ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
-        frameSeq: 10,
-        vrmReady: true,
-        sceneVisible: true,
-        session: { occupiedSlots: 0, queueLength: 0, instances: [] },
-        poseFrame: {
-          humanoidRotationBoneNames: [],
-          humanoidTranslationBoneNames: [],
-        },
-      }
+      setTimeout(() => {
+        ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
+          frameSeq: 10,
+          vrmReady: true,
+          sceneVisible: true,
+          session: { occupiedSlots: 0, queueLength: 0, instances: [] },
+          poseFrame: {
+            humanoidRotationBoneNames: [],
+            humanoidTranslationBoneNames: [],
+          },
+        }
+      }, 100)
       handleMotionStimulus = (event: Event) => {
+        motionStimulusDispatchCount += 1
         const stimulus = (event as CustomEvent).detail
         ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
           frameSeq: 12,
@@ -431,6 +435,10 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
           settled = true
         }
       )
+      await jest.advanceTimersByTimeAsync(99)
+      expect(motionStimulusDispatchCount).toBe(0)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(motionStimulusDispatchCount).toBe(1)
       await jest.advanceTimersByTimeAsync(12_000)
       expect(settled).toBe(false)
       await jest.advanceTimersByTimeAsync(500)
@@ -448,6 +456,101 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
   })
 
   it.each([
+    ['vrm_not_ready', false, true],
+    ['scene_not_visible', true, false],
+  ])(
+    'does not dispatch while Projection baseline is %s',
+    async (_mutation, initialVrmReady, initialSceneVisible) => {
+      jest.useFakeTimers()
+      const controller = new AbortController()
+      let motionStimulusDispatchCount = 0
+      const handleMotionStimulus = (event: Event) => {
+        motionStimulusDispatchCount += 1
+        const stimulus = (event as CustomEvent).detail
+        window.dispatchEvent(
+          new CustomEvent('projection-visual-motion-stimulus-result', {
+            detail: {
+              source_kind: 'thought_core_motion_stimulus_v0',
+              debug_playback: false,
+              accepted: false,
+              status: 'failed_safe',
+              reason_code: 'bounded_test_result',
+              safe_visible_state: 'no_visible_change',
+              motion_event_id: stimulus.motion_event_id,
+              stimulus_id: stimulus.stimulus_id,
+              stimulus_instance_id: stimulus.stimulus_instance_id,
+              lifecycle_trace: [],
+            },
+          })
+        )
+      }
+      try {
+        const setBaseline = (vrmReady: boolean, sceneVisible: boolean) => {
+          ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
+            frameSeq: 10,
+            vrmReady,
+            sceneVisible,
+            session: { occupiedSlots: 0, queueLength: 0, instances: [] },
+            poseFrame: {
+              humanoidRotationBoneNames: [],
+              humanoidTranslationBoneNames: [],
+            },
+          }
+        }
+        setBaseline(initialVrmReady, initialSceneVisible)
+        window.addEventListener(
+          MOTION_STIMULUS_RECEIVER_EVENT,
+          handleMotionStimulus,
+          { once: true }
+        )
+        ;(global.fetch as jest.Mock).mockResolvedValue(
+          createSseResponse([
+            {
+              type: 'accepted.presentation.assistant_delta',
+              data: {
+                conversation_attempt_ref: conversationAttemptRef,
+                delta: '返答',
+              },
+            },
+            {
+              type: 'accepted.presentation.motion',
+              data: {
+                conversation_attempt_ref: conversationAttemptRef,
+                event: createMotionRequestedEvent(),
+              },
+            },
+            {
+              type: 'accepted.presentation.completed',
+              data: { conversation_attempt_ref: conversationAttemptRef },
+            },
+          ])
+        )
+        const request = expect(
+          requestAcceptedPreparedSamplePresentation(
+            envelope,
+            jest.fn(async () => {}),
+            { signal: controller.signal, deadlineMs: 75_000 }
+          )
+        ).rejects.toThrow('accepted_prepared_sample_request_failed')
+        await jest.advanceTimersByTimeAsync(300)
+        expect(motionStimulusDispatchCount).toBe(0)
+        setBaseline(true, true)
+        await jest.advanceTimersByTimeAsync(100)
+        expect(motionStimulusDispatchCount).toBe(1)
+        await request
+      } finally {
+        controller.abort()
+        window.removeEventListener(
+          MOTION_STIMULUS_RECEIVER_EVENT,
+          handleMotionStimulus
+        )
+        delete (window as any).__projectionVisualMotionRuntimeDebugSnapshot
+        jest.useRealTimers()
+      }
+    }
+  )
+
+  it.each([
     'missing_baseline',
     'completed_only',
     'mismatched_result',
@@ -460,6 +563,7 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
     jest.useFakeTimers()
     const controller = new AbortController()
     let handleMotionStimulus: ((event: Event) => void) | undefined
+    let motionStimulusDispatchCount = 0
     try {
       const present = jest.fn(async () => {})
       const setSnapshot = (args: {
@@ -496,6 +600,7 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
       }
       if (mutation !== 'missing_baseline') setSnapshot({ frameSeq: 10 })
       handleMotionStimulus = (event: Event) => {
+        motionStimulusDispatchCount += 1
         const stimulus = (event as CustomEvent).detail as Record<string, string>
         if (mutation === 'completed_only') {
           setSnapshot({
@@ -601,6 +706,9 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
       ).rejects.toThrow('accepted_prepared_sample_request_failed')
       await jest.advanceTimersByTimeAsync(3_000)
       await request
+      if (mutation === 'missing_baseline') {
+        expect(motionStimulusDispatchCount).toBe(0)
+      }
     } finally {
       if (handleMotionStimulus) {
         window.removeEventListener(
