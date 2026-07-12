@@ -13,6 +13,7 @@ import { chromium } from 'playwright'
 export const ATTEMPT_COUNT = 5
 export const INTEGRATED_ATTEMPT_COUNT = 1
 export const ATTEMPT_TIMEOUT_MS = 10_000
+export const RECOGNITION_DRAIN_TIMEOUT_MS = 3_000
 export const ROUTE_TIMEOUT_MS = 90_000
 export const PRESENTATION_TIMEOUT_MS = 30_000
 export const ROUTE_CANCEL_SETTLE_MS = 2_000
@@ -706,14 +707,27 @@ export const runPreparedSampleController = async ({
           throw new ControllerError('playback_exit_nonzero')
         }
         counts.playbackExitZero += 1
+        const drainOutcome =
+          audioRouteClass ===
+          AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+            ? await runRouteStep(signal, () =>
+                adapter.waitForRecognitionDrain({
+                  beforeFinalCount: before.finalCount,
+                  timeoutMs: RECOGNITION_DRAIN_TIMEOUT_MS,
+                })
+              )
+            : { class: 'drain_skipped' }
         await runRouteStep(signal, () => adapter.finalizeRecognitionInput())
 
-        const outcome = await runRouteStep(signal, () =>
-          adapter.waitForAttemptOutcome({
-            beforeFinalCount: before.finalCount,
-            timeoutMs: ATTEMPT_TIMEOUT_MS + 2_000,
-          })
-        )
+        const outcome =
+          drainOutcome.class === 'final_result'
+            ? drainOutcome
+            : await runRouteStep(signal, () =>
+                adapter.waitForAttemptOutcome({
+                  beforeFinalCount: before.finalCount,
+                  timeoutMs: ATTEMPT_TIMEOUT_MS + 2_000,
+                })
+              )
         const playerResult = await runRouteStep(signal, () =>
           adapter.stopPlayback(player)
         )
@@ -1563,6 +1577,18 @@ export const createRuntimeAdapter = ({
         })
       } catch {
         throw new ControllerError('prepared_sample_page_state_invalid')
+      }
+    },
+    async waitForRecognitionDrain({ beforeFinalCount, timeoutMs }) {
+      try {
+        await page.waitForFunction(
+          (before) => window.__preparedSampleSttCounts.finalCount > before,
+          beforeFinalCount,
+          { timeout: timeoutMs }
+        )
+        return { class: 'final_result' }
+      } catch {
+        return { class: 'drain_elapsed' }
       }
     },
     async stopPlayback(player) {

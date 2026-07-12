@@ -13,6 +13,7 @@ import {
   BROWSER_PLAYBACK_GAIN_LINEAR,
   INTEGRATED_ATTEMPT_COUNT,
   PRESENTATION_TIMEOUT_MS,
+  RECOGNITION_DRAIN_TIMEOUT_MS,
   ROUTE_CANCEL_SETTLE_MS,
   ROUTE_TIMEOUT_MS,
   SAFE_PUBLIC_CHILD_ENV_KEYS,
@@ -251,6 +252,7 @@ const nextChildCommand = ({
 
 const createFakeAdapter = ({
   outcomeClass = 'final_result',
+  recognitionDrainClass = 'drain_elapsed',
   playerExitClass = 'exit_zero',
   stabilityClass = 'stable_positive',
   acquireError = null,
@@ -331,6 +333,15 @@ const createFakeAdapter = ({
     },
     async finalizeRecognitionInput() {
       events.push('recognition-finalize')
+    },
+    async waitForRecognitionDrain({ timeoutMs }) {
+      assert.equal(timeoutMs, RECOGNITION_DRAIN_TIMEOUT_MS)
+      events.push(`recognition-drain-${recognitionDrainClass}`)
+      if (recognitionDrainClass === 'final_result') {
+        resultCount += finalDelta
+        finalCount += finalDelta
+      }
+      return { class: recognitionDrainClass }
     },
     async stopPlayback() {
       events.push('playback-stop')
@@ -434,6 +445,10 @@ test('runs exactly five attempts and starts playback only after listening', asyn
     assert.ok(outcomeIndexes[index] < playbackStopIndexes[index])
   }
   assert.equal(
+    adapter.events.some((event) => event.startsWith('recognition-drain-')),
+    false
+  )
+  assert.equal(
     adapter.events.filter((event) => event === 'locale-verified').length,
     ATTEMPT_COUNT
   )
@@ -449,6 +464,88 @@ test('runs exactly five attempts and starts playback only after listening', asyn
     'server-stop',
     'temp-delete',
     'release-lock',
+  ])
+})
+
+test('keeps recognition open for the bounded drain and preserves an early final', async () => {
+  const adapter = createFakeAdapter({
+    recognitionDrainClass: 'final_result',
+    outcomeClass: 'attempt_timeout',
+  })
+  const result = await runPreparedSampleController({
+    adapter,
+    expectedText: privateExpectedText,
+    attemptCount: INTEGRATED_ATTEMPT_COUNT,
+    audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+    integratedPresentation: true,
+  })
+
+  assert.equal(result.controller_status, 'completed')
+  assert.equal(result.final_result_count, 1)
+  assert.equal(adapter.events.includes('outcome-attempt_timeout'), false)
+  assert.ok(
+    adapter.events.indexOf('playback-complete') <
+      adapter.events.indexOf('recognition-drain-final_result')
+  )
+  assert.ok(
+    adapter.events.indexOf('recognition-drain-final_result') <
+      adapter.events.indexOf('recognition-finalize')
+  )
+})
+
+test('real adapter drain waits only for a new final and maps timeout to elapsed', async () => {
+  const observations = []
+  let timeoutMode = false
+  const page = {
+    async waitForFunction(predicate, beforeFinalCount, options) {
+      observations.push({ beforeFinalCount, timeoutMs: options.timeout })
+      const previousWindow = globalThis.window
+      try {
+        globalThis.window = {
+          __preparedSampleSttCounts: {
+            resultCount: beforeFinalCount,
+            finalCount: beforeFinalCount,
+          },
+        }
+        assert.equal(predicate(beforeFinalCount), false)
+        globalThis.window.__preparedSampleSttCounts.resultCount += 1
+        assert.equal(predicate(beforeFinalCount), false)
+        globalThis.window.__preparedSampleSttCounts.finalCount += 1
+        assert.equal(predicate(beforeFinalCount), true)
+      } finally {
+        if (previousWindow === undefined) delete globalThis.window
+        else globalThis.window = previousWindow
+      }
+      if (timeoutMode) throw new Error('timeout')
+    },
+  }
+  const adapter = createRuntimeAdapter({
+    operatorUrl: 'http://127.0.0.1:3000/operator/prepared-sample-stt/',
+    audioPath: 'private-not-read-by-drain',
+    locale: 'ja-JP',
+    ffplayPath: '',
+    lockClass: 'held_by_parent',
+    initialPage: page,
+  })
+
+  assert.deepEqual(
+    await adapter.waitForRecognitionDrain({
+      beforeFinalCount: 4,
+      timeoutMs: RECOGNITION_DRAIN_TIMEOUT_MS,
+    }),
+    { class: 'final_result' }
+  )
+  timeoutMode = true
+  assert.deepEqual(
+    await adapter.waitForRecognitionDrain({
+      beforeFinalCount: 9,
+      timeoutMs: RECOGNITION_DRAIN_TIMEOUT_MS,
+    }),
+    { class: 'drain_elapsed' }
+  )
+  assert.deepEqual(observations, [
+    { beforeFinalCount: 4, timeoutMs: RECOGNITION_DRAIN_TIMEOUT_MS },
+    { beforeFinalCount: 9, timeoutMs: RECOGNITION_DRAIN_TIMEOUT_MS },
   ])
 })
 
@@ -469,6 +566,12 @@ test('integrated route runs once and waits for accepted submission before cleanu
   assert.equal(result.playback_exit_zero_count, 1)
   assert.equal(result.final_result_count, 1)
   assert.equal(result.content_match_stability_class, 'bounded_attempt_set_positive')
+  assert.equal(
+    adapter.events.filter(
+      (event) => event === 'recognition-drain-drain_elapsed'
+    ).length,
+    1
+  )
   assert.equal(
     adapter.events.filter((event) => event === 'accepted-candidate-completed')
       .length,
@@ -1877,6 +1980,8 @@ test('validates default five, integrated one, and invalid attempt counts', () =>
 test('locks route bounds and forbids fake audio-device substitution', async () => {
   assert.equal(ATTEMPT_COUNT, 5)
   assert.equal(ATTEMPT_TIMEOUT_MS, 10_000)
+  assert.equal(RECOGNITION_DRAIN_TIMEOUT_MS, 3_000)
+  assert.ok(RECOGNITION_DRAIN_TIMEOUT_MS < ATTEMPT_TIMEOUT_MS)
   assert.equal(ROUTE_CANCEL_SETTLE_MS, 2_000)
   assert.equal(ROUTE_TIMEOUT_MS, 90_000)
 
