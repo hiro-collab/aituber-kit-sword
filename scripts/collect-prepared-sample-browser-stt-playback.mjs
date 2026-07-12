@@ -186,6 +186,15 @@ export const runPreparedSampleController = async ({
           return startedPlayer
         })
 
+        const completedPlayer = await runRouteStep(signal, () =>
+          adapter.waitForPlaybackCompletion(player, ATTEMPT_TIMEOUT_MS)
+        )
+        if (completedPlayer.exitClass !== 'exit_zero') {
+          throw new ControllerError('playback_exit_nonzero')
+        }
+        counts.playbackExitZero += 1
+        await runRouteStep(signal, () => adapter.finalizeRecognitionInput())
+
         const outcome = await runRouteStep(signal, () =>
           adapter.waitForAttemptOutcome({
             beforeFinalCount: before.finalCount,
@@ -196,9 +205,10 @@ export const runPreparedSampleController = async ({
           adapter.stopPlayback(player)
         )
         activePlayers.delete(player)
-        if (playerResult.exitClass === 'exit_zero') {
-          counts.playbackExitZero += 1
-        } else if (playerResult.exitClass !== 'controlled_stop_after_result') {
+        if (
+          playerResult.exitClass !== 'exit_zero' &&
+          playerResult.exitClass !== 'controlled_stop_after_result'
+        ) {
           throw new ControllerError('playback_exit_nonzero')
         }
 
@@ -532,7 +542,8 @@ export const stopTrackedServer = async ({
     throw new ControllerError('cleanup_incomplete')
   }
   await stopOwnedProcess({
-    hasExited: () => serverChild.exitCode !== null,
+    hasExited: () =>
+      serverChild.exitCode !== null || serverChild.signalCode != null,
     terminate: () => serverChild.kill(),
     forceTerminate: () => serverChild.kill('SIGKILL'),
     waitForExit: (timeoutMs) => waitForExit(serverChild, timeoutMs),
@@ -791,6 +802,8 @@ export const createRuntimeAdapter = ({
           '-nostats',
           '-volume',
           '100',
+          '-af',
+          'volume=12dB',
           '-i',
           'pipe:0',
         ],
@@ -815,6 +828,29 @@ export const createRuntimeAdapter = ({
       input.once('error', () => child.kill())
       input.pipe(child.stdin)
       return child
+    },
+    async waitForPlaybackCompletion(player, timeoutMs) {
+      const completion = await Promise.race([
+        player.exitPromise.then(() => player.exitClass),
+        sleep(timeoutMs).then(() => 'timeout'),
+      ])
+      if (completion === 'timeout') {
+        throw new ControllerError('playback_exit_nonzero')
+      }
+      return { exitClass: completion }
+    },
+    async finalizeRecognitionInput() {
+      try {
+        await page.evaluate(async () => {
+          const finalize = window.__preparedSampleSttFinalizeAudioInput
+          if (typeof finalize !== 'function') {
+            throw new Error('prepared_sample_finalize_unavailable')
+          }
+          await finalize()
+        })
+      } catch {
+        throw new ControllerError('prepared_sample_page_state_invalid')
+      }
     },
     async stopPlayback(player) {
       player.inputStream?.destroy()
@@ -895,6 +931,7 @@ export const createRuntimeAdapter = ({
               } finally {
                 delete privateWindow.__preparedSampleSttReleaseAudioTrack
                 delete privateWindow.__preparedSampleSttAudioInputDeviceId
+                delete privateWindow.__preparedSampleSttFinalizeAudioInput
               }
             })
           } catch {

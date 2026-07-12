@@ -522,6 +522,7 @@ describe('useBrowserSpeechRecognition', () => {
       })
 
       expect(mockSpeechRecognition.start).toHaveBeenCalledWith()
+      expect(mockSpeechRecognition.continuous).toBe(true)
     })
 
     it('retains start_reused for argument-free InvalidStateError', async () => {
@@ -722,6 +723,7 @@ describe('useBrowserSpeechRecognition', () => {
         )
       })
       expect(mockSpeechRecognition.start).toHaveBeenLastCalledWith(track)
+      expect(mockSpeechRecognition.continuous).toBe(false)
 
       act(() => {
         mockSpeechRecognition.onend?.()
@@ -738,6 +740,210 @@ describe('useBrowserSpeechRecognition', () => {
         await result.current.stopListening()
       })
       expect(track.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('accepts a pending final result after explicitly finalizing a prepared-sample track', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const diagnosticEvents: string[] = []
+      const handleDiagnostic = (event: Event) => {
+        const detail = (event as CustomEvent<{ event?: string }>).detail
+        if (detail?.event) diagnosticEvents.push(detail.event)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const track = createMockAudioTrack()
+      const secondTrack = createMockAudioTrack()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+            true
+          )
+        })
+
+        act(() => {
+          mockSpeechRecognition.onresult?.({
+            resultIndex: 0,
+            results: [
+              Object.assign([{ transcript: 'bounded sample' }], {
+                isFinal: false,
+              }),
+            ],
+          })
+        })
+
+        await act(async () => {
+          await result.current.stopListening(true)
+        })
+
+        expect(track.stop).not.toHaveBeenCalled()
+
+        act(() => {
+          mockSpeechRecognition.onresult?.({
+            resultIndex: 0,
+            results: [
+              Object.assign([{ transcript: 'bounded sample' }], {
+                isFinal: true,
+              }),
+            ],
+          })
+        })
+
+        expect(diagnosticEvents).toContain('onresult_final')
+        expect(track.stop).not.toHaveBeenCalled()
+
+        act(() => {
+          mockSpeechRecognition.onend?.()
+        })
+
+        expect(track.stop).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+          expect(
+            await result.current.startListeningWithAudioTrack(secondTrack)
+          ).toBe(true)
+          await result.current.stopListening(true)
+        })
+        act(() => {
+          mockSpeechRecognition.onresult?.({
+            resultIndex: 0,
+            results: [
+              Object.assign([{ transcript: 'bounded sample' }], {
+                isFinal: true,
+              }),
+            ],
+          })
+          mockSpeechRecognition.onend?.()
+        })
+
+        expect(
+          diagnosticEvents.filter((event) => event === 'onresult_final')
+        ).toHaveLength(2)
+        expect(secondTrack.stop).toHaveBeenCalledTimes(1)
+        act(() => {
+          jest.advanceTimersByTime(1000)
+        })
+        expect(mockSpeechRecognition.start).toHaveBeenCalledTimes(2)
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it('continues to ignore late results after an ordinary stop', async () => {
+      const diagnosticEvents: string[] = []
+      const handleDiagnostic = (event: Event) => {
+        const detail = (event as CustomEvent<{ event?: string }>).detail
+        if (detail?.event) diagnosticEvents.push(detail.event)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn())
+      )
+
+      try {
+        await act(async () => {
+          await result.current.startListening()
+          await result.current.stopListening()
+        })
+
+        act(() => {
+          mockSpeechRecognition.onresult?.({
+            resultIndex: 0,
+            results: [
+              Object.assign([{ transcript: 'late ordinary result' }], {
+                isFinal: true,
+              }),
+            ],
+          })
+        })
+
+        expect(diagnosticEvents).not.toContain('onresult_final')
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
+    })
+
+    it('reports deferred drain cleanup failure once without echoing its cause', async () => {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/135.0.0.0 Safari/537.36',
+        writable: true,
+        configurable: true,
+      })
+      const privateMarker =
+        'PRIVATE_DRAIN C:\\private\\drain.wav native-cause native-stack'
+      const diagnostics: Array<Record<string, unknown>> = []
+      const handleDiagnostic = (event: Event) => {
+        diagnostics.push((event as CustomEvent<Record<string, unknown>>).detail)
+      }
+      window.addEventListener(
+        'projection-visual-stt-diagnostic',
+        handleDiagnostic
+      )
+      const track = createMockAudioTrack()
+      track.stop = jest.fn(() => {
+        throw new Error(privateMarker)
+      })
+      const onCleanupFailed = jest.fn()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn(), onCleanupFailed)
+      )
+
+      try {
+        await act(async () => {
+          expect(await result.current.startListeningWithAudioTrack(track)).toBe(
+            true
+          )
+          await result.current.stopListening(true)
+        })
+        expect(track.stop).not.toHaveBeenCalled()
+
+        act(() => {
+          mockSpeechRecognition.onresult?.({
+            resultIndex: 0,
+            results: [
+              Object.assign([{ transcript: 'bounded sample' }], {
+                isFinal: true,
+              }),
+            ],
+          })
+          mockSpeechRecognition.onend?.()
+        })
+
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        expect(onCleanupFailed).toHaveBeenCalledTimes(1)
+        expect(JSON.stringify(diagnostics)).not.toContain(privateMarker)
+        expect(result.current.releaseExplicitAudioTrack()).toBe(
+          'explicit_audio_track_cleanup_complete'
+        )
+        expect(track.stop).toHaveBeenCalledTimes(1)
+        act(() => {
+          jest.advanceTimersByTime(1000)
+        })
+        expect(mockSpeechRecognition.start).toHaveBeenCalledTimes(1)
+      } finally {
+        window.removeEventListener(
+          'projection-visual-stt-diagnostic',
+          handleDiagnostic
+        )
+      }
     })
 
     it('fails closed on explicit-track InvalidStateError during automatic restart', async () => {

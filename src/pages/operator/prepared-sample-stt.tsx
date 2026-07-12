@@ -55,6 +55,7 @@ type OperatorSetupStatus =
   | 'explicit_audio_input_track_invalid'
   | 'explicit_audio_input_settings_unavailable'
   | 'explicit_audio_input_device_mismatch'
+  | 'explicit_audio_input_processing_not_disabled'
 
 class OperatorSetupError extends Error {
   constructor(readonly status: OperatorSetupStatus) {
@@ -66,6 +67,7 @@ class OperatorSetupError extends Error {
 type PreparedSamplePrivateWindow = Window & {
   __preparedSampleSttAudioInputDeviceId?: string
   __preparedSampleSttReleaseAudioTrack?: () => ExplicitAudioTrackCleanupClass
+  __preparedSampleSttFinalizeAudioInput?: () => Promise<void>
 }
 
 const readPrivateAudioInputDeviceId = (): string => {
@@ -97,7 +99,12 @@ const acquireExplicitAudioTrack = async (): Promise<MediaStreamTrack> => {
   let stream: MediaStream
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: deviceId } },
+      audio: {
+        deviceId: { exact: deviceId },
+        echoCancellation: { exact: false },
+        noiseSuppression: { exact: false },
+        autoGainControl: { exact: false },
+      },
     })
   } catch {
     throw new OperatorSetupError('explicit_audio_input_acquisition_failed')
@@ -125,14 +132,23 @@ const acquireExplicitAudioTrack = async (): Promise<MediaStreamTrack> => {
       throw new OperatorSetupError('explicit_audio_input_settings_unavailable')
     }
 
-    let selectedDeviceId: string | undefined
+    let settings: MediaTrackSettings
     try {
-      selectedDeviceId = track.getSettings().deviceId
+      settings = track.getSettings()
     } catch {
       throw new OperatorSetupError('explicit_audio_input_settings_unavailable')
     }
-    if (selectedDeviceId !== deviceId) {
+    if (settings.deviceId !== deviceId) {
       throw new OperatorSetupError('explicit_audio_input_device_mismatch')
+    }
+    if (
+      settings.echoCancellation !== false ||
+      settings.noiseSuppression !== false ||
+      settings.autoGainControl !== false
+    ) {
+      throw new OperatorSetupError(
+        'explicit_audio_input_processing_not_disabled'
+      )
     }
     return track
   } catch (error) {
@@ -196,6 +212,8 @@ const PreparedSampleSttOperator = () => {
   const [expectedText, setExpectedText] = useState('')
   const [run, setRun] = useState<PreparedSampleRun | null>(null)
   const [status, setStatus] = useState('mount_pending')
+  const [drainFinalizationPending, setDrainFinalizationPending] =
+    useState(false)
   const resultEventCountRef = useRef(0)
   const finalResultCountRef = useRef(0)
   const latestTranscriptRef = useRef('')
@@ -209,6 +227,7 @@ const PreparedSampleSttOperator = () => {
     if (cleanupFailureRef.current) return
     cleanupFailureRef.current = true
     attemptActiveRef.current = false
+    setDrainFinalizationPending(false)
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current)
       timeoutRef.current = null
@@ -267,11 +286,26 @@ const PreparedSampleSttOperator = () => {
   useEffect(() => {
     const privateWindow = window as PreparedSamplePrivateWindow
     privateWindow.__preparedSampleSttReleaseAudioTrack = releaseOwnedAudioTrack
+    privateWindow.__preparedSampleSttFinalizeAudioInput = async () => {
+      if (!attemptActiveRef.current) return
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+      setDrainFinalizationPending(true)
+      try {
+        await stopListening(true)
+      } catch (error) {
+        setDrainFinalizationPending(false)
+        throw error
+      }
+    }
     return () => {
       releaseOwnedAudioTrack()
       delete privateWindow.__preparedSampleSttReleaseAudioTrack
+      delete privateWindow.__preparedSampleSttFinalizeAudioInput
     }
-  }, [releaseOwnedAudioTrack])
+  }, [releaseOwnedAudioTrack, stopListening])
 
   const clearAttemptTimeout = () => {
     if (timeoutRef.current) {
@@ -286,6 +320,7 @@ const PreparedSampleSttOperator = () => {
     }
 
     attemptActiveRef.current = false
+    setDrainFinalizationPending(false)
     completionInFlightRef.current = true
     clearAttemptTimeout()
     try {
@@ -379,6 +414,7 @@ const PreparedSampleSttOperator = () => {
       latestTranscriptRef.current = ''
       attemptActiveRef.current = true
       cleanupFailureRef.current = false
+      setDrainFinalizationPending(false)
       const track = await acquireExplicitAudioTrack()
       ownedAudioTrackRef.current = track
       const startPromise = startListeningWithAudioTrack(track)
@@ -447,7 +483,7 @@ const PreparedSampleSttOperator = () => {
         <button
           type="button"
           onClick={() => void finishAttempt(false)}
-          disabled={!isListening}
+          disabled={!isListening && !drainFinalizationPending}
         >
           Record final result
         </button>

@@ -239,6 +239,13 @@ const createFakeAdapter = ({
       if (startPlaybackBarrier) await startPlaybackBarrier
       return { attempt: attempts }
     },
+    async waitForPlaybackCompletion() {
+      events.push('playback-complete')
+      return { exitClass: playerExitClass }
+    },
+    async finalizeRecognitionInput() {
+      events.push('recognition-finalize')
+    },
     async stopPlayback() {
       events.push('playback-stop')
       if (playerRemainsAlive) {
@@ -301,6 +308,35 @@ test('runs exactly five attempts and starts playback only after listening', asyn
   assert.equal(playbackIndexes.length, ATTEMPT_COUNT)
   for (let index = 0; index < ATTEMPT_COUNT; index += 1) {
     assert.ok(listeningIndexes[index] < playbackIndexes[index])
+  }
+  assert.equal(
+    adapter.events.filter((event) => event === 'playback-complete').length,
+    ATTEMPT_COUNT
+  )
+  assert.equal(
+    adapter.events.filter((event) => event === 'recognition-finalize').length,
+    ATTEMPT_COUNT
+  )
+  const playbackCompleteIndexes = adapter.events
+    .map((event, index) => [event, index])
+    .filter(([event]) => event === 'playback-complete')
+    .map(([, index]) => index)
+  const finalizeIndexes = adapter.events
+    .map((event, index) => [event, index])
+    .filter(([event]) => event === 'recognition-finalize')
+    .map(([, index]) => index)
+  const outcomeIndexes = adapter.events
+    .map((event, index) => [event, index])
+    .filter(([event]) => event === 'outcome-final_result')
+    .map(([, index]) => index)
+  const playbackStopIndexes = adapter.events
+    .map((event, index) => [event, index])
+    .filter(([event]) => event === 'playback-stop')
+    .map(([, index]) => index)
+  for (let index = 0; index < ATTEMPT_COUNT; index += 1) {
+    assert.ok(playbackCompleteIndexes[index] < finalizeIndexes[index])
+    assert.ok(finalizeIndexes[index] < outcomeIndexes[index])
+    assert.ok(outcomeIndexes[index] < playbackStopIndexes[index])
   }
   assert.equal(
     adapter.events.filter((event) => event === 'locale-verified').length,
@@ -877,6 +913,28 @@ test('retains a non-exiting owned server and never terminates an external server
   assert.equal(externalKillCount, 0)
 })
 
+test('accepts a signal-terminated owned server as stopped', async () => {
+  const ownedChild = {
+    exitCode: null,
+    signalCode: null,
+    killCalls: [],
+    kill(signal) {
+      this.killCalls.push(signal ?? 'graceful')
+      this.signalCode = signal ?? 'SIGTERM'
+    },
+  }
+
+  const stopped = await stopTrackedServer({
+    serverMode: 'start_owned',
+    serverChild: ownedChild,
+    waitForExit: async () => null,
+  })
+
+  assert.deepEqual(stopped, { serverMode: 'none', serverChild: null })
+  assert.deepEqual(ownedChild.killCalls, ['graceful'])
+  assert.equal(ownedChild.signalCode, 'SIGTERM')
+})
+
 test('reports cleanup failure as a fixed non-echoing result', async () => {
   const adapter = createFakeAdapter({ cleanupErrorAt: 'closeBrowser' })
   const result = await runPreparedSampleController({
@@ -1172,5 +1230,6 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
     assert.match(privateEnvironmentBlock, new RegExp(key))
   }
   assert.match(source, /pipe:0/)
+  assert.match(source, /'-af',\s*'volume=12dB'/)
   assert.doesNotMatch(source, /spawn\([\s\S]{0,300}audioPath/)
 })

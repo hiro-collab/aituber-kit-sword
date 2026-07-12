@@ -70,7 +70,11 @@ const startListening = jest.fn(
     return true
   }
 )
-const stopListening = jest.fn(async () => {
+const stopListening = jest.fn(async (acceptPendingFinalResult = false) => {
+  if (acceptPendingFinalResult) {
+    mockIsListening = false
+    return
+  }
   const track = mockHookOwnedTrack
   mockHookOwnedTrack = null
   mockIsListening = false
@@ -95,15 +99,26 @@ const createMockAudioTrack = ({
   kind = 'audio',
   readyState = 'live',
   selectedDeviceId = privateDeviceId,
+  echoCancellation = false,
+  noiseSuppression = false,
+  autoGainControl = false,
 }: {
   kind?: string
   readyState?: MediaStreamTrackState
   selectedDeviceId?: string
+  echoCancellation?: boolean
+  noiseSuppression?: boolean
+  autoGainControl?: boolean
 } = {}) =>
   ({
     kind,
     readyState,
-    getSettings: () => ({ deviceId: selectedDeviceId }),
+    getSettings: () => ({
+      deviceId: selectedDeviceId,
+      echoCancellation,
+      noiseSuppression,
+      autoGainControl,
+    }),
     stop: jest.fn(),
   }) as unknown as MediaStreamTrack
 
@@ -286,6 +301,7 @@ describe('PreparedSampleSttOperator', () => {
       'incomplete_attempt_set'
     )
     expect(stopListening).toHaveBeenCalledTimes(1)
+    expect(stopListening).toHaveBeenCalledWith()
   })
 
   it('acquires and starts with one exact private audio input track', async () => {
@@ -299,10 +315,95 @@ describe('PreparedSampleSttOperator', () => {
     })
 
     expect(mockGetUserMedia).toHaveBeenCalledWith({
-      audio: { deviceId: { exact: privateDeviceId } },
+      audio: {
+        deviceId: { exact: privateDeviceId },
+        echoCancellation: { exact: false },
+        noiseSuppression: { exact: false },
+        autoGainControl: { exact: false },
+      },
     })
     expect(startListening).toHaveBeenCalledWith(mockAudioTrack)
     expect(document.body).not.toHaveTextContent(privateDeviceId)
+  })
+
+  it('keeps record disabled while explicit audio acquisition is still pending', async () => {
+    let resolveAcquisition: ((stream: MediaStream) => void) | undefined
+    mockGetUserMedia.mockReturnValueOnce(
+      new Promise<MediaStream>((resolve) => {
+        resolveAcquisition = resolve
+      })
+    )
+    render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    act(() => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(
+      screen.getByRole('button', { name: 'Record final result' })
+    ).toBeDisabled()
+
+    await act(async () => {
+      resolveAcquisition?.({
+        getTracks: () => [mockAudioTrack],
+        getAudioTracks: () => [mockAudioTrack],
+      } as unknown as MediaStream)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  })
+
+  it('exposes a private finalize hook that stops recognition without publishing input', async () => {
+    const { unmount } = render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+    })
+    await act(async () => {
+      await (window as any).__preparedSampleSttFinalizeAudioInput?.()
+    })
+
+    expect(stopListening).toHaveBeenCalledTimes(1)
+    expect(stopListening).toHaveBeenCalledWith(true)
+    expect(document.body).not.toHaveTextContent(privateDeviceId)
+    unmount()
+    expect(
+      (window as any).__preparedSampleSttFinalizeAudioInput
+    ).toBeUndefined()
+  })
+
+  it('cancels the operator timeout while a finalized result remains pending', async () => {
+    const { rerender } = render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+      await (window as any).__preparedSampleSttFinalizeAudioInput?.()
+      jest.advanceTimersByTime(20_000)
+      await Promise.resolve()
+    })
+    rerender(<PreparedSampleSttOperator />)
+
+    expect(stopListening).toHaveBeenCalledTimes(1)
+    expect(stopListening).toHaveBeenCalledWith(true)
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'attempt_listening'
+    )
+    expect(screen.getByText('Attempts: 0/5')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Record final result' })
+    ).toBeEnabled()
   })
 
   it('does not stop a transferred track twice when the hook returns unsupported', async () => {
@@ -730,6 +831,29 @@ describe('PreparedSampleSttOperator', () => {
     expect(mockAudioTrack.stop).toHaveBeenCalledTimes(1)
     expect(startListening).not.toHaveBeenCalled()
     expect(document.body).not.toHaveTextContent(mismatchedDeviceId)
+  })
+
+  it('stops and rejects a track when capture processing remains enabled', async () => {
+    mockAudioTrack = createMockAudioTrack({ echoCancellation: true })
+    mockGetUserMedia.mockResolvedValueOnce({
+      getTracks: () => [mockAudioTrack],
+      getAudioTracks: () => [mockAudioTrack],
+    })
+    render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+    })
+
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'explicit_audio_input_processing_not_disabled'
+    )
+    expect(startListening).not.toHaveBeenCalled()
+    expect(mockAudioTrack.stop).toHaveBeenCalledTimes(1)
+    expect(document.body).not.toHaveTextContent(privateDeviceId)
   })
 
   it.each([

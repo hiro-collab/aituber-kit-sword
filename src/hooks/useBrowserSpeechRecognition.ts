@@ -245,6 +245,7 @@ export function useBrowserSpeechRecognition(
   const controlledRestartRef = useRef(false)
   const explicitAudioTrackRef = useRef<MediaStreamTrack | null>(null)
   const explicitAudioTrackModeRef = useRef(false)
+  const acceptPendingFinalResultRef = useRef(false)
   const explicitAudioTrackStartCleanupRef =
     useRef<ExplicitAudioTrackCleanupClass>(
       EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
@@ -430,6 +431,7 @@ export function useBrowserSpeechRecognition(
         return false
       }
 
+      acceptPendingFinalResultRef.current = false
       recognitionActiveRef.current = false
       isListeningRef.current = false
       setIsListening(false)
@@ -452,7 +454,9 @@ export function useBrowserSpeechRecognition(
 
   const startRecognitionWithCurrentSource = useCallback(
     (recognition: SpeechRecognition) => {
+      acceptPendingFinalResultRef.current = false
       if (!explicitAudioTrackModeRef.current) {
+        recognition.continuous = true
         recognition.start()
         return
       }
@@ -464,87 +468,100 @@ export function useBrowserSpeechRecognition(
           'NotSupportedError'
         )
       }
+      recognition.continuous = false
       ;(recognition as SpeechRecognitionWithAudioTrack).start(track)
     },
     []
   )
 
   // ----- 音声認識停止処理 -----
-  const stopListening = useCallback(async () => {
-    startGenerationRef.current += 1
-    audioRetryCountRef.current = 0
-    controlledRestartRef.current = false
-    setRecognitionPhase('stopping', 'stop_requested')
+  const stopListening = useCallback(
+    async (acceptPendingFinalResult = false) => {
+      acceptPendingFinalResultRef.current =
+        acceptPendingFinalResult && explicitAudioTrackModeRef.current
+      startGenerationRef.current += 1
+      audioRetryCountRef.current = 0
+      controlledRestartRef.current = false
+      setRecognitionPhase('stopping', 'stop_requested')
 
-    // 保留中の再起動タイマーをキャンセル (競合状態防止)
-    if (restartTimeoutRef.current) {
-      clearTimeout(restartTimeoutRef.current)
-      restartTimeoutRef.current = null
-    }
-    if (staleActiveRestartTimeoutRef.current) {
-      clearTimeout(staleActiveRestartTimeoutRef.current)
-      staleActiveRestartTimeoutRef.current = null
-    }
-
-    // 各種タイマーをクリア
-    clearSilenceDetection()
-    clearInitialSpeechCheckTimer()
-    clearRecognitionProgressTimer()
-
-    // リスニング状態を更新
-    isListeningRef.current = false
-    setIsListening(false)
-
-    const recognition = recognitionRef.current
-    if (!recognition) {
-      if (releaseExplicitAudioTrack() === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
-        explicitAudioTrackCleanupFailedCallbackRef.current?.()
+      // 保留中の再起動タイマーをキャンセル (競合状態防止)
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current)
+        restartTimeoutRef.current = null
       }
-      setRecognitionPhase('idle', 'stop_complete', {
-        detail: 'SpeechRecognition instance is not ready',
+      if (staleActiveRestartTimeoutRef.current) {
+        clearTimeout(staleActiveRestartTimeoutRef.current)
+        staleActiveRestartTimeoutRef.current = null
+      }
+
+      // 各種タイマーをクリア
+      clearSilenceDetection()
+      clearInitialSpeechCheckTimer()
+      clearRecognitionProgressTimer()
+
+      // リスニング状態を更新
+      isListeningRef.current = false
+      setIsListening(false)
+
+      const recognition = recognitionRef.current
+      if (!recognition) {
+        acceptPendingFinalResultRef.current = false
+        if (
+          releaseExplicitAudioTrack() === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+        ) {
+          explicitAudioTrackCleanupFailedCallbackRef.current?.()
+        }
+        setRecognitionPhase('idle', 'stop_complete', {
+          detail: 'SpeechRecognition instance is not ready',
+          listening: false,
+          recognitionActive: false,
+        })
+        return
+      }
+
+      // 音声認識を停止
+      try {
+        recognition.stop()
+      } catch (error) {
+        console.error('Error stopping recognition:', error)
+      }
+      recognitionActiveRef.current = false
+      setRecognitionPhase('stopping', 'stop_called', {
+        detail:
+          'SpeechRecognition.stop() requested; marking controller inactive',
         listening: false,
         recognitionActive: false,
       })
-      return
-    }
 
-    // 音声認識を停止
-    try {
-      recognition.stop()
-    } catch (error) {
-      console.error('Error stopping recognition:', error)
-    }
-    recognitionActiveRef.current = false
-    setRecognitionPhase('stopping', 'stop_called', {
-      detail: 'SpeechRecognition.stop() requested; marking controller inactive',
-      listening: false,
-      recognitionActive: false,
-    })
-
-    // キーボードトリガーの場合の処理
-    const trimmedTranscriptRef = transcriptRef.current.trim()
-    if (isKeyboardTriggered.current) {
-      const pressDuration = Date.now() - (keyPressStartTime.current || 0)
-      // 押してから1秒以上 かつ 文字が存在する場合のみ送信
-      // 無音検出による自動送信が既に行われていない場合のみ送信する
-      if (pressDuration >= 1000 && trimmedTranscriptRef && !isSpeechEnded()) {
-        onChatProcessStart(trimmedTranscriptRef)
-        setUserMessage('')
+      // キーボードトリガーの場合の処理
+      const trimmedTranscriptRef = transcriptRef.current.trim()
+      if (isKeyboardTriggered.current) {
+        const pressDuration = Date.now() - (keyPressStartTime.current || 0)
+        // 押してから1秒以上 かつ 文字が存在する場合のみ送信
+        // 無音検出による自動送信が既に行われていない場合のみ送信する
+        if (pressDuration >= 1000 && trimmedTranscriptRef && !isSpeechEnded()) {
+          onChatProcessStart(trimmedTranscriptRef)
+          setUserMessage('')
+        }
+        isKeyboardTriggered.current = false
       }
-      isKeyboardTriggered.current = false
-    }
-    if (releaseExplicitAudioTrack() === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
-      explicitAudioTrackCleanupFailedCallbackRef.current?.()
-    }
-  }, [
-    clearSilenceDetection,
-    clearInitialSpeechCheckTimer,
-    clearRecognitionProgressTimer,
-    isSpeechEnded,
-    onChatProcessStart,
-    releaseExplicitAudioTrack,
-    setRecognitionPhase,
-  ])
+      if (
+        !acceptPendingFinalResultRef.current &&
+        releaseExplicitAudioTrack() === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+      ) {
+        explicitAudioTrackCleanupFailedCallbackRef.current?.()
+      }
+    },
+    [
+      clearSilenceDetection,
+      clearInitialSpeechCheckTimer,
+      clearRecognitionProgressTimer,
+      isSpeechEnded,
+      onChatProcessStart,
+      releaseExplicitAudioTrack,
+      setRecognitionPhase,
+    ]
+  )
 
   // ----- マイク権限確認 -----
   const checkMicrophonePermission = useCallback(async (): Promise<boolean> => {
@@ -1309,21 +1326,24 @@ export function useBrowserSpeechRecognition(
 
     // 音声認識結果が得られたとき
     newRecognition.onresult = (event) => {
-      if (!isListeningRef.current) return
+      if (!isListeningRef.current && !acceptPendingFinalResultRef.current) {
+        return
+      }
 
       const transcript = Array.from(event.results)
         .map((result) => result[0].transcript)
         .join('')
-      const hasFinalResult = Array.from(event.results).some(
-        (result) => result.isFinal
+      const changedResults = Array.from(event.results).slice(
+        event.resultIndex ?? 0
       )
+      const hasNewFinalResult = changedResults.some((result) => result.isFinal)
 
       // 有意な変化があるかチェック
       const isSignificantChange =
         transcript.trim().length > lastTranscriptLength
       lastTranscriptLength = transcript.trim().length
 
-      if (isSignificantChange) {
+      if (isSignificantChange || (hasNewFinalResult && transcript.trim())) {
         console.log('🎤 有意な音声を検出しました（トランスクリプト変更あり）')
         recognitionSignalRef.current = {
           ...recognitionSignalRef.current,
@@ -1331,8 +1351,8 @@ export function useBrowserSpeechRecognition(
         }
         clearRecognitionProgressTimer()
         setRecognitionPhase(
-          hasFinalResult ? 'result_ready' : 'recognizing',
-          hasFinalResult ? 'onresult_final' : 'onresult_interim',
+          hasNewFinalResult ? 'result_ready' : 'recognizing',
+          hasNewFinalResult ? 'onresult_final' : 'onresult_interim',
           {
             transcript: transcript.trim().slice(-120),
             detail: `${transcript.trim().length} chars`,
@@ -1387,6 +1407,7 @@ export function useBrowserSpeechRecognition(
     // 音声認識終了時
     newRecognition.onend = () => {
       console.log('Recognition ended')
+      acceptPendingFinalResultRef.current = false
       clearRecognitionProgressTimer()
       setRecognitionPhase('ended', 'onend', {
         transcript: transcriptRef.current.trim().slice(-120),
@@ -1415,7 +1436,12 @@ export function useBrowserSpeechRecognition(
           restartTimeoutRef.current = null
         }, 1000)
       } else {
-        releaseExplicitAudioTrackRef.current()
+        if (
+          releaseExplicitAudioTrackRef.current() ===
+          EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+        ) {
+          explicitAudioTrackCleanupFailedCallbackRef.current?.()
+        }
       }
     }
 
@@ -1532,6 +1558,7 @@ export function useBrowserSpeechRecognition(
       clearInitialSpeechCheckTimer()
       clearRecognitionProgressTimer()
       pendingStartRef.current = false
+      acceptPendingFinalResultRef.current = false
       releaseExplicitAudioTrackRef.current()
       if (recognitionRef.current === newRecognition) {
         recognitionRef.current = null
