@@ -105,15 +105,13 @@ const stopAcquiredTracks = (
     : EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
 }
 
-const acquireExplicitAudioTrack = async (
-  requireVerifiedDefault = false
-): Promise<MediaStreamTrack> => {
+const acquireExplicitAudioTrack = async (): Promise<MediaStreamTrack> => {
   const deviceId = readPrivateAudioInputDeviceId()
   let stream: MediaStream
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        ...(requireVerifiedDefault ? {} : { deviceId: { exact: deviceId } }),
+        deviceId: { exact: deviceId },
         echoCancellation: { exact: false },
         noiseSuppression: { exact: false },
         autoGainControl: { exact: false },
@@ -486,7 +484,7 @@ const PreparedSampleSttOperator = () => {
         parentPreflight.value.integratedPresentation
       let startResult: boolean | ExplicitAudioTrackCleanupClass
       if (integratedPresentation) {
-        const verificationTrack = await acquireExplicitAudioTrack(true)
+        const verificationTrack = await acquireExplicitAudioTrack()
         ownedAudioTrackRef.current = verificationTrack
         const verificationCleanup = stopAcquiredTracks([verificationTrack])
         ownedAudioTrackRef.current = null

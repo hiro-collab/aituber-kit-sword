@@ -261,6 +261,7 @@ export const selectBrowserAudioRoute = async (audioRouteClass) => {
       if (captureMatches.length === 1 && renderMatches.length === 1) {
         const selectedStream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            deviceId: { exact: captureMatches[0].deviceId },
             echoCancellation: { exact: false },
             noiseSuppression: { exact: false },
             autoGainControl: { exact: false },
@@ -1123,36 +1124,6 @@ export const openCanonicalPresentationPages = async ({
   return { projectionPage, operatorPage }
 }
 
-export const selectTemporaryChromeDefaultAudioInput = async ({ context }) => {
-  const settingsPage = context.pages()[0] ?? (await context.newPage())
-  await settingsPage.goto('chrome://settings/content/microphone', {
-    waitUntil: 'domcontentloaded',
-  })
-  const selector = settingsPage.locator('select')
-  await selector.waitFor({ state: 'visible', timeout: 10_000 })
-  const exactOptionCount = await selector.evaluate(
-    (element, expectedLabel) =>
-      [...element.options].filter((option) => option.label === expectedLabel)
-        .length,
-    FIXED_VIRTUAL_AUDIO_ENDPOINTS.captureLabel
-  )
-  if (exactOptionCount !== 1) {
-    throw new ControllerError('browser_audio_route_unavailable_or_ambiguous')
-  }
-  await selector.selectOption({
-    label: FIXED_VIRTUAL_AUDIO_ENDPOINTS.captureLabel,
-  })
-  const selected = await selector.evaluate(
-    (element, expectedLabel) =>
-      element.selectedOptions.length === 1 &&
-      element.selectedOptions[0]?.label === expectedLabel,
-    FIXED_VIRTUAL_AUDIO_ENDPOINTS.captureLabel
-  )
-  if (!selected) {
-    throw new ControllerError('browser_audio_route_unavailable_or_ambiguous')
-  }
-}
-
 export const createRuntimeAdapter = ({
   operatorUrl,
   audioPath,
@@ -1243,13 +1214,6 @@ export const createRuntimeAdapter = ({
         await context.grantPermissions(['microphone'], {
           origin: 'http://127.0.0.1:3000',
         })
-        if (signal) throwIfRouteAborted(signal)
-        if (
-          audioRouteClass ===
-          AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
-        ) {
-          await selectTemporaryChromeDefaultAudioInput({ context })
-        }
         if (signal) throwIfRouteAborted(signal)
         await context.addInitScript((expectedLocale) => {
           window.__preparedSampleSttCounts = {

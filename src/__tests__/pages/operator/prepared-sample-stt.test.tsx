@@ -345,7 +345,7 @@ describe('PreparedSampleSttOperator', () => {
     expect(document.body).not.toHaveTextContent(privateDeviceId)
   })
 
-  it('uses the verified temporary-profile default only for integrated presentation and waits for onstart', async () => {
+  it('uses exact virtual verification for integrated presentation and waits for onstart', async () => {
     setParentPreflightQuery(
       `conversation_attempt_ref=${conversationAttemptRef}&selected_sample_id=voice.local_sample_001&sample_index_preflight_class=prepared_sample_index_verified&sample_index_preflight_ref=m4.sample_index_preflight_001&integrated_presentation=1`
     )
@@ -360,6 +360,7 @@ describe('PreparedSampleSttOperator', () => {
 
     expect(mockGetUserMedia).toHaveBeenCalledWith({
       audio: {
+        deviceId: { exact: privateDeviceId },
         echoCancellation: { exact: false },
         noiseSuppression: { exact: false },
         autoGainControl: { exact: false },
