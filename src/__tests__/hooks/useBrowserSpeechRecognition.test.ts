@@ -759,8 +759,9 @@ describe('useBrowserSpeechRecognition', () => {
       )
       const track = createMockAudioTrack()
       const secondTrack = createMockAudioTrack()
+      const onFinalResult = jest.fn()
       const { result } = renderHook(() =>
-        useBrowserSpeechRecognition(jest.fn())
+        useBrowserSpeechRecognition(jest.fn(), undefined, onFinalResult)
       )
 
       try {
@@ -799,6 +800,8 @@ describe('useBrowserSpeechRecognition', () => {
         })
 
         expect(diagnosticEvents).toContain('onresult_final')
+        expect(onFinalResult).toHaveBeenCalledTimes(1)
+        expect(onFinalResult).toHaveBeenLastCalledWith('bounded sample')
         expect(track.stop).not.toHaveBeenCalled()
 
         act(() => {
@@ -828,6 +831,7 @@ describe('useBrowserSpeechRecognition', () => {
         expect(
           diagnosticEvents.filter((event) => event === 'onresult_final')
         ).toHaveLength(2)
+        expect(onFinalResult).toHaveBeenCalledTimes(2)
         expect(secondTrack.stop).toHaveBeenCalledTimes(1)
         act(() => {
           jest.advanceTimersByTime(1000)
@@ -839,6 +843,43 @@ describe('useBrowserSpeechRecognition', () => {
           handleDiagnostic
         )
       }
+    })
+
+    it('delivers the complete browser final to the optional direct final callback', async () => {
+      const onFinalResult = jest.fn()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(jest.fn(), undefined, onFinalResult)
+      )
+      const completeFinal = `direct-final-${'x'.repeat(140)}`
+
+      await act(async () => {
+        expect(await result.current.startListening()).toBe(true)
+      })
+      act(() => {
+        mockSpeechRecognition.onresult?.({
+          resultIndex: 0,
+          results: [
+            Object.assign([{ transcript: 'interim only' }], {
+              isFinal: false,
+            }),
+          ],
+        })
+      })
+      expect(onFinalResult).not.toHaveBeenCalled()
+
+      act(() => {
+        mockSpeechRecognition.onresult?.({
+          resultIndex: 0,
+          results: [
+            Object.assign([{ transcript: completeFinal }], {
+              isFinal: true,
+            }),
+          ],
+        })
+      })
+
+      expect(onFinalResult).toHaveBeenCalledTimes(1)
+      expect(onFinalResult).toHaveBeenCalledWith(completeFinal)
     })
 
     it('continues to ignore late results after an ordinary stop', async () => {

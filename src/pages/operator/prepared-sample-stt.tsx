@@ -217,6 +217,7 @@ const PreparedSampleSttOperator = () => {
   const acceptedBrowserFinalHandlerRef = useRef<(text: string) => void>(
     () => {}
   )
+  const integratedPresentationRef = useRef(false)
   const {
     isListening,
     startListening,
@@ -224,8 +225,17 @@ const PreparedSampleSttOperator = () => {
     releaseExplicitAudioTrack,
     stopListening,
   } = useBrowserSpeechRecognition(
-    (text) => acceptedBrowserFinalHandlerRef.current(text),
-    () => explicitAudioTrackCleanupFailedHandlerRef.current()
+    (text) => {
+      if (!integratedPresentationRef.current) {
+        acceptedBrowserFinalHandlerRef.current(text)
+      }
+    },
+    () => explicitAudioTrackCleanupFailedHandlerRef.current(),
+    (text) => {
+      if (integratedPresentationRef.current) {
+        acceptedBrowserFinalHandlerRef.current(text)
+      }
+    }
   )
   const [parentPreflight, setParentPreflight] = useState<ParentPreflightState>({
     value: null,
@@ -245,7 +255,6 @@ const PreparedSampleSttOperator = () => {
   const ownedAudioTrackRef = useRef<MediaStreamTrack | null>(null)
   const cleanupFailureRef = useRef(false)
   const acceptedFinalEligibleRef = useRef(false)
-  const integratedPresentationRef = useRef(false)
   const acceptedFinalSubmittedRef = useRef(false)
 
   acceptedBrowserFinalHandlerRef.current = (recognizedText) => {

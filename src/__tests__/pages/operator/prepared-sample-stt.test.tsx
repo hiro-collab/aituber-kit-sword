@@ -57,6 +57,7 @@ let mockAudioTrack: MediaStreamTrack
 let mockHookOwnedTrack: MediaStreamTrack | null = null
 let mockExplicitAudioTrackCleanupFailed: (() => void) | undefined
 let mockOnChatProcessStart: ((text: string) => void) | undefined
+let mockOnBrowserFinalResult: ((text: string) => void) | undefined
 const mockSubmitAcceptedPreparedSampleBrowserSpeech = jest.fn(
   async (_envelope: unknown) => {}
 )
@@ -140,10 +141,12 @@ jest.mock('@/hooks/useBrowserSpeechRecognition', () => ({
   useBrowserSpeechRecognition: jest.fn(
     (
       onChatProcessStart: (text: string) => void,
-      onExplicitAudioTrackCleanupFailed?: () => void
+      onExplicitAudioTrackCleanupFailed?: () => void,
+      onFinalResult?: (text: string) => void
     ) => {
       mockOnChatProcessStart = onChatProcessStart
       mockExplicitAudioTrackCleanupFailed = onExplicitAudioTrackCleanupFailed
+      mockOnBrowserFinalResult = onFinalResult
       return {
         userMessage: 'stale rendered transcript',
         isListening: mockIsListening,
@@ -190,6 +193,7 @@ describe('PreparedSampleSttOperator', () => {
     mockHookOwnedTrack = null
     mockExplicitAudioTrackCleanupFailed = undefined
     mockOnChatProcessStart = undefined
+    mockOnBrowserFinalResult = undefined
     mockSubmitAcceptedPreparedSampleBrowserSpeech.mockClear()
     mockAudioTrack = createMockAudioTrack()
     mockGetUserMedia.mockReset().mockImplementation(async () => ({
@@ -373,7 +377,7 @@ describe('PreparedSampleSttOperator', () => {
       'attempt_starting'
     )
     act(() => {
-      mockOnChatProcessStart?.('prepared sample')
+      mockOnBrowserFinalResult?.('prepared sample')
     })
     expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).not.toHaveBeenCalled()
 
@@ -385,7 +389,7 @@ describe('PreparedSampleSttOperator', () => {
       'attempt_listening'
     )
     await act(async () => {
-      mockOnChatProcessStart?.('prepared sample')
+      mockOnBrowserFinalResult?.('prepared sample')
       await Promise.resolve()
     })
     expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
@@ -1134,6 +1138,11 @@ describe('PreparedSampleSttOperator', () => {
     })
     expect(mockOnChatProcessStart).toBeDefined()
 
+    act(() => {
+      mockOnBrowserFinalResult?.('direct final outside integrated route')
+    })
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).not.toHaveBeenCalled()
+
     await act(async () => {
       mockOnChatProcessStart?.('private prepared speech')
       await Promise.resolve()
@@ -1163,6 +1172,68 @@ describe('PreparedSampleSttOperator', () => {
 
     act(() => {
       mockOnChatProcessStart?.('changed private speech')
+    })
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
+      1
+    )
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'accepted_final_duplicate_rejected'
+    )
+  })
+
+  it('submits the integrated accepted candidate directly from the browser final and ignores the later silence callback', async () => {
+    setParentPreflightQuery(
+      `conversation_attempt_ref=${conversationAttemptRef}&selected_sample_id=voice.local_sample_001&sample_index_preflight_class=prepared_sample_index_verified&sample_index_preflight_ref=m4.sample_index_preflight_001&integrated_presentation=1`
+    )
+    render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+      await Promise.resolve()
+    })
+    act(() => {
+      dispatchDiagnostic({
+        controller: 'browser_stt',
+        event: 'onstart',
+        detail: 'lang=ja-JP',
+      })
+    })
+
+    await act(async () => {
+      mockOnBrowserFinalResult?.('private integrated prepared speech')
+      await Promise.resolve()
+    })
+
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
+      1
+    )
+    expect(
+      mockSubmitAcceptedPreparedSampleBrowserSpeech.mock.calls[0][0]
+    ).toMatchObject({
+      private_turn: {
+        text: 'private integrated prepared speech',
+        context_refs: { conversation_attempt_ref: conversationAttemptRef },
+      },
+    })
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'accepted_candidate_request_completed'
+    )
+
+    act(() => {
+      mockOnChatProcessStart?.('late silence callback')
+    })
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
+      1
+    )
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'accepted_candidate_request_completed'
+    )
+
+    act(() => {
+      mockOnBrowserFinalResult?.('duplicate integrated final')
     })
     expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
       1

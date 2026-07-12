@@ -210,7 +210,8 @@ const formatRecognitionError = (error: unknown): string => {
  */
 export function useBrowserSpeechRecognition(
   onChatProcessStart: (text: string) => void,
-  onExplicitAudioTrackCleanupFailed?: () => void
+  onExplicitAudioTrackCleanupFailed?: () => void,
+  onFinalResult?: (text: string) => void
 ) {
   const { t } = useTranslation()
   const selectLanguage = settingsStore((s) => s.selectLanguage)
@@ -256,6 +257,8 @@ export function useBrowserSpeechRecognition(
   )
   explicitAudioTrackCleanupFailedCallbackRef.current =
     onExplicitAudioTrackCleanupFailed
+  const finalResultCallbackRef = useRef(onFinalResult)
+  finalResultCallbackRef.current = onFinalResult
   // ----- Chrome Web Speech API の入力段階診断 -----
   const recognitionProgressTimerRef = useRef<NodeJS.Timeout | null>(null)
   const recognitionSignalRef = useRef({
@@ -1377,6 +1380,9 @@ export function useBrowserSpeechRecognition(
 
       transcriptRef.current = transcript
       setUserMessage(transcript)
+      if (hasNewFinalResult && transcript.trim()) {
+        finalResultCallbackRef.current?.(transcript.trim())
+      }
     }
 
     // 音声入力終了時
