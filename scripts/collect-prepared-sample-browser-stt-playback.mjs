@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { createReadStream, existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -11,10 +11,17 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 
 export const ATTEMPT_COUNT = 5
+export const INTEGRATED_ATTEMPT_COUNT = 1
 export const ATTEMPT_TIMEOUT_MS = 10_000
 export const ROUTE_TIMEOUT_MS = 90_000
 export const ROUTE_CANCEL_SETTLE_MS = 2_000
 export const OPERATOR_PORT = 3000
+export const AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT = 'system_default'
+export const AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR =
+  'installed_virtual_cable_pair_v1'
+export const BROWSER_PLAYBACK_GAIN_DB = 12
+export const BROWSER_PLAYBACK_GAIN_LINEAR = 10 ** (BROWSER_PLAYBACK_GAIN_DB / 20)
+export const MAX_PREPARED_SAMPLE_AUDIO_BYTES = 32 * 1024 * 1024
 const MAX_OPERATOR_RESPONSE_BYTES = 256 * 1024
 const COMPLETE_CLEANUP_CLASS =
   'browser_closed_or_external_preserved_server_stopped_or_external_preserved_playback_processes_exited_temp_resources_deleted_volume_not_changed'
@@ -25,7 +32,39 @@ const PRIVATE_ENV_KEYS = [
   'SWORD_PREPARED_SAMPLE_LOCALE',
   'SWORD_PREPARED_SAMPLE_FFPLAY_PATH',
   'SWORD_PREPARED_SAMPLE_LOCK_CLASS',
+  'SWORD_PREPARED_SAMPLE_ATTEMPT_COUNT',
+  'SWORD_PREPARED_SAMPLE_AUDIO_ROUTE_CLASS',
+  'SWORD_PREPARED_SAMPLE_INTEGRATED_PRESENTATION',
 ]
+export const SAFE_PUBLIC_CHILD_ENV_KEYS = Object.freeze([
+  'SystemRoot',
+  'WINDIR',
+  'ComSpec',
+  'TEMP',
+  'TMP',
+  'PATH',
+  'PATHEXT',
+  'PROCESSOR_ARCHITECTURE',
+  'PROCESSOR_IDENTIFIER',
+  'NUMBER_OF_PROCESSORS',
+  'OS',
+  'USERPROFILE',
+  'LOCALAPPDATA',
+  'APPDATA',
+  'ProgramData',
+  'ProgramFiles',
+  'ProgramFiles(x86)',
+  'ProgramW6432',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'PSModulePath',
+])
+const FIXED_VIRTUAL_AUDIO_ENDPOINTS = Object.freeze({
+  captureLabel: 'CABLE Output (VB-Audio Virtual Cable)',
+  renderLabel: 'CABLE Input (VB-Audio Virtual Cable)',
+})
+const BROWSER_AUDIO_URL =
+  'http://127.0.0.1:3000/__prepared_sample_audio_route__/canonical'
 
 export class ControllerError extends Error {
   constructor(resultClass) {
@@ -35,17 +74,114 @@ export class ControllerError extends Error {
   }
 }
 
+const isBoundedDeviceField = (value, maximum) =>
+  typeof value === 'string' &&
+  value.length > 0 &&
+  value.length <= maximum &&
+  !/[\u0000-\u001f\u007f]/.test(value)
+
+const resolveFixedAudioEndpoints = (devices, audioRouteClass) => {
+  if (audioRouteClass !== AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR) {
+    return { captureMatches: [], renderMatches: [] }
+  }
+  return {
+    captureMatches: devices.filter(
+      (device) =>
+        device.kind === 'audioinput' &&
+        device.label === FIXED_VIRTUAL_AUDIO_ENDPOINTS.captureLabel &&
+        isBoundedDeviceField(device.deviceId, 512)
+    ),
+    renderMatches: devices.filter(
+      (device) =>
+        device.kind === 'audiooutput' &&
+        device.label === FIXED_VIRTUAL_AUDIO_ENDPOINTS.renderLabel &&
+        isBoundedDeviceField(device.deviceId, 512)
+    ),
+  }
+}
+
+export const classifyFixedAudioEndpointSelection = (
+  devices,
+  audioRouteClass = AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+) => {
+  const { captureMatches, renderMatches } = resolveFixedAudioEndpoints(
+    devices,
+    audioRouteClass
+  )
+  return {
+    captureMatchCount: captureMatches.length,
+    renderMatchCount: renderMatches.length,
+    exactPairSelected:
+      captureMatches.length === 1 && renderMatches.length === 1,
+  }
+}
+
+export const validateRouteOptions = ({
+  attemptCount,
+  audioRouteClass,
+  integratedPresentation = false,
+}) => {
+  if (!Number.isInteger(attemptCount) || attemptCount < 1 || attemptCount > 5) {
+    throw new ControllerError(
+      'prepared_sample_playback_controller_configuration_invalid'
+    )
+  }
+  if (
+    audioRouteClass !== AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT &&
+    audioRouteClass !== AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+  ) {
+    throw new ControllerError(
+      'prepared_sample_playback_controller_configuration_invalid'
+    )
+  }
+  const integratedRouteSelected =
+    audioRouteClass === AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+  if (
+    typeof integratedPresentation !== 'boolean' ||
+    integratedPresentation !== integratedRouteSelected ||
+    (attemptCount === INTEGRATED_ATTEMPT_COUNT) !== integratedRouteSelected
+  ) {
+    throw new ControllerError(
+      'prepared_sample_playback_controller_configuration_invalid'
+    )
+  }
+}
+
+const completionStopSignal = (attemptCount) =>
+  [
+    '',
+    'completed_exactly_one_attempt',
+    'completed_exactly_two_attempts',
+    'completed_exactly_three_attempts',
+    'completed_exactly_four_attempts',
+    'completed_exactly_five_attempts',
+  ][attemptCount]
+
 export const requireBrowserAudioAvailability = ({
   permissionAvailable,
   live,
   explicitDeviceSelected,
   inputCount,
   outputCount,
+  audioRouteClass = AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
+  captureMatchCount = 0,
+  renderMatchCount = 0,
+  sinkSelectionAvailable = true,
 }) => {
   if (!permissionAvailable || inputCount < 1) {
     throw new ControllerError(
       'browser_microphone_permission_or_device_unavailable'
     )
+  }
+  if (audioRouteClass === AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR) {
+    if (captureMatchCount !== 1 || renderMatchCount !== 1) {
+      throw new ControllerError(
+        'browser_audio_route_unavailable_or_ambiguous'
+      )
+    }
+    if (!sinkSelectionAvailable) {
+      throw new ControllerError('browser_audio_output_sink_unavailable')
+    }
   }
   if (!live) {
     throw new ControllerError('browser_audio_input_track_not_live')
@@ -56,6 +192,354 @@ export const requireBrowserAudioAvailability = ({
   if (outputCount < 1) {
     throw new ControllerError('browser_audio_output_device_unavailable')
   }
+}
+
+export const selectBrowserAudioRoute = async (audioRouteClass) => {
+  const integratedRouteClass = 'installed_virtual_cable_pair_v1'
+  const captureLabel = 'CABLE Output (VB-Audio Virtual Cable)'
+  const renderLabel = 'CABLE Input (VB-Audio Virtual Cable)'
+  const acquiredTracks = []
+  let cleanupIncomplete = false
+  let selectedRouteInputMatched = audioRouteClass !== integratedRouteClass
+  let availability = {
+    permissionAvailable: false,
+    live: false,
+    explicitDeviceSelected: false,
+    inputCount: 0,
+    outputCount: 0,
+    audioRouteClass,
+    captureMatchCount: 0,
+    renderMatchCount: 0,
+    sinkSelectionAvailable: audioRouteClass !== integratedRouteClass,
+  }
+  const rememberTracks = (stream) => {
+    for (const track of stream?.getTracks?.() ?? []) {
+      if (!acquiredTracks.includes(track)) acquiredTracks.push(track)
+    }
+    for (const track of stream?.getAudioTracks?.() ?? []) {
+      if (!acquiredTracks.includes(track)) acquiredTracks.push(track)
+    }
+  }
+  const validDeviceId = (value) =>
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    availability.permissionAvailable = true
+    availability.inputCount = devices.filter(
+      (device) => device.kind === 'audioinput'
+    ).length
+    availability.outputCount = devices.filter(
+      (device) => device.kind === 'audiooutput'
+    ).length
+
+    let selectedTrack = null
+    let selectedInputId = null
+    if (audioRouteClass === integratedRouteClass) {
+      const captureMatches = devices.filter(
+        (device) =>
+          device.kind === 'audioinput' &&
+          device.label === captureLabel &&
+          validDeviceId(device.deviceId)
+      )
+      const renderMatches = devices.filter(
+        (device) =>
+          device.kind === 'audiooutput' &&
+          device.label === renderLabel &&
+          validDeviceId(device.deviceId)
+      )
+      availability.captureMatchCount = captureMatches.length
+      availability.renderMatchCount = renderMatches.length
+      const AudioContextConstructor =
+        globalThis.AudioContext ?? globalThis.webkitAudioContext
+      availability.sinkSelectionAvailable =
+        typeof AudioContextConstructor?.prototype?.setSinkId === 'function'
+      if (captureMatches.length === 1 && renderMatches.length === 1) {
+        const selectedStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: captureMatches[0].deviceId },
+            echoCancellation: { exact: false },
+            noiseSuppression: { exact: false },
+            autoGainControl: { exact: false },
+          },
+        })
+        rememberTracks(selectedStream)
+        const exactTracks = selectedStream.getAudioTracks()
+        selectedTrack = exactTracks.length === 1 ? exactTracks[0] : null
+        selectedInputId = selectedTrack?.getSettings?.().deviceId
+        if (
+          selectedTrack?.readyState === 'live' &&
+          selectedInputId === captureMatches[0].deviceId
+        ) {
+          selectedRouteInputMatched = true
+          Object.defineProperty(window, '__preparedSampleSttAudioOutputDeviceId', {
+            value: renderMatches[0].deviceId,
+            writable: true,
+            configurable: true,
+            enumerable: false,
+          })
+        }
+      }
+    } else {
+      const defaultStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      })
+      rememberTracks(defaultStream)
+      const defaultTracks = defaultStream.getAudioTracks()
+      selectedTrack = defaultTracks.length === 1 ? defaultTracks[0] : null
+      selectedInputId = selectedTrack?.getSettings?.().deviceId
+    }
+
+    const live =
+      selectedTrack?.kind === 'audio' && selectedTrack.readyState === 'live'
+    const explicitDeviceSelected =
+      live && validDeviceId(selectedInputId) && selectedRouteInputMatched
+    if (explicitDeviceSelected) {
+      Object.defineProperty(window, '__preparedSampleSttAudioInputDeviceId', {
+        value: selectedInputId,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      })
+    }
+    availability.live = live
+    availability.explicitDeviceSelected = explicitDeviceSelected
+  } catch {
+    // Native device details remain inside the temporary browser context.
+  } finally {
+    for (const track of new Set(acquiredTracks)) {
+      try {
+        track.stop()
+      } catch {
+        cleanupIncomplete = true
+      }
+    }
+  }
+  return { ...availability, cleanupIncomplete }
+}
+
+export const startBrowserRoutedPlayback = async ({
+  audioUrl,
+  maximumBytes,
+  gainLinear,
+}) => {
+  if (window.__preparedSampleBrowserRoutedPlayer) {
+    throw new Error('duplicate_final_or_playback_rejected')
+  }
+  const outputDeviceId = window.__preparedSampleSttAudioOutputDeviceId
+  const validOutputDeviceId =
+    typeof outputDeviceId === 'string' &&
+    outputDeviceId.length > 0 &&
+    outputDeviceId.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/.test(outputDeviceId)
+  const AudioContextConstructor =
+    globalThis.AudioContext ?? globalThis.webkitAudioContext
+  if (!validOutputDeviceId || !AudioContextConstructor) {
+    throw new Error('browser_audio_output_sink_unavailable')
+  }
+
+  const audio = new Audio()
+  const context = new AudioContextConstructor()
+  const state = {
+    audio,
+    context,
+    source: null,
+    gain: null,
+    objectUrl: null,
+    exitClass: null,
+    mediaElementCleanupAttempted: false,
+    graphDisconnectAttempted: false,
+    objectUrlRevokeAttempted: false,
+    contextCloseAttempted: false,
+    cleanupClass: null,
+  }
+  const release = async () => {
+    if (state.cleanupClass === 'cleanup_incomplete') {
+      throw new Error('cleanup_incomplete')
+    }
+    let cleanupFailed = false
+    if (!state.mediaElementCleanupAttempted) {
+      state.mediaElementCleanupAttempted = true
+      try {
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.load()
+      } catch {
+        cleanupFailed = true
+      }
+    }
+    if (!state.graphDisconnectAttempted) {
+      state.graphDisconnectAttempted = true
+      try {
+        state.source?.disconnect()
+        state.gain?.disconnect()
+      } catch {
+        cleanupFailed = true
+      }
+    }
+    if (state.objectUrl && !state.objectUrlRevokeAttempted) {
+      state.objectUrlRevokeAttempted = true
+      try {
+        URL.revokeObjectURL(state.objectUrl)
+        state.objectUrl = null
+      } catch {
+        cleanupFailed = true
+      }
+    }
+    if (!state.contextCloseAttempted) {
+      state.contextCloseAttempted = true
+      try {
+        await context.close()
+      } catch {
+        cleanupFailed = true
+      }
+    }
+    if (cleanupFailed) {
+      state.cleanupClass = 'cleanup_incomplete'
+      throw new Error('cleanup_incomplete')
+    }
+    delete window.__preparedSampleBrowserRoutedPlayer
+  }
+  window.__preparedSampleBrowserRoutedPlayer = state
+
+  try {
+    if (typeof context.setSinkId !== 'function') {
+      throw new Error('browser_audio_output_sink_unavailable')
+    }
+    try {
+      await context.setSinkId(outputDeviceId)
+    } catch {
+      throw new Error('browser_audio_output_sink_selection_failed')
+    }
+    const response = await fetch(audioUrl, { cache: 'no-store' })
+    if (!response.ok) throw new Error('playback_process_start_failed')
+    const blob = await response.blob()
+    if (blob.size < 1 || blob.size > maximumBytes) {
+      throw new Error('prepared_sample_media_bounds_invalid')
+    }
+    state.objectUrl = URL.createObjectURL(blob)
+    audio.preload = 'auto'
+    audio.src = state.objectUrl
+    state.source = context.createMediaElementSource(audio)
+    state.gain = context.createGain()
+    state.gain.gain.setValueAtTime(gainLinear, context.currentTime)
+    state.source.connect(state.gain).connect(context.destination)
+    audio.addEventListener(
+      'ended',
+      () => {
+        state.exitClass = 'exit_zero'
+      },
+      { once: true }
+    )
+    audio.addEventListener(
+      'error',
+      () => {
+        state.exitClass = 'exit_nonzero'
+      },
+      { once: true }
+    )
+    await context.resume()
+    await audio.play()
+    return { started: true }
+  } catch (error) {
+    try {
+      await release()
+    } catch (cleanupError) {
+      throw cleanupError
+    }
+    throw error
+  }
+}
+
+export const releaseBrowserRoutedPlayback = async () => {
+  const state = window.__preparedSampleBrowserRoutedPlayer
+  if (!state) return { exitClass: 'controlled_stop_after_result' }
+  const priorExitClass = state.exitClass
+  if (state.cleanupClass === 'cleanup_incomplete') {
+    throw new Error('cleanup_incomplete')
+  }
+  let cleanupFailed = false
+  if (!state.mediaElementCleanupAttempted) {
+    state.mediaElementCleanupAttempted = true
+    try {
+      state.audio.pause()
+      state.audio.removeAttribute('src')
+      state.audio.load()
+    } catch {
+      cleanupFailed = true
+    }
+  }
+  if (!state.graphDisconnectAttempted) {
+    state.graphDisconnectAttempted = true
+    try {
+      state.source?.disconnect()
+      state.gain?.disconnect()
+    } catch {
+      cleanupFailed = true
+    }
+  }
+  if (state.objectUrl && !state.objectUrlRevokeAttempted) {
+    state.objectUrlRevokeAttempted = true
+    try {
+      URL.revokeObjectURL(state.objectUrl)
+      state.objectUrl = null
+    } catch {
+      cleanupFailed = true
+    }
+  }
+  if (!state.contextCloseAttempted) {
+    state.contextCloseAttempted = true
+    try {
+      await state.context.close()
+    } catch {
+      cleanupFailed = true
+    }
+  }
+  if (cleanupFailed) {
+    state.cleanupClass = 'cleanup_incomplete'
+    throw new Error('cleanup_incomplete')
+  }
+  delete window.__preparedSampleBrowserRoutedPlayer
+  return {
+    exitClass: priorExitClass ?? 'controlled_stop_after_result',
+  }
+}
+
+export const waitForAcceptedCandidateCompletion = async ({ page, timeoutMs }) => {
+  try {
+    await page.waitForFunction(
+      () => {
+        const state = window.__preparedSampleAtomicAttemptState
+        return (
+          state?.acceptedRequestCompletedCount >= 1 ||
+          state?.acceptedRequestFailedCount >= 1 ||
+          state?.duplicateRejectedCount >= 1
+        )
+      },
+      undefined,
+      { timeout: timeoutMs }
+    )
+  } catch {
+    throw new ControllerError('accepted_candidate_request_not_completed')
+  }
+  const state = await page.evaluate(() => {
+    const privateState = window.__preparedSampleAtomicAttemptState
+    return {
+      completed: privateState?.acceptedRequestCompletedCount ?? 0,
+      failed: privateState?.acceptedRequestFailedCount ?? 0,
+      duplicate: privateState?.duplicateRejectedCount ?? 0,
+    }
+  })
+  if (state.completed !== 1 || state.failed !== 0) {
+    throw new ControllerError('accepted_candidate_request_not_completed')
+  }
+  if (state.duplicate !== 0) {
+    throw new ControllerError('duplicate_final_or_playback_rejected')
+  }
+  return { class: 'accepted_candidate_request_completed' }
 }
 
 const fixedOutput = (overrides = {}) => ({
@@ -145,6 +629,9 @@ const withRouteTimeout = async (
 export const runPreparedSampleController = async ({
   adapter,
   expectedText,
+  attemptCount = ATTEMPT_COUNT,
+  audioRouteClass = AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
+  integratedPresentation = false,
   routeTimeoutMs = ROUTE_TIMEOUT_MS,
   routeCancelSettleMs = ROUTE_CANCEL_SETTLE_MS,
 }) => {
@@ -157,15 +644,26 @@ export const runPreparedSampleController = async ({
   }
   let cleanupError = null
   let result = null
+  const routeOutput = (overrides = {}) =>
+    fixedOutput({
+      controller_stop_signal: completionStopSignal(attemptCount),
+      attempt_count: attemptCount,
+      ...overrides,
+    })
 
   try {
+    validateRouteOptions({
+      attemptCount,
+      audioRouteClass,
+      integratedPresentation,
+    })
     await adapter.acquireLock()
     result = await withRouteTimeout(async (signal) => {
       await runRouteStep(signal, () => adapter.startServer({ signal }))
       await runRouteStep(signal, () => adapter.launchBrowser({ signal }))
       await runRouteStep(signal, () => adapter.requireLiveAudioInput())
 
-      for (let attempt = 0; attempt < ATTEMPT_COUNT; attempt += 1) {
+      for (let attempt = 0; attempt < attemptCount; attempt += 1) {
         await runRouteStep(signal, () =>
           adapter.revalidateExternalServer()
         )
@@ -179,6 +677,13 @@ export const runPreparedSampleController = async ({
         const before = await runRouteStep(signal, () =>
           adapter.readDiagnosticCounts()
         )
+        if (
+          activePlayers.size !== 0 ||
+          counts.playbackStart !== attempt ||
+          counts.finalResults !== attempt
+        ) {
+          throw new ControllerError('duplicate_final_or_playback_rejected')
+        }
         const player = await runRouteStep(signal, async () => {
           const startedPlayer = await adapter.startPlayback({ signal })
           activePlayers.add(startedPlayer)
@@ -217,30 +722,58 @@ export const runPreparedSampleController = async ({
         }
         await runRouteStep(signal, () => adapter.recordFinalResult())
         await runRouteStep(signal, () =>
-          adapter.waitForStatus('attempt_recorded', ATTEMPT_TIMEOUT_MS)
+          adapter.waitForStatus(
+            audioRouteClass ===
+              AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+              ? 'attempt_recorded_or_accepted_candidate'
+              : 'attempt_recorded',
+            ATTEMPT_TIMEOUT_MS
+          )
         )
+        if (
+          audioRouteClass ===
+          AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+        ) {
+          await runRouteStep(signal, () =>
+            adapter.waitForAcceptedCandidateCompletion(ATTEMPT_TIMEOUT_MS)
+          )
+        }
 
         const after = await runRouteStep(signal, () =>
           adapter.readDiagnosticCounts()
         )
-        counts.resultEvents += Math.max(0, after.resultCount - before.resultCount)
-        counts.finalResults += Math.max(0, after.finalCount - before.finalCount)
+        const resultDelta = Math.max(0, after.resultCount - before.resultCount)
+        const finalDelta = Math.max(0, after.finalCount - before.finalCount)
+        if (finalDelta !== 1) {
+          throw new ControllerError('duplicate_final_or_playback_rejected')
+        }
+        counts.resultEvents += resultDelta
+        counts.finalResults += finalDelta
       }
 
       const summary = await runRouteStep(signal, () => adapter.readRunSummary())
-      if (summary.attemptCount !== ATTEMPT_COUNT) {
+      if (summary.attemptCount !== attemptCount) {
         throw new ControllerError('bounded_attempt_count_not_met')
       }
-      if (summary.stabilityClass !== 'stable_positive') {
+      if (attemptCount === ATTEMPT_COUNT && summary.stabilityClass !== 'stable_positive') {
         throw new ControllerError('repeat_content_match_not_stable')
       }
+      if (
+        audioRouteClass ===
+        AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+      ) {
+        await runRouteStep(signal, () => adapter.assertIntegratedCardinality())
+      }
 
-      return fixedOutput({
+      return routeOutput({
         playback_start_count: counts.playbackStart,
         playback_exit_zero_count: counts.playbackExitZero,
         result_event_count: counts.resultEvents,
         final_result_count: counts.finalResults,
-        content_match_stability_class: summary.stabilityClass,
+        content_match_stability_class:
+          attemptCount === ATTEMPT_COUNT
+            ? summary.stabilityClass
+            : 'bounded_attempt_set_positive',
       })
     }, routeTimeoutMs, routeCancelSettleMs)
   } catch (error) {
@@ -249,7 +782,7 @@ export const runPreparedSampleController = async ({
         ? error.resultClass
         : 'prepared_sample_playback_controller_failed'
     const cleanupIncomplete = resultClass === 'cleanup_incomplete'
-    result = fixedOutput({
+    result = routeOutput({
       controller_status: 'error',
       controller_stop_signal: cleanupIncomplete
         ? 'stopped_on_cleanup_incomplete'
@@ -287,7 +820,7 @@ export const runPreparedSampleController = async ({
       }
     }
     if (cleanupError) {
-      result = fixedOutput({
+      result = routeOutput({
         controller_status: 'error',
         controller_stop_signal: 'stopped_on_cleanup_incomplete',
         attempt_count: 0,
@@ -374,9 +907,21 @@ const canBindOperatorPort = () =>
   })
 
 export const createPublicChildEnvironment = (source = process.env) => {
-  const childEnvironment = { ...source }
-  for (const key of PRIVATE_ENV_KEYS) {
-    delete childEnvironment[key]
+  const childEnvironment = {}
+  const entries = Object.entries(source)
+  for (const key of SAFE_PUBLIC_CHILD_ENV_KEYS) {
+    const match = entries.find(
+      ([candidate]) => candidate.toUpperCase() === key.toUpperCase()
+    )
+    if (
+      match &&
+      typeof match[1] === 'string' &&
+      match[1].length > 0 &&
+      match[1].length <= 32_767 &&
+      !match[1].includes('\u0000')
+    ) {
+      childEnvironment[key] = match[1]
+    }
   }
   return childEnvironment
 }
@@ -557,6 +1102,8 @@ export const createRuntimeAdapter = ({
   locale,
   ffplayPath,
   lockClass,
+  attemptCount = ATTEMPT_COUNT,
+  audioRouteClass = AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
   inspectOwner = inspectOperatorServerOwner,
   initialContext = null,
   initialPage = null,
@@ -567,6 +1114,7 @@ export const createRuntimeAdapter = ({
   let profileDirectory = null
   let serverMode = 'none'
   let externalServerIdentity = null
+  let browserPlaybackOrdinal = 0
 
   return {
     async acquireLock() {
@@ -668,80 +1216,63 @@ export const createRuntimeAdapter = ({
           state: 'visible',
           timeout: 30_000,
         })
+        await page.evaluate(() => {
+          const state = {
+            attemptRecordedCount: 0,
+            acceptedRequestPendingCount: 0,
+            acceptedRequestCompletedCount: 0,
+            acceptedRequestFailedCount: 0,
+            duplicateRejectedCount: 0,
+            lastStatus: '',
+          }
+          const observeStatus = () => {
+            const status =
+              document.querySelector(
+                '[data-testid="prepared-sample-stt-status"]'
+              )?.textContent ?? ''
+            if (!status || status === state.lastStatus) return
+            state.lastStatus = status
+            if (status === 'attempt_recorded') state.attemptRecordedCount += 1
+            if (status === 'accepted_candidate_request_pending') {
+              state.acceptedRequestPendingCount += 1
+            }
+            if (status === 'accepted_candidate_request_completed') {
+              state.acceptedRequestCompletedCount += 1
+            }
+            if (status === 'accepted_candidate_request_failed') {
+              state.acceptedRequestFailedCount += 1
+            }
+            if (status === 'accepted_final_duplicate_rejected') {
+              state.duplicateRejectedCount += 1
+            }
+          }
+          const observer = new MutationObserver(observeStatus)
+          observer.observe(document.documentElement, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+          })
+          Object.defineProperty(window, '__preparedSampleAtomicAttemptState', {
+            value: state,
+            writable: true,
+            configurable: true,
+            enumerable: false,
+          })
+          Object.defineProperty(window, '__preparedSampleAtomicAttemptObserver', {
+            value: observer,
+            writable: true,
+            configurable: true,
+            enumerable: false,
+          })
+          observeStatus()
+        })
       } catch (error) {
         if (signal?.aborted) throwIfRouteAborted(signal)
         throw new ControllerError('browser_launch_failed')
       }
     },
     async requireLiveAudioInput() {
-      const result = await page.evaluate(async () => {
-        let stream = null
-        let availability = {
-          permissionAvailable: false,
-          live: false,
-          explicitDeviceSelected: false,
-          inputCount: 0,
-          outputCount: 0,
-        }
-        const acquiredTracks = []
-        let cleanupIncomplete = false
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-          })
-          const streamTracks = stream.getTracks()
-          acquiredTracks.push(...streamTracks)
-          const tracks = stream.getAudioTracks()
-          for (const track of tracks) {
-            if (!acquiredTracks.includes(track)) acquiredTracks.push(track)
-          }
-          const live =
-            tracks.length === 1 &&
-            tracks[0].kind === 'audio' &&
-            tracks[0].readyState === 'live'
-          const deviceId = tracks[0]?.getSettings().deviceId
-          const devices = await navigator.mediaDevices.enumerateDevices()
-          const explicitDeviceSelected =
-            live &&
-            typeof deviceId === 'string' &&
-            deviceId.length > 0 &&
-            deviceId.length <= 512 &&
-            !/[\u0000-\u001f\u007f]/.test(deviceId)
-          if (explicitDeviceSelected) {
-            Object.defineProperty(
-              window,
-              '__preparedSampleSttAudioInputDeviceId',
-              {
-                value: deviceId,
-                writable: true,
-                configurable: true,
-                enumerable: false,
-              }
-            )
-          }
-          availability = {
-            permissionAvailable: true,
-            live,
-            explicitDeviceSelected,
-            inputCount: devices.filter((device) => device.kind === 'audioinput')
-              .length,
-            outputCount: devices.filter(
-              (device) => device.kind === 'audiooutput'
-            ).length,
-          }
-        } catch {
-          // Availability failures stay within the existing fixed result classes.
-        } finally {
-          for (const track of new Set(acquiredTracks)) {
-            try {
-              track.stop()
-            } catch {
-              cleanupIncomplete = true
-            }
-          }
-        }
-        return { ...availability, cleanupIncomplete }
-      })
+      const result = await page.evaluate(selectBrowserAudioRoute, audioRouteClass)
       if (result.cleanupIncomplete) {
         throw new ControllerError('cleanup_incomplete')
       }
@@ -773,6 +1304,26 @@ export const createRuntimeAdapter = ({
     },
     async waitForStatus(status, timeoutMs) {
       try {
+        if (status === 'attempt_recorded_or_accepted_candidate') {
+          await page.waitForFunction(
+            () => {
+              const state = window.__preparedSampleAtomicAttemptState
+              const attemptText = [...document.querySelectorAll('p')].find(
+                (element) => element.textContent?.startsWith('Attempts:')
+              )?.textContent
+              const recordedAttemptCount = Number(
+                attemptText?.match(/Attempts:\s*(\d+)\//)?.[1] ?? 0
+              )
+              return (
+                state?.attemptRecordedCount >= 1 ||
+                recordedAttemptCount >= 1
+              )
+            },
+            undefined,
+            { timeout: timeoutMs }
+          )
+          return
+        }
         await page.getByTestId('prepared-sample-stt-status').filter({
           hasText: status,
         }).waitFor({ timeout: timeoutMs })
@@ -784,12 +1335,117 @@ export const createRuntimeAdapter = ({
         )
       }
     },
+    async waitForAcceptedCandidateCompletion(timeoutMs) {
+      return waitForAcceptedCandidateCompletion({ page, timeoutMs })
+    },
+    async assertIntegratedCardinality() {
+      const state = await page.evaluate(() => {
+        const privateState = window.__preparedSampleAtomicAttemptState
+        const attemptText = [...document.querySelectorAll('p')].find(
+          (element) => element.textContent?.startsWith('Attempts:')
+        )?.textContent
+        return {
+          recorded: Number(
+            attemptText?.match(/Attempts:\s*(\d+)\//)?.[1] ?? 0
+          ),
+          pending: privateState?.acceptedRequestPendingCount ?? 0,
+          completed: privateState?.acceptedRequestCompletedCount ?? 0,
+          failed: privateState?.acceptedRequestFailedCount ?? 0,
+          duplicate: privateState?.duplicateRejectedCount ?? 0,
+        }
+      })
+      if (
+        state.recorded !== 1 ||
+        state.pending > 1 ||
+        state.completed !== 1 ||
+        state.failed !== 0 ||
+        state.duplicate !== 0 ||
+        browserPlaybackOrdinal !== 1 ||
+        attemptCount !== INTEGRATED_ATTEMPT_COUNT
+      ) {
+        throw new ControllerError('duplicate_final_or_playback_rejected')
+      }
+    },
     async readDiagnosticCounts() {
       return page.evaluate(() => ({ ...window.__preparedSampleSttCounts }))
     },
     async startPlayback({ signal } = {}) {
       if (signal) throwIfRouteAborted(signal)
-      if (!existsSync(ffplayPath) || !existsSync(audioPath)) {
+      if (!existsSync(audioPath)) {
+        throw new ControllerError('playback_process_start_failed')
+      }
+      if (
+        audioRouteClass ===
+        AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+      ) {
+        if (browserPlaybackOrdinal !== 0) {
+          throw new ControllerError('duplicate_final_or_playback_rejected')
+        }
+        let audioBytes = null
+        let routeHandler = null
+        let routeCleanupFailed = false
+        try {
+          const mediaStat = await stat(audioPath)
+          if (
+            !mediaStat.isFile() ||
+            mediaStat.size < 1 ||
+            mediaStat.size > MAX_PREPARED_SAMPLE_AUDIO_BYTES
+          ) {
+            throw new ControllerError('prepared_sample_media_bounds_invalid')
+          }
+          audioBytes = await readFile(audioPath)
+          if (
+            audioBytes.length !== mediaStat.size ||
+            audioBytes.length > MAX_PREPARED_SAMPLE_AUDIO_BYTES
+          ) {
+            throw new ControllerError('prepared_sample_media_bounds_invalid')
+          }
+          routeHandler = async (route) => {
+            await route.fulfill({
+              status: 200,
+              contentType: 'audio/mp4',
+              body: audioBytes,
+            })
+          }
+          await page.route(BROWSER_AUDIO_URL, routeHandler)
+          await page.evaluate(startBrowserRoutedPlayback, {
+            audioUrl: BROWSER_AUDIO_URL,
+            maximumBytes: MAX_PREPARED_SAMPLE_AUDIO_BYTES,
+            gainLinear: BROWSER_PLAYBACK_GAIN_LINEAR,
+          })
+          browserPlaybackOrdinal += 1
+          return { kind: 'browser_routed', ordinal: browserPlaybackOrdinal }
+        } catch (error) {
+          for (const resultClass of [
+            'browser_audio_output_sink_unavailable',
+            'browser_audio_output_sink_selection_failed',
+            'duplicate_final_or_playback_rejected',
+            'prepared_sample_media_bounds_invalid',
+          ]) {
+            if (String(error?.message || '').includes(resultClass)) {
+              throw new ControllerError(resultClass)
+            }
+          }
+          throw error instanceof ControllerError
+            ? error
+            : new ControllerError('playback_process_start_failed')
+        } finally {
+          if (routeHandler) {
+            try {
+              await page.unroute(BROWSER_AUDIO_URL, routeHandler)
+            } catch {
+              routeCleanupFailed = true
+            }
+          }
+          audioBytes?.fill(0)
+          audioBytes = null
+          routeHandler = null
+          if (routeCleanupFailed) {
+            throw new ControllerError('cleanup_incomplete')
+          }
+        }
+      }
+      if (!existsSync(ffplayPath)) {
         throw new ControllerError('playback_process_start_failed')
       }
       const child = spawn(
@@ -830,6 +1486,22 @@ export const createRuntimeAdapter = ({
       return child
     },
     async waitForPlaybackCompletion(player, timeoutMs) {
+      if (player.kind === 'browser_routed') {
+        try {
+          await page.waitForFunction(
+            () =>
+              window.__preparedSampleBrowserRoutedPlayer?.exitClass !== null,
+            undefined,
+            { timeout: timeoutMs }
+          )
+        } catch {
+          throw new ControllerError('playback_exit_nonzero')
+        }
+        const exitClass = await page.evaluate(
+          () => window.__preparedSampleBrowserRoutedPlayer?.exitClass ?? null
+        )
+        return { exitClass }
+      }
       const completion = await Promise.race([
         player.exitPromise.then(() => player.exitClass),
         sleep(timeoutMs).then(() => 'timeout'),
@@ -853,6 +1525,13 @@ export const createRuntimeAdapter = ({
       }
     },
     async stopPlayback(player) {
+      if (player.kind === 'browser_routed') {
+        try {
+          return await page.evaluate(releaseBrowserRoutedPlayback)
+        } catch {
+          throw new ControllerError('cleanup_incomplete')
+        }
+      }
       player.inputStream?.destroy()
       const { controlled } = await stopOwnedProcess({
         hasExited: () => player.exitClass !== null,
@@ -918,6 +1597,11 @@ export const createRuntimeAdapter = ({
       try {
         if (closingPage) {
           try {
+            await closingPage.evaluate(releaseBrowserRoutedPlayback)
+          } catch {
+            cleanupFailed = true
+          }
+          try {
             await closingPage.evaluate(() => {
               const privateWindow = window
               try {
@@ -929,9 +1613,14 @@ export const createRuntimeAdapter = ({
                   throw new Error('explicit_audio_track_cleanup_failed')
                 }
               } finally {
+                privateWindow.__preparedSampleAtomicAttemptObserver?.disconnect()
                 delete privateWindow.__preparedSampleSttReleaseAudioTrack
                 delete privateWindow.__preparedSampleSttAudioInputDeviceId
+                delete privateWindow.__preparedSampleSttAudioOutputDeviceId
                 delete privateWindow.__preparedSampleSttFinalizeAudioInput
+                delete privateWindow.__preparedSampleAtomicAttemptObserver
+                delete privateWindow.__preparedSampleAtomicAttemptState
+                delete privateWindow.__preparedSampleBrowserRoutedPlayer
               }
             })
           } catch {
@@ -959,6 +1648,10 @@ export const createRuntimeAdapter = ({
 }
 
 const requirePrivateEnvironment = () => {
+  const attemptCountText =
+    process.env.SWORD_PREPARED_SAMPLE_ATTEMPT_COUNT || String(ATTEMPT_COUNT)
+  const integratedPresentationText =
+    process.env.SWORD_PREPARED_SAMPLE_INTEGRATED_PRESENTATION || ''
   const values = {
     operatorUrl: process.env.SWORD_PREPARED_SAMPLE_OPERATOR_URL || '',
     audioPath: process.env.SWORD_PREPARED_SAMPLE_AUDIO_PATH || '',
@@ -966,13 +1659,32 @@ const requirePrivateEnvironment = () => {
     locale: process.env.SWORD_PREPARED_SAMPLE_LOCALE || '',
     ffplayPath: process.env.SWORD_PREPARED_SAMPLE_FFPLAY_PATH || '',
     lockClass: process.env.SWORD_PREPARED_SAMPLE_LOCK_CLASS || '',
+    attemptCount: /^[1-5]$/.test(attemptCountText)
+      ? Number(attemptCountText)
+      : Number.NaN,
+    audioRouteClass:
+      process.env.SWORD_PREPARED_SAMPLE_AUDIO_ROUTE_CLASS ||
+      AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
+    integratedPresentation:
+      integratedPresentationText === 'true'
+        ? true
+        : integratedPresentationText === 'false'
+          ? false
+          : null,
   }
   if (!values.operatorUrl || !values.audioPath || !values.expectedText) {
     throw new ControllerError(
       'prepared_sample_expected_text_authority_missing_or_invalid'
     )
   }
-  if (!values.locale || !values.ffplayPath || !values.lockClass) {
+  if (!values.locale || !values.lockClass) {
+    throw new ControllerError('prepared_sample_playback_dependency_unavailable')
+  }
+  validateRouteOptions(values)
+  if (
+    values.audioRouteClass === AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT &&
+    !values.ffplayPath
+  ) {
     throw new ControllerError('prepared_sample_playback_dependency_unavailable')
   }
   return values
@@ -995,6 +1707,9 @@ if (isMain) {
     result = await runPreparedSampleController({
       adapter: createRuntimeAdapter(privateValues),
       expectedText: privateValues.expectedText,
+      attemptCount: privateValues.attemptCount,
+      audioRouteClass: privateValues.audioRouteClass,
+      integratedPresentation: privateValues.integratedPresentation,
     })
   } catch (error) {
     result = fixedOutput({

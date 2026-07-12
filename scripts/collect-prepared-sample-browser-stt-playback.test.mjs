@@ -7,16 +7,28 @@ import { fileURLToPath } from 'node:url'
 import {
   ATTEMPT_COUNT,
   ATTEMPT_TIMEOUT_MS,
+  AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+  AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
+  BROWSER_PLAYBACK_GAIN_DB,
+  BROWSER_PLAYBACK_GAIN_LINEAR,
+  INTEGRATED_ATTEMPT_COUNT,
   ROUTE_CANCEL_SETTLE_MS,
   ROUTE_TIMEOUT_MS,
+  SAFE_PUBLIC_CHILD_ENV_KEYS,
   ControllerError,
   buildOperatorServerOwnerInspectionScript,
+  classifyFixedAudioEndpointSelection,
   createPublicChildEnvironment,
   createRuntimeAdapter,
+  releaseBrowserRoutedPlayback,
   requireBrowserAudioAvailability,
   resolveOperatorServerMode,
   runPreparedSampleController,
+  selectBrowserAudioRoute,
+  startBrowserRoutedPlayback,
   stopTrackedServer,
+  validateRouteOptions,
+  waitForAcceptedCandidateCompletion,
 } from './collect-prepared-sample-browser-stt-playback.mjs'
 
 const privateExpectedText = 'PRIVATE_EXPECTED_TEXT_SENTINEL'
@@ -28,9 +40,31 @@ const createBrowserCleanupFixture = ({
   releaseTrack,
   closeContext,
 }) => {
-  const counts = { evaluate: 0, release: 0, contextClose: 0 }
+  const counts = { evaluate: 0, release: 0, routedClose: 0, contextClose: 0 }
   const privateWindow = {
     __preparedSampleSttAudioInputDeviceId: privateMarker,
+    __preparedSampleSttAudioOutputDeviceId: privateMarker,
+    __preparedSampleBrowserRoutedPlayer: {
+      audio: {
+        pause() {},
+        removeAttribute() {},
+        load() {},
+      },
+      context: {
+        async close() {
+          counts.routedClose += 1
+        },
+      },
+      source: null,
+      gain: null,
+      objectUrl: null,
+      exitClass: null,
+      mediaElementCleanupAttempted: false,
+      graphDisconnectAttempted: false,
+      objectUrlRevokeAttempted: false,
+      contextCloseAttempted: false,
+      cleanupClass: null,
+    },
     __preparedSampleSttReleaseAudioTrack() {
       counts.release += 1
       return releaseTrack()
@@ -176,6 +210,8 @@ const createFakeAdapter = ({
   localeError = null,
   playerRemainsAlive = false,
   externalRevalidateError = null,
+  acceptedCompletionError = null,
+  finalDelta = 1,
 } = {}) => {
   const events = []
   let resultCount = 0
@@ -257,13 +293,22 @@ const createFakeAdapter = ({
       assert.equal(timeoutMs, ATTEMPT_TIMEOUT_MS + 2_000)
       events.push(`outcome-${outcomeClass}`)
       if (outcomeClass === 'final_result') {
-        resultCount += 1
-        finalCount += 1
+        resultCount += finalDelta
+        finalCount += finalDelta
       }
       return { class: outcomeClass }
     },
     async recordFinalResult() {
       events.push('record-final')
+    },
+    async waitForAcceptedCandidateCompletion() {
+      events.push('accepted-candidate-completed')
+      if (acceptedCompletionError) {
+        throw new ControllerError(acceptedCompletionError)
+      }
+    },
+    async assertIntegratedCardinality() {
+      events.push('integrated-cardinality-verified')
     },
     async readRunSummary() {
       return { attemptCount: attempts, stabilityClass }
@@ -348,6 +393,79 @@ test('runs exactly five attempts and starts playback only after listening', asyn
     ).length,
     ATTEMPT_COUNT
   )
+  assert.deepEqual(adapter.events.slice(-5), [
+    'recognition-stop',
+    'browser-close',
+    'server-stop',
+    'temp-delete',
+    'release-lock',
+  ])
+})
+
+test('integrated route runs once and waits for accepted submission before cleanup', async () => {
+  const adapter = createFakeAdapter()
+  const result = await runPreparedSampleController({
+    adapter,
+    expectedText: privateExpectedText,
+    attemptCount: INTEGRATED_ATTEMPT_COUNT,
+    audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+    integratedPresentation: true,
+  })
+
+  assert.equal(result.controller_status, 'completed')
+  assert.equal(result.controller_stop_signal, 'completed_exactly_one_attempt')
+  assert.equal(result.attempt_count, 1)
+  assert.equal(result.playback_start_count, 1)
+  assert.equal(result.playback_exit_zero_count, 1)
+  assert.equal(result.final_result_count, 1)
+  assert.equal(result.content_match_stability_class, 'bounded_attempt_set_positive')
+  assert.equal(
+    adapter.events.filter((event) => event === 'accepted-candidate-completed')
+      .length,
+    1
+  )
+  assert.ok(
+    adapter.events.indexOf('accepted-candidate-completed') <
+      adapter.events.indexOf('browser-close')
+  )
+  assert.ok(
+    adapter.events.indexOf('integrated-cardinality-verified') <
+      adapter.events.indexOf('browser-close')
+  )
+})
+
+test('integrated route fails closed when accepted submission does not complete', async () => {
+  const adapter = createFakeAdapter({
+    acceptedCompletionError: 'accepted_candidate_request_not_completed',
+  })
+  const result = await runPreparedSampleController({
+    adapter,
+    expectedText: privateExpectedText,
+    attemptCount: 1,
+    audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+    integratedPresentation: true,
+  })
+
+  assert.equal(result.controller_status, 'error')
+  assert.equal(result.blocker_class, 'accepted_candidate_request_not_completed')
+  assert.ok(
+    adapter.events.indexOf('accepted-candidate-completed') <
+      adapter.events.indexOf('browser-close')
+  )
+})
+
+test('rejects duplicate final activity and converges cleanup', async () => {
+  const adapter = createFakeAdapter({ finalDelta: 2 })
+  const result = await runPreparedSampleController({
+    adapter,
+    expectedText: privateExpectedText,
+    attemptCount: 1,
+    audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+    integratedPresentation: true,
+  })
+
+  assert.equal(result.controller_status, 'error')
+  assert.equal(result.blocker_class, 'duplicate_final_or_playback_rejected')
   assert.deepEqual(adapter.events.slice(-5), [
     'recognition-stop',
     'browser-close',
@@ -948,6 +1066,431 @@ test('reports cleanup failure as a fixed non-echoing result', async () => {
   assert.equal(JSON.stringify(result).includes('private detail'), false)
 })
 
+test('classifies exactly one fixed virtual capture/render pair and rejects zero or ambiguity', () => {
+  const capture = {
+    kind: 'audioinput',
+    label: 'CABLE Output (VB-Audio Virtual Cable)',
+    deviceId: 'PRIVATE_CAPTURE_ID',
+  }
+  const render = {
+    kind: 'audiooutput',
+    label: 'CABLE Input (VB-Audio Virtual Cable)',
+    deviceId: 'PRIVATE_RENDER_ID',
+  }
+  assert.deepEqual(classifyFixedAudioEndpointSelection([capture, render]), {
+    captureMatchCount: 1,
+    renderMatchCount: 1,
+    exactPairSelected: true,
+  })
+  for (const devices of [[], [capture, { ...capture }], [render, { ...render }]]) {
+    const classification = classifyFixedAudioEndpointSelection(devices)
+    assert.equal(classification.exactPairSelected, false)
+    assert.throws(
+      () =>
+        requireBrowserAudioAvailability({
+          permissionAvailable: true,
+          live: true,
+          explicitDeviceSelected: true,
+          inputCount: Math.max(1, classification.captureMatchCount),
+          outputCount: Math.max(1, classification.renderMatchCount),
+          audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+          ...classification,
+          sinkSelectionAvailable: true,
+        }),
+      (error) =>
+        error instanceof ControllerError &&
+        error.resultClass === 'browser_audio_route_unavailable_or_ambiguous'
+    )
+  }
+  assert.equal(
+    JSON.stringify(classifyFixedAudioEndpointSelection([capture, render])).includes(
+      'PRIVATE_'
+    ),
+    false
+  )
+})
+
+test('selects the exact virtual input live after permission and releases every track', async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const originalAudioContext = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'AudioContext'
+  )
+  const calls = []
+  const stops = { exact: 0 }
+  const exactTrack = {
+    kind: 'audio',
+    readyState: 'live',
+    getSettings: () => ({ deviceId: 'PRIVATE_CAPTURE_ID' }),
+    stop: () => {
+      stops.exact += 1
+    },
+  }
+  const streamFor = (track) => ({
+    getTracks: () => [track],
+    getAudioTracks: () => [track],
+  })
+  class SinkAudioContext {}
+  SinkAudioContext.prototype.setSinkId = async () => {}
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        async getUserMedia(constraints) {
+          calls.push(constraints)
+          return streamFor(exactTrack)
+        },
+        async enumerateDevices() {
+          return [
+            {
+              kind: 'audioinput',
+              label: 'CABLE Output (VB-Audio Virtual Cable)',
+              deviceId: 'PRIVATE_CAPTURE_ID',
+            },
+            {
+              kind: 'audiooutput',
+              label: 'CABLE Input (VB-Audio Virtual Cable)',
+              deviceId: 'PRIVATE_RENDER_ID',
+            },
+          ]
+        },
+      },
+    },
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {},
+  })
+  Object.defineProperty(globalThis, 'AudioContext', {
+    configurable: true,
+    value: SinkAudioContext,
+  })
+
+  try {
+    const result = await selectBrowserAudioRoute(
+      AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+    )
+    requireBrowserAudioAvailability(result)
+    assert.deepEqual(stops, { exact: 1 })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].audio.deviceId.exact, 'PRIVATE_CAPTURE_ID')
+    assert.equal(calls[0].audio.echoCancellation.exact, false)
+    assert.equal(result.live, true)
+    assert.equal(result.exactPairSelected, undefined)
+    assert.equal(JSON.stringify(result).includes('PRIVATE_'), false)
+  } finally {
+    if (originalNavigator) {
+      Object.defineProperty(globalThis, 'navigator', originalNavigator)
+    } else delete globalThis.navigator
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete globalThis.window
+    if (originalAudioContext) {
+      Object.defineProperty(globalThis, 'AudioContext', originalAudioContext)
+    } else delete globalThis.AudioContext
+  }
+})
+
+test('browser routed playback selects sink before play, applies +12 dB, and releases handles', async () => {
+  const originals = new Map(
+    ['window', 'Audio', 'AudioContext', 'fetch'].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ])
+  )
+  const originalCreateObjectURL = URL.createObjectURL
+  const originalRevokeObjectURL = URL.revokeObjectURL
+  const events = []
+  let gainValue = null
+  let revoked = 0
+  class FakeAudio {
+    addEventListener() {}
+    removeAttribute() {}
+    load() {}
+    pause() {
+      events.push('pause')
+    }
+    async play() {
+      events.push('play')
+    }
+  }
+  class FakeAudioContext {
+    constructor() {
+      this.currentTime = 0
+      this.destination = {}
+    }
+    async setSinkId(value) {
+      assert.equal(value, 'PRIVATE_RENDER_ID')
+      events.push('sink')
+    }
+    createMediaElementSource() {
+      return { connect: () => ({ connect: () => {} }), disconnect() {} }
+    }
+    createGain() {
+      return {
+        gain: {
+          setValueAtTime(value) {
+            gainValue = value
+          },
+        },
+        connect: () => ({}),
+        disconnect() {},
+      }
+    }
+    async resume() {
+      events.push('resume')
+    }
+    async close() {
+      events.push('close')
+    }
+  }
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { __preparedSampleSttAudioOutputDeviceId: 'PRIVATE_RENDER_ID' },
+  })
+  Object.defineProperty(globalThis, 'Audio', {
+    configurable: true,
+    value: FakeAudio,
+  })
+  Object.defineProperty(globalThis, 'AudioContext', {
+    configurable: true,
+    value: FakeAudioContext,
+  })
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => ({ ok: true, blob: async () => ({ size: 128 }) }),
+  })
+  URL.createObjectURL = () => 'blob:fixed-route'
+  URL.revokeObjectURL = () => {
+    revoked += 1
+  }
+  try {
+    await startBrowserRoutedPlayback({
+      audioUrl: 'http://127.0.0.1/fixed',
+      maximumBytes: 256,
+      gainLinear: BROWSER_PLAYBACK_GAIN_LINEAR,
+    })
+    assert.equal(events.filter((event) => event === 'sink').length, 1)
+    assert.equal(events.filter((event) => event === 'play').length, 1)
+    assert.notEqual(events.indexOf('sink'), -1)
+    assert.notEqual(events.indexOf('play'), -1)
+    assert.ok(events.indexOf('sink') < events.indexOf('play'))
+    assert.equal(BROWSER_PLAYBACK_GAIN_DB, 12)
+    assert.ok(Math.abs(gainValue - 10 ** (12 / 20)) < 1e-12)
+    await assert.rejects(
+      startBrowserRoutedPlayback({
+        audioUrl: 'http://127.0.0.1/fixed',
+        maximumBytes: 256,
+        gainLinear: BROWSER_PLAYBACK_GAIN_LINEAR,
+      }),
+      /duplicate_final_or_playback_rejected/
+    )
+    await releaseBrowserRoutedPlayback()
+    assert.equal(revoked, 1)
+    assert.equal(events.filter((event) => event === 'close').length, 1)
+    assert.equal(Object.hasOwn(globalThis.window, '__preparedSampleBrowserRoutedPlayer'), false)
+  } finally {
+    URL.createObjectURL = originalCreateObjectURL
+    URL.revokeObjectURL = originalRevokeObjectURL
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else delete globalThis[key]
+    }
+  }
+})
+
+test('browser routed playback fails fixed-class when setSinkId is missing', async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const originalAudio = Object.getOwnPropertyDescriptor(globalThis, 'Audio')
+  const originalAudioContext = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'AudioContext'
+  )
+  class FakeAudio {
+    pause() {}
+    removeAttribute() {}
+    load() {}
+  }
+  class MissingSinkAudioContext {
+    async close() {}
+  }
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { __preparedSampleSttAudioOutputDeviceId: 'PRIVATE_RENDER_ID' },
+  })
+  Object.defineProperty(globalThis, 'Audio', {
+    configurable: true,
+    value: FakeAudio,
+  })
+  Object.defineProperty(globalThis, 'AudioContext', {
+    configurable: true,
+    value: MissingSinkAudioContext,
+  })
+  try {
+    await assert.rejects(
+      startBrowserRoutedPlayback({
+        audioUrl: 'http://127.0.0.1/fixed',
+        maximumBytes: 256,
+        gainLinear: BROWSER_PLAYBACK_GAIN_LINEAR,
+      }),
+      /browser_audio_output_sink_unavailable/
+    )
+    assert.equal(Object.hasOwn(globalThis.window, '__preparedSampleBrowserRoutedPlayer'), false)
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete globalThis.window
+    if (originalAudio) Object.defineProperty(globalThis, 'Audio', originalAudio)
+    else delete globalThis.Audio
+    if (originalAudioContext) {
+      Object.defineProperty(globalThis, 'AudioContext', originalAudioContext)
+    } else delete globalThis.AudioContext
+  }
+})
+
+test('browser routed playback fixes sink rejection and closes the context', async () => {
+  const originals = new Map(
+    ['window', 'Audio', 'AudioContext'].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ])
+  )
+  const privateMarker = 'PRIVATE_SINK native-cause native-stack'
+  const counts = { sink: 0, pause: 0, close: 0 }
+  class FakeAudio {
+    pause() {
+      counts.pause += 1
+    }
+    removeAttribute() {}
+    load() {}
+  }
+  class RejectingSinkAudioContext {
+    async setSinkId() {
+      counts.sink += 1
+      throw new Error(privateMarker)
+    }
+    async close() {
+      counts.close += 1
+    }
+  }
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { __preparedSampleSttAudioOutputDeviceId: 'PRIVATE_RENDER_ID' },
+  })
+  Object.defineProperty(globalThis, 'Audio', {
+    configurable: true,
+    value: FakeAudio,
+  })
+  Object.defineProperty(globalThis, 'AudioContext', {
+    configurable: true,
+    value: RejectingSinkAudioContext,
+  })
+  try {
+    await assert.rejects(
+      startBrowserRoutedPlayback({
+        audioUrl: 'http://127.0.0.1/fixed',
+        maximumBytes: 256,
+        gainLinear: BROWSER_PLAYBACK_GAIN_LINEAR,
+      }),
+      (error) => {
+        assert.equal(error.message, 'browser_audio_output_sink_selection_failed')
+        assert.equal(String(error).includes(privateMarker), false)
+        return true
+      }
+    )
+    assert.deepEqual(counts, { sink: 1, pause: 1, close: 1 })
+    assert.equal(
+      Object.hasOwn(globalThis.window, '__preparedSampleBrowserRoutedPlayer'),
+      false
+    )
+  } finally {
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else delete globalThis[key]
+    }
+  }
+})
+
+test('accepted candidate completion barrier rejects failed duplicate and timeout states', async () => {
+  const createPage = (state, { timeout = false } = {}) => ({
+    async waitForFunction(predicate) {
+      if (timeout) throw new Error('PRIVATE_TIMEOUT')
+      const originalWindow = globalThis.window
+      globalThis.window = { __preparedSampleAtomicAttemptState: state }
+      try {
+        if (!predicate()) throw new Error('predicate_not_met')
+      } finally {
+        if (originalWindow === undefined) delete globalThis.window
+        else globalThis.window = originalWindow
+      }
+    },
+    async evaluate(operation) {
+      const originalWindow = globalThis.window
+      globalThis.window = { __preparedSampleAtomicAttemptState: state }
+      try {
+        return operation()
+      } finally {
+        if (originalWindow === undefined) delete globalThis.window
+        else globalThis.window = originalWindow
+      }
+    },
+  })
+  const completed = await waitForAcceptedCandidateCompletion({
+    page: createPage({
+      acceptedRequestCompletedCount: 1,
+      acceptedRequestFailedCount: 0,
+      duplicateRejectedCount: 0,
+    }),
+    timeoutMs: 100,
+  })
+  assert.deepEqual(completed, {
+    class: 'accepted_candidate_request_completed',
+  })
+  for (const [state, blockerClass] of [
+    [
+      {
+        acceptedRequestCompletedCount: 0,
+        acceptedRequestFailedCount: 1,
+        duplicateRejectedCount: 0,
+      },
+      'accepted_candidate_request_not_completed',
+    ],
+    [
+      {
+        acceptedRequestCompletedCount: 1,
+        acceptedRequestFailedCount: 0,
+        duplicateRejectedCount: 1,
+      },
+      'duplicate_final_or_playback_rejected',
+    ],
+    [
+      {
+        acceptedRequestCompletedCount: 2,
+        acceptedRequestFailedCount: 0,
+        duplicateRejectedCount: 0,
+      },
+      'accepted_candidate_request_not_completed',
+    ],
+  ]) {
+    await assert.rejects(
+      waitForAcceptedCandidateCompletion({
+        page: createPage(state),
+        timeoutMs: 100,
+      }),
+      (error) =>
+        error instanceof ControllerError && error.resultClass === blockerClass
+    )
+  }
+  await assert.rejects(
+    waitForAcceptedCandidateCompletion({
+      page: createPage({}, { timeout: true }),
+      timeoutMs: 100,
+    }),
+    (error) =>
+      error instanceof ControllerError &&
+      error.resultClass === 'accepted_candidate_request_not_completed'
+  )
+})
+
 test('preflight stops every unique acquired track and fixes stop failures', async () => {
   const privateMarker =
     'PRIVATE_TRACK C:\\private\\preflight.wav native-cause native-stack'
@@ -1055,7 +1598,12 @@ test('closeBrowser continues through page release failure and clears owned refs'
     assert.equal(String(error).includes(privateMarker), false)
     return true
   })
-  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+  assert.deepEqual(counts, {
+    evaluate: 2,
+    release: 1,
+    routedClose: 1,
+    contextClose: 1,
+  })
   assert.equal(
     Object.hasOwn(privateWindow, '__preparedSampleSttReleaseAudioTrack'),
     false
@@ -1064,9 +1612,22 @@ test('closeBrowser continues through page release failure and clears owned refs'
     Object.hasOwn(privateWindow, '__preparedSampleSttAudioInputDeviceId'),
     false
   )
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleSttAudioOutputDeviceId'),
+    false
+  )
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleBrowserRoutedPlayer'),
+    false
+  )
 
   await adapter.closeBrowser()
-  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+  assert.deepEqual(counts, {
+    evaluate: 2,
+    release: 1,
+    routedClose: 1,
+    contextClose: 1,
+  })
 })
 
 test('closeBrowser fixes context close failure and still clears both refs', async () => {
@@ -1089,7 +1650,12 @@ test('closeBrowser fixes context close failure and still clears both refs', asyn
     assert.equal(String(error).includes(privateMarker), false)
     return true
   })
-  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+  assert.deepEqual(counts, {
+    evaluate: 2,
+    release: 1,
+    routedClose: 1,
+    contextClose: 1,
+  })
   assert.equal(
     Object.hasOwn(privateWindow, '__preparedSampleSttReleaseAudioTrack'),
     false
@@ -1098,14 +1664,32 @@ test('closeBrowser fixes context close failure and still clears both refs', asyn
     Object.hasOwn(privateWindow, '__preparedSampleSttAudioInputDeviceId'),
     false
   )
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleSttAudioOutputDeviceId'),
+    false
+  )
+  assert.equal(
+    Object.hasOwn(privateWindow, '__preparedSampleBrowserRoutedPlayer'),
+    false
+  )
 
   await adapter.closeBrowser()
-  assert.deepEqual(counts, { evaluate: 1, release: 1, contextClose: 1 })
+  assert.deepEqual(counts, {
+    evaluate: 2,
+    release: 1,
+    routedClose: 1,
+    contextClose: 1,
+  })
 })
 
 test('strips all route-private values from server and browser children', () => {
   const privateEnvironment = {
+    SystemRoot: 'C:\\Windows',
+    PATH: 'C:\\Windows\\System32',
     PUBLIC_MARKER: 'retained',
+    NODE_OPTIONS: '--require PRIVATE_BOOTSTRAP',
+    HTTPS_PROXY: 'http://PRIVATE_PROXY',
+    API_TOKEN: 'PRIVATE_TOKEN',
     SWORD_PREPARED_SAMPLE_OPERATOR_URL: 'private',
     SWORD_PREPARED_SAMPLE_AUDIO_PATH: 'private',
     SWORD_PREPARED_SAMPLE_EXPECTED_TEXT: 'private',
@@ -1115,7 +1699,16 @@ test('strips all route-private values from server and browser children', () => {
   }
   const childEnvironment = createPublicChildEnvironment(privateEnvironment)
 
-  assert.equal(childEnvironment.PUBLIC_MARKER, 'retained')
+  assert.equal(childEnvironment.SystemRoot, 'C:\\Windows')
+  assert.equal(childEnvironment.PATH, 'C:\\Windows\\System32')
+  for (const key of [
+    'PUBLIC_MARKER',
+    'NODE_OPTIONS',
+    'HTTPS_PROXY',
+    'API_TOKEN',
+  ]) {
+    assert.equal(Object.hasOwn(childEnvironment, key), false)
+  }
   for (const key of Object.keys(privateEnvironment).filter((key) =>
     key.startsWith('SWORD_PREPARED_SAMPLE_')
   )) {
@@ -1184,6 +1777,53 @@ test('requires normal-browser input, live track, and output availability', () =>
   }
 })
 
+test('validates default five, integrated one, and invalid attempt counts', () => {
+  assert.doesNotThrow(() =>
+    validateRouteOptions({
+      attemptCount: ATTEMPT_COUNT,
+      audioRouteClass: AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
+    })
+  )
+  assert.doesNotThrow(() =>
+    validateRouteOptions({
+      attemptCount: INTEGRATED_ATTEMPT_COUNT,
+      audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+      integratedPresentation: true,
+    })
+  )
+  for (const attemptCount of [0, 6, 1.5, Number.NaN]) {
+    assert.throws(
+      () =>
+        validateRouteOptions({
+          attemptCount,
+          audioRouteClass: AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT,
+        }),
+      (error) =>
+        error instanceof ControllerError &&
+        error.resultClass ===
+          'prepared_sample_playback_controller_configuration_invalid'
+    )
+  }
+  assert.throws(
+    () =>
+      validateRouteOptions({
+        attemptCount: 5,
+        audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+        integratedPresentation: true,
+      }),
+    /prepared_sample_playback_controller_configuration_invalid/
+  )
+  assert.throws(
+    () =>
+      validateRouteOptions({
+        attemptCount: INTEGRATED_ATTEMPT_COUNT,
+        audioRouteClass: AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR,
+        integratedPresentation: false,
+      }),
+    /prepared_sample_playback_controller_configuration_invalid/
+  )
+})
+
 test('locks route bounds and forbids fake audio-device substitution', async () => {
   assert.equal(ATTEMPT_COUNT, 5)
   assert.equal(ATTEMPT_TIMEOUT_MS, 10_000)
@@ -1207,10 +1847,18 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
   assert.match(source, /buildOperatorServerOwnerInspectionScript/)
   assert.match(source, /node_modules\\\\next\\\\dist\\\\server\\\\lib\\\\start-server/)
   assert.match(source, /revalidateExternalServer/)
-  assert.match(source, /getSettings\(\)\.deviceId/)
+  assert.match(source, /getSettings\?\.\(\)\.deviceId/)
   assert.match(source, /__preparedSampleSttAudioInputDeviceId/)
   assert.match(source, /explicitDeviceSelected/)
   assert.match(source, /delete privateWindow\.__preparedSampleSttAudioInputDeviceId/)
+  assert.match(source, /delete privateWindow\.__preparedSampleSttAudioOutputDeviceId/)
+  assert.match(source, /context\.setSinkId\(outputDeviceId\)/)
+  assert.match(source, /BROWSER_PLAYBACK_GAIN_DB = 12/)
+  assert.match(source, /10 \*\* \(BROWSER_PLAYBACK_GAIN_DB \/ 20\)/)
+  assert.match(source, /URL\.revokeObjectURL/)
+  assert.match(source, /accepted_candidate_request_completed/)
+  assert.match(source, /accepted_candidate_request_not_completed/)
+  assert.match(source, /duplicate_final_or_playback_rejected/)
   assert.doesNotMatch(
     source.match(/const fixedOutput = [\s\S]*?\n\}\)/)?.[0] ?? '',
     /deviceId|device_label|device_id/
@@ -1226,10 +1874,16 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
     'SWORD_PREPARED_SAMPLE_LOCALE',
     'SWORD_PREPARED_SAMPLE_FFPLAY_PATH',
     'SWORD_PREPARED_SAMPLE_LOCK_CLASS',
+    'SWORD_PREPARED_SAMPLE_ATTEMPT_COUNT',
+    'SWORD_PREPARED_SAMPLE_AUDIO_ROUTE_CLASS',
   ]) {
     assert.match(privateEnvironmentBlock, new RegExp(key))
   }
   assert.match(source, /pipe:0/)
   assert.match(source, /'-af',\s*'volume=12dB'/)
+  assert.doesNotMatch(
+    source,
+    /Set-AudioDevice|SetDefaultEndpoint|SoundVolumeView|global default/i
+  )
   assert.doesNotMatch(source, /spawn\([\s\S]{0,300}audioPath/)
 })
