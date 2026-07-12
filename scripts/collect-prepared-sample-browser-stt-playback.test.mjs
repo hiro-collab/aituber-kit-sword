@@ -100,8 +100,12 @@ const nextDevCommand = ({
   root = fixtureAitRoot,
   host = '127.0.0.1',
   port = 3000,
+  optionStyle = 'short',
+  suffix = '',
 } = {}) =>
-  `${root}\\node_modules\\next\\dist\\bin\\next dev -H ${host} -p ${port}`
+  `${root}\\node_modules\\next\\dist\\bin\\next dev ${
+    optionStyle === 'long' ? '--hostname' : '-H'
+  } ${host} ${optionStyle === 'long' ? '--port' : '-p'} ${port}${suffix}`
 
 const nextChildCommand = ({
   root = fixtureAitRoot,
@@ -423,8 +427,10 @@ test('accepts only a direct Next dev owner or its sealed listener child', () => 
   assert.match(script, /\$sealedChild=/)
   assert.match(script, /node_modules\\next\\dist\\server\\lib\\start-server/)
   assert.match(script, /node_modules\\next\\dist\\bin\\next/)
-  assert.match(script, /-H 127\.0\.0\.1/)
-  assert.match(script, /-p 3000/)
+  assert.match(script, /-H\|--hostname/)
+  assert.match(script, /-p\|--port/)
+  assert.match(script, /hostFlags\.Count -eq 1/)
+  assert.match(script, /portFlags\.Count -eq 1/)
   assert.match(script, /\$owned=\$directOwned -or \$sealedChild/)
 })
 
@@ -455,6 +461,31 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
     runOwnerInspectionFixture({
       listeners: [listenerFixture(99)],
       processes: [exactChild, exactParent],
+    }),
+    `owned:99:${expectedTicks}`
+  )
+
+  const canonicalParent = processFixture({
+    processId: 55,
+    commandLine: nextDevCommand({ optionStyle: 'long' }),
+  })
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [exactChild, canonicalParent],
+    }),
+    `owned:99:${expectedTicks}`
+  )
+
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          commandLine: nextDevCommand({ optionStyle: 'long' }),
+        }),
+      ],
     }),
     `owned:99:${expectedTicks}`
   )
@@ -524,22 +555,6 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       processes: [{ ...exactChild, name: 'python.exe' }, exactParent],
     },
     {
-      name: 'wrong parent host',
-      listeners: [listenerFixture(99)],
-      processes: [
-        exactChild,
-        { ...exactParent, commandLine: nextDevCommand({ host: '0.0.0.0' }) },
-      ],
-    },
-    {
-      name: 'wrong parent port',
-      listeners: [listenerFixture(99)],
-      processes: [
-        exactChild,
-        { ...exactParent, commandLine: nextDevCommand({ port: 3001 }) },
-      ],
-    },
-    {
       name: 'multiple loopback owners',
       listeners: [listenerFixture(99), listenerFixture(100)],
       processes: [
@@ -554,6 +569,75 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       runOwnerInspectionFixture(fixture),
       'unowned',
       fixture.name
+    )
+  }
+
+  const nextBin = `${fixtureAitRoot}\\node_modules\\next\\dist\\bin\\next`
+  const invalidCommands = [
+    { name: 'missing host', commandLine: `${nextBin} dev -p 3000` },
+    { name: 'missing port', commandLine: `${nextBin} dev -H 127.0.0.1` },
+    { name: 'wrong host', commandLine: nextDevCommand({ host: '0.0.0.0' }) },
+    { name: 'wrong port', commandLine: nextDevCommand({ port: 3001 }) },
+    {
+      name: 'duplicate equivalent host',
+      commandLine: nextDevCommand({ suffix: ' --hostname 127.0.0.1' }),
+    },
+    {
+      name: 'duplicate equivalent port',
+      commandLine: nextDevCommand({ suffix: ' --port 3000' }),
+    },
+    {
+      name: 'contradictory host',
+      commandLine: nextDevCommand({ suffix: ' --hostname 0.0.0.0' }),
+    },
+    {
+      name: 'contradictory port',
+      commandLine: nextDevCommand({ suffix: ' --port 3001' }),
+    },
+    {
+      name: 'lowercase short host flag',
+      commandLine: nextDevCommand().replace(' -H ', ' -h '),
+    },
+    {
+      name: 'uppercase long host flag',
+      commandLine: nextDevCommand({ optionStyle: 'long' }).replace(
+        ' --hostname ',
+        ' --HOSTNAME '
+      ),
+    },
+    {
+      name: 'uppercase short port flag',
+      commandLine: nextDevCommand().replace(' -p ', ' -P '),
+    },
+    {
+      name: 'uppercase long port flag',
+      commandLine: nextDevCommand({ optionStyle: 'long' }).replace(
+        ' --port ',
+        ' --PORT '
+      ),
+    },
+  ]
+  for (const fixture of invalidCommands) {
+    assert.equal(
+      runOwnerInspectionFixture({
+        listeners: [listenerFixture(99)],
+        processes: [
+          processFixture({ processId: 99, commandLine: fixture.commandLine }),
+        ],
+      }),
+      'unowned',
+      `direct owner: ${fixture.name}`
+    )
+    assert.equal(
+      runOwnerInspectionFixture({
+        listeners: [listenerFixture(99)],
+        processes: [
+          exactChild,
+          processFixture({ processId: 55, commandLine: fixture.commandLine }),
+        ],
+      }),
+      'unowned',
+      `sealed child: ${fixture.name}`
     )
   }
 })
