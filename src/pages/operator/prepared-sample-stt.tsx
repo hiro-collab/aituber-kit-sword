@@ -28,6 +28,7 @@ type ParentPreflightQuery = {
   conversationAttemptRef: string
   selectedSampleId: string
   sampleIndexPreflight: PreparedSampleIndexPreflight
+  integratedPresentation: boolean
 }
 
 type ParentPreflightState = {
@@ -58,6 +59,7 @@ type OperatorSetupStatus =
   | 'explicit_audio_input_settings_unavailable'
   | 'explicit_audio_input_device_mismatch'
   | 'explicit_audio_input_processing_not_disabled'
+  | typeof EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
 
 class OperatorSetupError extends Error {
   constructor(readonly status: OperatorSetupStatus) {
@@ -86,23 +88,32 @@ const readPrivateAudioInputDeviceId = (): string => {
   return value
 }
 
-const stopAcquiredTracks = (tracks: MediaStreamTrack[]) => {
+const stopAcquiredTracks = (
+  tracks: MediaStreamTrack[]
+): ExplicitAudioTrackCleanupClass => {
+  let cleanupFailed = false
   new Set(tracks).forEach((track) => {
     try {
       track.stop()
     } catch {
       // Cleanup remains best-effort and never publishes native track details.
+      cleanupFailed = true
     }
   })
+  return cleanupFailed
+    ? EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+    : EXPLICIT_AUDIO_TRACK_CLEANUP_COMPLETE
 }
 
-const acquireExplicitAudioTrack = async (): Promise<MediaStreamTrack> => {
+const acquireExplicitAudioTrack = async (
+  requireVerifiedDefault = false
+): Promise<MediaStreamTrack> => {
   const deviceId = readPrivateAudioInputDeviceId()
   let stream: MediaStream
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: { exact: deviceId },
+        ...(requireVerifiedDefault ? {} : { deviceId: { exact: deviceId } }),
         echoCancellation: { exact: false },
         noiseSuppression: { exact: false },
         autoGainControl: { exact: false },
@@ -154,7 +165,11 @@ const acquireExplicitAudioTrack = async (): Promise<MediaStreamTrack> => {
     }
     return track
   } catch (error) {
-    stopAcquiredTracks(acquiredTracks)
+    if (
+      stopAcquiredTracks(acquiredTracks) === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED
+    ) {
+      throw new OperatorSetupError(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
+    }
     if (error instanceof OperatorSetupError) throw error
     throw new OperatorSetupError('explicit_audio_input_track_invalid')
   }
@@ -167,6 +182,7 @@ const readParentPreflightQuery = (): ParentPreflightQuery => {
   const sampleIndexPreflightClass =
     query.get('sample_index_preflight_class') ?? ''
   const sampleIndexPreflightRef = query.get('sample_index_preflight_ref') ?? ''
+  const integratedPresentationValue = query.get('integrated_presentation')
 
   if (
     !conversationAttemptRef ||
@@ -180,7 +196,9 @@ const readParentPreflightQuery = (): ParentPreflightQuery => {
     !CONVERSATION_ATTEMPT_REF_PATTERN.test(conversationAttemptRef) ||
     !PREPARED_SAMPLE_ID_PATTERN.test(selectedSampleId) ||
     sampleIndexPreflightClass !== 'prepared_sample_index_verified' ||
-    !OPAQUE_REF_PATTERN.test(sampleIndexPreflightRef)
+    !OPAQUE_REF_PATTERN.test(sampleIndexPreflightRef) ||
+    (integratedPresentationValue !== null &&
+      integratedPresentationValue !== '1')
   ) {
     throw new Error('parent_preflight_query_invalid')
   }
@@ -192,6 +210,7 @@ const readParentPreflightQuery = (): ParentPreflightQuery => {
       sampleIndexPreflightClass: 'prepared_sample_index_verified',
       sampleIndexPreflightRef,
     },
+    integratedPresentation: integratedPresentationValue === '1',
   }
 }
 
@@ -202,6 +221,7 @@ const PreparedSampleSttOperator = () => {
   )
   const {
     isListening,
+    startListening,
     startListeningWithAudioTrack,
     releaseExplicitAudioTrack,
     stopListening,
@@ -227,6 +247,7 @@ const PreparedSampleSttOperator = () => {
   const ownedAudioTrackRef = useRef<MediaStreamTrack | null>(null)
   const cleanupFailureRef = useRef(false)
   const acceptedFinalEligibleRef = useRef(false)
+  const integratedPresentationRef = useRef(false)
   const acceptedFinalSubmittedRef = useRef(false)
 
   acceptedBrowserFinalHandlerRef.current = (recognizedText) => {
@@ -304,7 +325,9 @@ const PreparedSampleSttOperator = () => {
 
   useEffect(() => {
     try {
-      setParentPreflight({ value: readParentPreflightQuery(), error: null })
+      const value = readParentPreflightQuery()
+      integratedPresentationRef.current = value.integratedPresentation
+      setParentPreflight({ value, error: null })
       setStatus('ready')
     } catch (error) {
       const errorClass =
@@ -392,13 +415,15 @@ const PreparedSampleSttOperator = () => {
   useEffect(() => {
     const handleDiagnostic = (event: Event) => {
       const detail = (event as CustomEvent<SttDiagnosticDetail>).detail
-      if (
-        !attemptActiveRef.current ||
-        detail?.controller !== 'browser_stt' ||
-        !detail.event?.startsWith('onresult')
-      ) {
+      if (!attemptActiveRef.current || detail?.controller !== 'browser_stt') {
         return
       }
+      if (integratedPresentationRef.current && detail.event === 'onstart') {
+        acceptedFinalEligibleRef.current = true
+        setStatus('attempt_listening')
+        return
+      }
+      if (!detail.event?.startsWith('onresult')) return
       if (typeof detail.transcript === 'string') {
         latestTranscriptRef.current = detail.transcript
       }
@@ -457,39 +482,71 @@ const PreparedSampleSttOperator = () => {
       acceptedFinalEligibleRef.current = false
       cleanupFailureRef.current = false
       setDrainFinalizationPending(false)
-      const track = await acquireExplicitAudioTrack()
-      ownedAudioTrackRef.current = track
-      const startPromise = startListeningWithAudioTrack(track)
-      ownedAudioTrackRef.current = null
-      const startResult = await startPromise
-      if (startResult === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
-        attemptActiveRef.current = false
-        cleanupFailureRef.current = true
-        setStatus(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
-        return
+      const integratedPresentation =
+        parentPreflight.value.integratedPresentation
+      let startResult: boolean | ExplicitAudioTrackCleanupClass
+      if (integratedPresentation) {
+        const verificationTrack = await acquireExplicitAudioTrack(true)
+        ownedAudioTrackRef.current = verificationTrack
+        const verificationCleanup = stopAcquiredTracks([verificationTrack])
+        ownedAudioTrackRef.current = null
+        if (verificationCleanup === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+          attemptActiveRef.current = false
+          cleanupFailureRef.current = true
+          setStatus(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
+          return
+        }
+        startResult = await startListening()
+      } else {
+        const track = await acquireExplicitAudioTrack()
+        ownedAudioTrackRef.current = track
+        const startPromise = startListeningWithAudioTrack(track)
+        ownedAudioTrackRef.current = null
+        startResult = await startPromise
+        if (startResult === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+          attemptActiveRef.current = false
+          cleanupFailureRef.current = true
+          setStatus(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
+          return
+        }
       }
       if (!startResult) {
         attemptActiveRef.current = false
         if (!cleanupFailureRef.current) {
-          setStatus('explicit_speech_audio_track_unsupported')
+          setStatus(
+            integratedPresentation
+              ? 'browser_stt_start_failed'
+              : 'explicit_speech_audio_track_unsupported'
+          )
         }
         return
       }
-      acceptedFinalEligibleRef.current = true
       timeoutRef.current = setTimeout(() => {
         void finishAttempt(true)
       }, PREPARED_SAMPLE_ATTEMPT_TIMEOUT_MS)
-      setStatus('attempt_listening')
+      if (integratedPresentation) {
+        setStatus(
+          acceptedFinalEligibleRef.current
+            ? 'attempt_listening'
+            : 'attempt_starting'
+        )
+      } else {
+        acceptedFinalEligibleRef.current = true
+        setStatus('attempt_listening')
+      }
     } catch (error) {
       attemptActiveRef.current = false
       acceptedFinalEligibleRef.current = false
       releaseOwnedAudioTrack()
       if (!cleanupFailureRef.current) {
-        setStatus(
+        const errorClass =
           error instanceof OperatorSetupError
             ? error.status
             : 'operator_setup_failed'
-        )
+        if (errorClass === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+          cleanupFailureRef.current = true
+        }
+        setStatus(errorClass)
       }
     }
   }

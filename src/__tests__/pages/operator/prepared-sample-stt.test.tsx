@@ -74,6 +74,10 @@ const startListening = jest.fn(
     return true
   }
 )
+const startDefaultListening = jest.fn(async (): Promise<boolean> => {
+  mockIsListening = true
+  return true
+})
 const stopListening = jest.fn(async (acceptPendingFinalResult = false) => {
   if (acceptPendingFinalResult) {
     mockIsListening = false
@@ -143,6 +147,7 @@ jest.mock('@/hooks/useBrowserSpeechRecognition', () => ({
       return {
         userMessage: 'stale rendered transcript',
         isListening: mockIsListening,
+        startListening: startDefaultListening,
         startListeningWithAudioTrack: startListening,
         releaseExplicitAudioTrack,
         stopListening,
@@ -179,6 +184,7 @@ describe('PreparedSampleSttOperator', () => {
     jest.useFakeTimers()
     mockIsListening = false
     startListening.mockClear()
+    startDefaultListening.mockClear()
     stopListening.mockClear()
     releaseExplicitAudioTrack.mockClear()
     mockHookOwnedTrack = null
@@ -337,6 +343,89 @@ describe('PreparedSampleSttOperator', () => {
     })
     expect(startListening).toHaveBeenCalledWith(mockAudioTrack)
     expect(document.body).not.toHaveTextContent(privateDeviceId)
+  })
+
+  it('uses the verified temporary-profile default only for integrated presentation and waits for onstart', async () => {
+    setParentPreflightQuery(
+      `conversation_attempt_ref=${conversationAttemptRef}&selected_sample_id=voice.local_sample_001&sample_index_preflight_class=prepared_sample_index_verified&sample_index_preflight_ref=m4.sample_index_preflight_001&integrated_presentation=1`
+    )
+    render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+    })
+
+    expect(mockGetUserMedia).toHaveBeenCalledWith({
+      audio: {
+        echoCancellation: { exact: false },
+        noiseSuppression: { exact: false },
+        autoGainControl: { exact: false },
+      },
+    })
+    expect(mockAudioTrack.stop).toHaveBeenCalledTimes(1)
+    expect(startDefaultListening).toHaveBeenCalledTimes(1)
+    expect(startListening).not.toHaveBeenCalled()
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'attempt_starting'
+    )
+    act(() => {
+      mockOnChatProcessStart?.('prepared sample')
+    })
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).not.toHaveBeenCalled()
+
+    act(() => {
+      dispatchDiagnostic({ controller: 'browser_stt', event: 'onstart' })
+    })
+
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'attempt_listening'
+    )
+    await act(async () => {
+      mockOnChatProcessStart?.('prepared sample')
+      await Promise.resolve()
+    })
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
+      1
+    )
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledWith(
+      expect.objectContaining({
+        private_turn: expect.objectContaining({
+          context_refs: { conversation_attempt_ref: conversationAttemptRef },
+        }),
+      })
+    )
+    expect(document.body).not.toHaveTextContent(privateDeviceId)
+  })
+
+  it('prioritizes integrated default verification cleanup failure over validation status', async () => {
+    setParentPreflightQuery(
+      `conversation_attempt_ref=${conversationAttemptRef}&selected_sample_id=voice.local_sample_001&sample_index_preflight_class=prepared_sample_index_verified&sample_index_preflight_ref=m4.sample_index_preflight_001&integrated_presentation=1`
+    )
+    mockAudioTrack = createMockAudioTrack({
+      selectedDeviceId: 'other-private-device',
+    })
+    mockAudioTrack.stop = jest.fn(() => {
+      throw new Error('PRIVATE cleanup failure')
+    })
+    render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+    })
+
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'explicit_audio_track_cleanup_failed'
+    )
+    expect(mockAudioTrack.stop).toHaveBeenCalledTimes(1)
+    expect(startDefaultListening).not.toHaveBeenCalled()
+    expect(startListening).not.toHaveBeenCalled()
+    expect(document.body).not.toHaveTextContent('PRIVATE cleanup failure')
   })
 
   it('keeps record disabled while explicit audio acquisition is still pending', async () => {

@@ -27,11 +27,75 @@ import {
   resolveOperatorServerMode,
   runPreparedSampleController,
   selectBrowserAudioRoute,
+  selectTemporaryChromeDefaultAudioInput,
   startBrowserRoutedPlayback,
   stopTrackedServer,
   validateRouteOptions,
   waitForAcceptedCandidateCompletion,
 } from './collect-prepared-sample-browser-stt-playback.mjs'
+
+test('selects exactly one virtual microphone in the temporary Chrome profile', async () => {
+  const events = []
+  const createContext = (optionLabels, selected = true) => {
+    const selector = {
+      async waitFor(options) {
+        events.push(`wait:${options.state}:${options.timeout}`)
+      },
+      async evaluate(_operation, expectedLabel) {
+        if (events.at(-1) === 'selected') {
+          return (
+            selected &&
+            optionLabels.filter((label) => label === expectedLabel).length === 1
+          )
+        }
+        return optionLabels.filter((label) => label === expectedLabel).length
+      },
+      async selectOption(options) {
+        events.push(`select:${options.label}`)
+        events.push('selected')
+      },
+    }
+    const page = {
+      async goto(url, options) {
+        events.push(`goto:${url}:${options.waitUntil}`)
+      },
+      locator(value) {
+        assert.equal(value, 'select')
+        return selector
+      },
+    }
+    return { pages: () => [page] }
+  }
+
+  await selectTemporaryChromeDefaultAudioInput({
+    context: createContext(['CABLE Output (VB-Audio Virtual Cable)']),
+  })
+  assert.equal(events[0], 'goto:chrome://settings/content/microphone:domcontentloaded')
+  assert.equal(events.some((event) => event.startsWith('select:')), true)
+
+  await assert.rejects(
+    selectTemporaryChromeDefaultAudioInput({
+      context: createContext([
+        'CABLE Output (VB-Audio Virtual Cable)',
+        'CABLE Output (VB-Audio Virtual Cable)',
+      ]),
+    }),
+    (error) =>
+      error instanceof ControllerError &&
+      error.resultClass === 'browser_audio_route_unavailable_or_ambiguous'
+  )
+  await assert.rejects(
+    selectTemporaryChromeDefaultAudioInput({
+      context: createContext(
+        ['CABLE Output (VB-Audio Virtual Cable)'],
+        false
+      ),
+    }),
+    (error) =>
+      error instanceof ControllerError &&
+      error.resultClass === 'browser_audio_route_unavailable_or_ambiguous'
+  )
+})
 
 test('opens Projection Visual first and then its exact operator child', async () => {
   const order = []
@@ -1159,7 +1223,7 @@ test('classifies exactly one fixed virtual capture/render pair and rejects zero 
   )
 })
 
-test('selects the exact virtual input live after permission and releases every track', async () => {
+test('verifies the temporary-profile default virtual input live and releases every track', async () => {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const originalAudioContext = Object.getOwnPropertyDescriptor(
@@ -1223,7 +1287,7 @@ test('selects the exact virtual input live after permission and releases every t
     requireBrowserAudioAvailability(result)
     assert.deepEqual(stops, { exact: 1 })
     assert.equal(calls.length, 1)
-    assert.equal(calls[0].audio.deviceId.exact, 'PRIVATE_CAPTURE_ID')
+    assert.equal(Object.hasOwn(calls[0].audio, 'deviceId'), false)
     assert.equal(calls[0].audio.echoCancellation.exact, false)
     assert.equal(result.live, true)
     assert.equal(result.exactPairSelected, undefined)
