@@ -322,7 +322,17 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
           frameSeq: 10,
           vrmReady: true,
           sceneVisible: true,
-          session: { occupiedSlots: 0, queueLength: 0, instances: [] },
+          session: {
+            occupiedSlots: 0,
+            queueLength: 0,
+            instances: [
+              {
+                instanceId: 'runtime-instance-previous',
+                stimulusId: 'mot_stim_turn_bridge_dance_sequence',
+                phase: 'completed',
+              },
+            ],
+          },
           poseFrame: {
             humanoidRotationBoneNames: [],
             humanoidTranslationBoneNames: [],
@@ -341,7 +351,7 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
             queueLength: 0,
             instances: [
               {
-                instanceId: stimulus.stimulus_instance_id,
+                instanceId: 'runtime-instance-current',
                 stimulusId: stimulus.stimulus_id,
                 phase: 'active',
               },
@@ -378,7 +388,7 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
               queueLength: 0,
               instances: [
                 {
-                  instanceId: stimulus.stimulus_instance_id,
+                  instanceId: 'runtime-instance-current',
                   stimulusId: stimulus.stimulus_id,
                   phase: 'completed',
                 },
@@ -558,6 +568,9 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
     'wrong_result_source',
     'debug_playback_result',
     'no_frame_progression',
+    'ambiguous_new_instances',
+    'late_duplicate_instance',
+    'bound_id_stimulus_changed',
     'late_reactivation',
   ])('rejects motion lifecycle mutation %s', async (mutation) => {
     jest.useFakeTimers()
@@ -572,7 +585,18 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
         occupiedSlots?: number
         withPose?: boolean
         stimulus?: Record<string, string>
+        instanceStimulusId?: string
+        duplicatePhase?: string
       }) => {
+        const currentInstance =
+          args.phase && args.stimulus
+            ? {
+                instanceId: 'runtime-instance-current',
+                stimulusId:
+                  args.instanceStimulusId ?? args.stimulus.stimulus_id,
+                phase: args.phase,
+              }
+            : null
         ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
           frameSeq: args.frameSeq,
           vrmReady: true,
@@ -581,15 +605,18 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
             occupiedSlots: args.occupiedSlots ?? 0,
             queueLength: 0,
             instances:
-              args.phase && args.stimulus
+              currentInstance && args.duplicatePhase
                 ? [
+                    currentInstance,
                     {
-                      instanceId: args.stimulus.stimulus_instance_id,
-                      stimulusId: args.stimulus.stimulus_id,
-                      phase: args.phase,
+                      instanceId: 'runtime-instance-collision',
+                      stimulusId: currentInstance.stimulusId,
+                      phase: args.duplicatePhase,
                     },
                   ]
-                : [],
+                : currentInstance
+                  ? [currentInstance]
+                  : [],
           },
           poseFrame: {
             humanoidRotationBoneNames:
@@ -616,6 +643,8 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
             occupiedSlots: 1,
             stimulus,
             withPose: true,
+            duplicatePhase:
+              mutation === 'ambiguous_new_instances' ? 'queued' : undefined,
           })
         }
         window.dispatchEvent(
@@ -655,6 +684,14 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
               phase: 'completed',
               stimulus,
               withPose: true,
+              instanceStimulusId:
+                mutation === 'bound_id_stimulus_changed'
+                  ? `${stimulus.stimulus_id}-changed`
+                  : undefined,
+              duplicatePhase:
+                mutation === 'late_duplicate_instance'
+                  ? 'completed'
+                  : undefined,
             })
           }, 200)
         }

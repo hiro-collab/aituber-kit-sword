@@ -578,6 +578,9 @@ async function dispatchAcceptedPresentationMotionAndAwaitLifecycle(
     baselineSnapshot = readAcceptedPresentationMotionRuntimeSnapshot()
   }
   const baselineFrameSeq = baselineSnapshot.frameSeq
+  const baselineInstanceIds = new Set(
+    baselineSnapshot.instances.map((instance) => instance.instanceId)
+  )
   const result = await new Promise<MotionStimulusReceiverResult>(
     (resolve, reject) => {
       const cleanup = () => {
@@ -624,14 +627,37 @@ async function dispatchAcceptedPresentationMotionAndAwaitLifecycle(
   )
 
   let renderedActiveFrameObserved = false
+  let runtimeInstanceId: string | null = null
   while (true) {
     if (signal.aborted) throw new Error(ACCEPTED_PRESENTATION_FAILED)
     const snapshot = readAcceptedPresentationMotionRuntimeSnapshot()
-    const instance = snapshot?.instances.find(
-      (candidate) =>
-        candidate.instanceId === result.stimulus_instance_id &&
-        candidate.stimulusId === result.stimulus_id
-    )
+    let instance:
+      | AcceptedPresentationMotionRuntimeSnapshot['instances'][number]
+      | undefined
+    const candidates =
+      snapshot?.instances.filter(
+        (candidate) =>
+          candidate.stimulusId === result.stimulus_id &&
+          !baselineInstanceIds.has(candidate.instanceId)
+      ) ?? []
+    if (runtimeInstanceId) {
+      if (
+        candidates.some(
+          (candidate) => candidate.instanceId !== runtimeInstanceId
+        )
+      ) {
+        throw new Error(ACCEPTED_PRESENTATION_FAILED)
+      }
+      instance = candidates.find(
+        (candidate) => candidate.instanceId === runtimeInstanceId
+      )
+    } else {
+      if (candidates.length > 1) {
+        throw new Error(ACCEPTED_PRESENTATION_FAILED)
+      }
+      instance = candidates[0]
+    }
+    if (!runtimeInstanceId && instance) runtimeInstanceId = instance.instanceId
     if (
       snapshot?.vrmReady === true &&
       snapshot.sceneVisible === true &&
@@ -660,10 +686,19 @@ async function dispatchAcceptedPresentationMotionAndAwaitLifecycle(
   while (Date.now() < noLateMotionDeadline) {
     await waitForAcceptedPresentationMotionPoll(signal)
     const snapshot = readAcceptedPresentationMotionRuntimeSnapshot()
-    const matchingInstance = snapshot?.instances.find(
-      (candidate) =>
-        candidate.instanceId === result.stimulus_instance_id &&
-        candidate.stimulusId === result.stimulus_id
+    const candidates =
+      snapshot?.instances.filter(
+        (candidate) =>
+          candidate.stimulusId === result.stimulus_id &&
+          !baselineInstanceIds.has(candidate.instanceId)
+      ) ?? []
+    if (
+      candidates.some((candidate) => candidate.instanceId !== runtimeInstanceId)
+    ) {
+      throw new Error(ACCEPTED_PRESENTATION_FAILED)
+    }
+    const matchingInstance = candidates.find(
+      (candidate) => candidate.instanceId === runtimeInstanceId
     )
     const latePhase = snapshot?.instances.some((candidate) =>
       ['loading', 'queued', 'ready', 'active', 'releasing'].includes(
