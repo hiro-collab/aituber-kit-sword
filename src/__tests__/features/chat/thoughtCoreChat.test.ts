@@ -5,8 +5,10 @@
 import {
   dispatchThoughtCoreMotionStimulus,
   getThoughtCoreChatResponseStream,
+  submitAcceptedPreparedSampleBrowserSpeech,
 } from '../../../features/chat/thoughtCoreChat'
 import { MOTION_STIMULUS_RECEIVER_EVENT } from '../../../features/motionRuntime/motionStimulusReceiver'
+import { createAcceptedPreparedSampleSpeechEnvelope } from '../../../utils/preparedSampleBrowserStt'
 import { TextDecoder, TextEncoder } from 'util'
 ;(global as any).TextEncoder = TextEncoder
 ;(global as any).TextDecoder = TextDecoder
@@ -39,6 +41,107 @@ async function readTextStream(stream: ReadableStream<string>): Promise<string> {
   }
   return text
 }
+
+describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
+  const originalFetch = global.fetch
+  const conversationAttemptRef =
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+
+  beforeEach(() => {
+    global.fetch = jest.fn() as any
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('sends one exact candidate/private-turn envelope and discards response text', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'private prepared speech',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'assistant.speech_delta',
+          data: { delta: 'assistant text must be discarded' },
+        },
+      ])
+    )
+
+    await submitAcceptedPreparedSampleBrowserSpeech(envelope)
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(global.fetch).toHaveBeenCalledWith('/api/thoughtCoreChat/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accepted_user_speech_candidate: envelope.accepted_user_speech_candidate,
+        private_turn: envelope.private_turn,
+        stream: true,
+      }),
+    })
+  })
+
+  it('returns a fixed failure without echoing an API body', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'private prepared speech',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    ;(global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: jest.fn().mockResolvedValue({ detail: 'SECRET_PRIVATE_MARKER' }),
+    })
+
+    await expect(
+      submitAcceptedPreparedSampleBrowserSpeech(envelope)
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+  })
+
+  it('normalizes a thrown fetch exception without echoing its message', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'private prepared speech',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    ;(global.fetch as jest.Mock).mockRejectedValue(
+      new Error('SECRET_PROVIDER_PATH_C:\\private\\provider.json')
+    )
+
+    await expect(
+      submitAcceptedPreparedSampleBrowserSpeech(envelope)
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+  })
+
+  it('normalizes a response stream error without echoing its message', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'private prepared speech',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('SECRET_PROVIDER_STREAM_DETAIL'))
+      },
+    })
+    ;(global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      body,
+    })
+
+    await expect(
+      submitAcceptedPreparedSampleBrowserSpeech(envelope)
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+  })
+})
 
 describe('getThoughtCoreChatResponseStream motion bridge', () => {
   const originalFetch = global.fetch

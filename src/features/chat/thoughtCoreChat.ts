@@ -4,6 +4,7 @@ import i18next from 'i18next'
 import toastStore from '@/features/stores/toast'
 import { MOTION_STIMULUS_RECEIVER_EVENT } from '@/features/motionRuntime/motionStimulusReceiver'
 import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
+import type { AcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampleBrowserStt'
 
 type ThoughtCoreErrorCause = {
   errorCode?: string
@@ -495,6 +496,38 @@ function hasExpressionVisibleRequirements(value: unknown): boolean {
     safeString(value.expected_visible_change) === EXPRESSION_VISIBLE_CHANGE &&
     safeString(value.expected_roi) === EXPRESSION_VISIBLE_ROI
   )
+}
+
+export async function submitAcceptedPreparedSampleBrowserSpeech(
+  envelope: AcceptedPreparedSampleSpeechEnvelope
+): Promise<void> {
+  try {
+    const response = await fetch('/api/thoughtCoreChat/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        accepted_user_speech_candidate: envelope.accepted_user_speech_candidate,
+        private_turn: envelope.private_turn,
+        stream: true,
+      }),
+    })
+    if (!response.ok || !response.body) {
+      throw new Error('accepted_prepared_sample_request_failed')
+    }
+
+    const reader = response.body.getReader()
+    try {
+      while (!(await reader.read()).done) {
+        // The private route intentionally discards every upstream byte.
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  } catch {
+    throw new Error('accepted_prepared_sample_request_failed')
+  }
 }
 
 export async function getThoughtCoreChatResponseStream(

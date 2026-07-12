@@ -56,6 +56,10 @@ const privateDeviceId = 'private-audio-input-device-id'
 let mockAudioTrack: MediaStreamTrack
 let mockHookOwnedTrack: MediaStreamTrack | null = null
 let mockExplicitAudioTrackCleanupFailed: (() => void) | undefined
+let mockOnChatProcessStart: ((text: string) => void) | undefined
+const mockSubmitAcceptedPreparedSampleBrowserSpeech = jest.fn(
+  async (_envelope: unknown) => {}
+)
 const conversationAttemptRef =
   sharedVectors?.canonicalConversationAttemptRef ??
   'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
@@ -95,6 +99,12 @@ const releaseExplicitAudioTrack = jest.fn(
 )
 const mockGetUserMedia = jest.fn()
 
+jest.mock('@/features/chat/thoughtCoreChat', () => ({
+  submitAcceptedPreparedSampleBrowserSpeech: (
+    envelope: Record<string, unknown>
+  ) => mockSubmitAcceptedPreparedSampleBrowserSpeech(envelope),
+}))
+
 const createMockAudioTrack = ({
   kind = 'audio',
   readyState = 'live',
@@ -125,9 +135,10 @@ const createMockAudioTrack = ({
 jest.mock('@/hooks/useBrowserSpeechRecognition', () => ({
   useBrowserSpeechRecognition: jest.fn(
     (
-      _onChatProcessStart: (text: string) => void,
+      onChatProcessStart: (text: string) => void,
       onExplicitAudioTrackCleanupFailed?: () => void
     ) => {
+      mockOnChatProcessStart = onChatProcessStart
       mockExplicitAudioTrackCleanupFailed = onExplicitAudioTrackCleanupFailed
       return {
         userMessage: 'stale rendered transcript',
@@ -172,6 +183,8 @@ describe('PreparedSampleSttOperator', () => {
     releaseExplicitAudioTrack.mockClear()
     mockHookOwnedTrack = null
     mockExplicitAudioTrackCleanupFailed = undefined
+    mockOnChatProcessStart = undefined
+    mockSubmitAcceptedPreparedSampleBrowserSpeech.mockClear()
     mockAudioTrack = createMockAudioTrack()
     mockGetUserMedia.mockReset().mockImplementation(async () => ({
       getTracks: () => [mockAudioTrack],
@@ -1019,13 +1032,53 @@ describe('PreparedSampleSttOperator', () => {
     }
   )
 
-  it('does not materialize TurnInput or a submission path', () => {
-    const source = readFileSync(
-      require.resolve('@/pages/operator/prepared-sample-stt'),
-      'utf8'
+  it('submits one accepted final with the retained ref and rejects a duplicate', async () => {
+    render(<PreparedSampleSttOperator />)
+    prepareRunInputs()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Start bounded attempt' })
+      )
+      await Promise.resolve()
+    })
+    expect(mockOnChatProcessStart).toBeDefined()
+
+    await act(async () => {
+      mockOnChatProcessStart?.('private prepared speech')
+      await Promise.resolve()
+    })
+
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
+      1
+    )
+    const envelope = mockSubmitAcceptedPreparedSampleBrowserSpeech.mock
+      .calls[0][0] as {
+      accepted_user_speech_candidate: Record<string, unknown>
+      private_turn: {
+        text: string
+        context_refs: { conversation_attempt_ref: string }
+      }
+    }
+    expect(envelope.private_turn).toMatchObject({
+      text: 'private prepared speech',
+      context_refs: { conversation_attempt_ref: conversationAttemptRef },
+    })
+    expect(
+      JSON.stringify(envelope.accepted_user_speech_candidate)
+    ).not.toContain('private prepared speech')
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'accepted_candidate_request_completed'
     )
 
-    expect(source).not.toContain('TurnInput')
-    expect(source).not.toContain('thoughtCoreChat')
+    act(() => {
+      mockOnChatProcessStart?.('changed private speech')
+    })
+    expect(mockSubmitAcceptedPreparedSampleBrowserSpeech).toHaveBeenCalledTimes(
+      1
+    )
+    expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
+      'accepted_final_duplicate_rejected'
+    )
   })
 })

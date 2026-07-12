@@ -3,6 +3,11 @@ import { pipeResponse } from '@/utils/pipeResponse'
 import fs from 'fs'
 import path from 'path'
 import { enforceLocalApiRequest } from '@/utils/localApiSecurity'
+import {
+  createAcceptedPreparedSampleSpeechEnvelope,
+  type AcceptedPreparedSampleSpeechEnvelope,
+} from '@/utils/preparedSampleBrowserStt'
+import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
 
 const DEFAULT_THOUGHT_CORE_BASE_URL = 'http://127.0.0.1:18888'
 
@@ -51,6 +56,7 @@ const SAFE_TRACE_KEYS = new Set([
   'redaction',
   'request_id',
   'request_mode',
+  'requested_at',
   'requirements',
   'runtime_result_id',
   'safe_visible_state',
@@ -73,25 +79,85 @@ const SAFE_TRACE_KEYS = new Set([
   'visible_motion',
 ])
 const MOTION_REQUESTED_EVENT_TYPE = 'motion.requested'
-const MOTION_HOME_CONTROL_TRACE_KEYS = new Set([
-  'action',
-  'action_id',
-  'action_type',
-  'appliance',
-  'appliance_id',
-  'contains_home_control_route',
-  'entity_id',
-  'ha_entity_id',
-  'home_action',
-  'home_control',
-  'home_control_route',
-  'is_home_action',
-  'target',
+const CORE_EVENT_ID_PATTERN = /^evt_[0-9a-f]{32}$/
+const BOUNDED_MOTION_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+const PRIVATE_MOTION_IDENTIFIER_MARKER =
+  /(?:^|[._:-])(?:raw|private|provider|secret|token|credential|password|authorization|path|file|media|audio|video)(?:$|[._:-])/i
+const CORE_MOTION_TRACE_KEYS = new Set([
+  'event_id',
+  'turn_id',
+  'selection_id',
+  'runtime_result_id',
+  'motion_event_id',
+  'stimulus_id',
+  'stimulus_instance_id',
 ])
+const MAX_MOTION_NOTABLE_SUMMARY_BYTES = 1_024
+const ACCEPTED_PRIVATE_UPSTREAM_HTTP_ERROR =
+  'accepted_private_upstream_http_error'
+const ACCEPTED_PRIVATE_UPSTREAM_EXCEPTION =
+  'accepted_private_upstream_exception'
+const ACCEPTED_PRIVATE_STREAM_ERROR = 'accepted_private_stream_error'
+const ACCEPTED_PRIVATE_STREAM_CANCELLED = 'accepted_private_stream_cancelled'
 const RAW_TEXT_KEYS =
   /(?:^|_)(?:answer|content|delta|message|prompt|query|raw|speech|text|transcript|utterance)(?:_|$)/i
 const SENSITIVE_TRACE_KEYS =
   /(?:authorization|credential|password|secret|token|api[_-]?key|confirmation)/i
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function hasExactJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => hasExactJsonValue(value, right[index]))
+    )
+  }
+  if (!isRecord(left) || !isRecord(right)) return false
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) => key in right && hasExactJsonValue(left[key], right[key])
+    )
+  )
+}
+
+function readAcceptedPreparedSampleSpeechEnvelope(
+  body: Record<string, unknown>
+): AcceptedPreparedSampleSpeechEnvelope | null {
+  const candidate = body.accepted_user_speech_candidate
+  const privateTurn = body.private_turn
+  if (!isRecord(candidate) || !isRecord(privateTurn)) return null
+  const recognitionSummary = candidate.recognition_summary
+  const contextRefs = privateTurn.context_refs
+  if (!isRecord(recognitionSummary) || !isRecord(contextRefs)) return null
+
+  try {
+    const normalized = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef: String(
+        contextRefs.conversation_attempt_ref ?? ''
+      ),
+      selectedSampleId: String(recognitionSummary.source_label ?? ''),
+      recognizedText: String(privateTurn.text ?? ''),
+      generatedAt: String(candidate.generated_at ?? ''),
+    })
+    return hasExactJsonValue(
+      normalized.accepted_user_speech_candidate,
+      candidate
+    ) && hasExactJsonValue(normalized.private_turn, privateTurn)
+      ? normalized
+      : null
+  } catch {
+    return null
+  }
+}
 
 function toSafeTraceValue(value: unknown): unknown {
   if (
@@ -138,44 +204,134 @@ function toSafeTraceObject(value: unknown): Record<string, unknown> {
   return result
 }
 
-function omitMotionHomeControlTraceKeys(
-  value: Record<string, unknown>
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
-  for (const [key, nestedValue] of Object.entries(value)) {
-    if (MOTION_HOME_CONTROL_TRACE_KEYS.has(key)) continue
-    if (
-      nestedValue &&
-      typeof nestedValue === 'object' &&
-      !Array.isArray(nestedValue)
-    ) {
-      const nested = omitMotionHomeControlTraceKeys(
-        nestedValue as Record<string, unknown>
-      )
-      if (Object.keys(nested).length > 0) {
-        result[key] = nested
-      }
-      continue
-    }
-    result[key] = nestedValue
+function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length !== 24) return false
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+}
+
+function readBoundedMotionIdentifier(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    !BOUNDED_MOTION_IDENTIFIER_PATTERN.test(value) ||
+    PRIVATE_MOTION_IDENTIFIER_MARKER.test(value)
+  ) {
+    return null
   }
-  return result
+  return value
+}
+
+function projectMotionRequestedNotableEvent(
+  data: Record<string, unknown>,
+  expectedConversationAttemptRef?: string
+): Record<string, unknown> | null {
+  const eventId =
+    typeof data.event_id === 'string' &&
+    CORE_EVENT_ID_PATTERN.test(data.event_id)
+      ? data.event_id
+      : null
+  const timestamp = isCanonicalTimestamp(data.timestamp) ? data.timestamp : null
+  const conversationAttemptRef = safeConversationAttemptRef(
+    data.conversation_attempt_ref
+  )
+  const payload = isRecord(data.data) ? data.data : null
+  if (
+    !eventId ||
+    !timestamp ||
+    !conversationAttemptRef ||
+    (expectedConversationAttemptRef !== undefined &&
+      conversationAttemptRef !== expectedConversationAttemptRef) ||
+    !payload
+  ) {
+    return null
+  }
+
+  const trace = isRecord(payload.trace) ? payload.trace : null
+  if (
+    !trace ||
+    Object.keys(trace).some((key) => !CORE_MOTION_TRACE_KEYS.has(key))
+  ) {
+    return null
+  }
+  for (const [key, value] of Object.entries(trace)) {
+    const valid =
+      key === 'event_id'
+        ? typeof value === 'string' && CORE_EVENT_ID_PATTERN.test(value)
+        : readBoundedMotionIdentifier(value) !== null
+    if (!valid) return null
+  }
+
+  const schemaVersion =
+    payload.schema_version === 'motion_stimulus.v0'
+      ? payload.schema_version
+      : null
+  const motionEventId = readBoundedMotionIdentifier(payload.motion_event_id)
+  const stimulusId = readBoundedMotionIdentifier(payload.stimulus_id)
+  const stimulusInstanceId = readBoundedMotionIdentifier(
+    payload.stimulus_instance_id
+  )
+  const requestedAt = isCanonicalTimestamp(payload.requested_at)
+    ? payload.requested_at
+    : null
+  if (
+    !schemaVersion ||
+    !motionEventId ||
+    !stimulusId ||
+    !stimulusInstanceId ||
+    payload.phase !== 'queued' ||
+    payload.lifecycle_state !== 'queued' ||
+    payload.safe_visible_state !== 'requested' ||
+    !requestedAt ||
+    requestedAt !== timestamp ||
+    trace.event_id !== eventId
+  ) {
+    return null
+  }
+
+  const summary = {
+    schema_version: schemaVersion,
+    motion_event_id: motionEventId,
+    stimulus_id: stimulusId,
+    stimulus_instance_id: stimulusInstanceId,
+    phase: 'queued',
+    lifecycle_state: 'queued',
+    safe_visible_state: 'requested',
+    requested_at: requestedAt,
+    trace: { event_id: eventId },
+  }
+  if (
+    Buffer.byteLength(JSON.stringify(summary), 'utf8') >
+    MAX_MOTION_NOTABLE_SUMMARY_BYTES
+  ) {
+    return null
+  }
+
+  return {
+    type: MOTION_REQUESTED_EVENT_TYPE,
+    event_id: eventId,
+    timestamp,
+    conversation_attempt_ref: conversationAttemptRef,
+    summary,
+  }
 }
 
 function buildNotableThoughtCoreEvent(
   eventType: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  expectedConversationAttemptRef?: string
 ): Record<string, unknown> | null {
   if (!NOTABLE_THOUGHT_CORE_EVENTS.has(eventType)) return null
+  if (eventType === MOTION_REQUESTED_EVENT_TYPE) {
+    return projectMotionRequestedNotableEvent(
+      data,
+      expectedConversationAttemptRef
+    )
+  }
   const payload =
     data?.data && typeof data.data === 'object'
       ? (data.data as Record<string, unknown>)
       : {}
-  const rawSummary = toSafeTraceObject(payload)
-  const summary =
-    eventType === MOTION_REQUESTED_EVENT_TYPE
-      ? omitMotionHomeControlTraceKeys(rawSummary)
-      : rawSummary
+  const summary = toSafeTraceObject(payload)
   const notableEvent: Record<string, unknown> = {
     type: eventType,
   }
@@ -356,13 +512,15 @@ async function readThoughtCoreErrorDetail(response: Response): Promise<string> {
   return truncate(text)
 }
 
-function createTracedThoughtCoreStream(
+export function createTracedThoughtCoreStream(
   body: ReadableStream<Uint8Array> | null,
   context: {
     query: unknown
     startedAt: number
     turnId?: string
     sessionId?: string
+    privateAcceptedSpeechRoute?: boolean
+    expectedConversationAttemptRef?: string
   }
 ) {
   if (!body) {
@@ -403,7 +561,9 @@ function createTracedThoughtCoreStream(
       ...traceContext(),
       event_counts: eventCounts,
       answer_chars: answerChars,
-      answer_preview: answerPreview,
+      ...(context.privateAcceptedSpeechRoute
+        ? {}
+        : { answer_preview: answerPreview }),
       notable_event_count: notableEvents.length,
       ...(notableEvents.length > 0 ? { notable_events: notableEvents } : {}),
       ...(finalEventId ? { final_event_id: finalEventId } : {}),
@@ -414,7 +574,7 @@ function createTracedThoughtCoreStream(
       ...extra,
     })
     const finalAnswer = answerText.trim() || messageText.trim()
-    if (finalAnswer) {
+    if (finalAnswer && !context.privateAcceptedSpeechRoute) {
       appendConversationLog('assistant', finalAnswer, {
         source: 'thought-core',
         route: 'projection-visual',
@@ -441,22 +601,43 @@ function createTracedThoughtCoreStream(
 
       try {
         const data = JSON.parse(jsonText)
-        const eventType = typeof data?.type === 'string' ? data.type : 'unknown'
+        const rawEventType =
+          typeof data?.type === 'string' ? data.type : 'unknown'
+        const eventType =
+          context.privateAcceptedSpeechRoute &&
+          (!/^[a-z][a-z0-9._-]{0,63}$/.test(rawEventType) ||
+            PRIVATE_MOTION_IDENTIFIER_MARKER.test(rawEventType))
+            ? 'unknown'
+            : rawEventType
         eventCounts[eventType] = (eventCounts[eventType] || 0) + 1
-        if (typeof data?.event_id === 'string' && data.event_id) {
+        if (
+          typeof data?.event_id === 'string' &&
+          data.event_id &&
+          (!context.privateAcceptedSpeechRoute ||
+            CORE_EVENT_ID_PATTERN.test(data.event_id))
+        ) {
           finalEventId = data.event_id
         }
         if (typeof data?.seq === 'number') {
           finalEventSeq = data.seq
         }
-        if (typeof data?.turn_id === 'string' && data.turn_id) {
+        if (
+          !context.privateAcceptedSpeechRoute &&
+          typeof data?.turn_id === 'string' &&
+          data.turn_id
+        ) {
           streamTurnId = data.turn_id
         }
 
-        const notableEvent = buildNotableThoughtCoreEvent(
-          eventType,
-          data as Record<string, unknown>
-        )
+        const notableEvent =
+          context.privateAcceptedSpeechRoute &&
+          eventType !== MOTION_REQUESTED_EVENT_TYPE
+            ? null
+            : buildNotableThoughtCoreEvent(
+                eventType,
+                data as Record<string, unknown>,
+                context.expectedConversationAttemptRef
+              )
         if (notableEvent) {
           if (notableEvents.length < 24) {
             notableEvents.push(notableEvent)
@@ -491,7 +672,9 @@ function createTracedThoughtCoreStream(
         if (answer) {
           answerText = `${answerText}${answer}`
           answerChars += answer.length
-          answerPreview = truncate(`${answerPreview}${answer}`, 160)
+          if (!context.privateAcceptedSpeechRoute) {
+            answerPreview = truncate(`${answerPreview}${answer}`, 160)
+          }
           if (!firstAnswerLogged) {
             firstAnswerLogged = true
             appendThoughtCoreTrace('stream_first_answer', {
@@ -499,7 +682,9 @@ function createTracedThoughtCoreStream(
               query,
               ...traceContext(),
               thought_core_event: eventType,
-              answer_preview: truncate(answer, 80),
+              ...(context.privateAcceptedSpeechRoute
+                ? {}
+                : { answer_preview: truncate(answer, 80) }),
             })
           }
         }
@@ -512,34 +697,51 @@ function createTracedThoughtCoreStream(
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const { done, value } = await reader.read()
-        if (done) {
-          if (buffer) {
-            processText('\n')
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            if (buffer) {
+              processText('\n')
+            }
+            logCompletion('stream_completed')
+            controller.close()
+            reader.releaseLock()
+            return
           }
-          logCompletion('stream_completed')
-          controller.close()
-          reader.releaseLock()
-          return
-        }
 
-        if (value) {
-          processText(decoder.decode(value, { stream: true }))
-          controller.enqueue(value)
+          if (value) {
+            processText(decoder.decode(value, { stream: true }))
+          }
+          if (!context.privateAcceptedSpeechRoute && value) {
+            controller.enqueue(value)
+            return
+          }
         }
       } catch (error) {
+        const detail = context.privateAcceptedSpeechRoute
+          ? ACCEPTED_PRIVATE_STREAM_ERROR
+          : error instanceof Error
+            ? error.message
+            : String(error)
         logCompletion('stream_exception', {
-          detail: error instanceof Error ? error.message : String(error),
+          detail,
         })
-        controller.error(error)
+        controller.error(
+          context.privateAcceptedSpeechRoute ? new Error(detail) : error
+        )
         reader.releaseLock()
       }
     },
     cancel(reason) {
+      const detail = context.privateAcceptedSpeechRoute
+        ? ACCEPTED_PRIVATE_STREAM_CANCELLED
+        : reason instanceof Error
+          ? reason.message
+          : String(reason ?? '')
       logCompletion('stream_cancelled', {
-        detail: reason instanceof Error ? reason.message : String(reason ?? ''),
+        detail,
       })
-      return reader.cancel(reason)
+      return reader.cancel(context.privateAcceptedSpeechRoute ? detail : reason)
     },
   })
 }
@@ -558,10 +760,32 @@ export default async function handler(
     return
   }
 
+  const requestBody = isRecord(req.body) ? req.body : {}
   const { query, url, sessionId, turnId, locale, contextRefs, stream } =
-    req.body
+    requestBody
   const startedAt = Date.now()
-  const text = typeof query === 'string' ? query.trim() : ''
+  const hasAcceptedSpeechEnvelope =
+    'accepted_user_speech_candidate' in requestBody ||
+    'private_turn' in requestBody
+  const acceptedSpeechEnvelope = hasAcceptedSpeechEnvelope
+    ? readAcceptedPreparedSampleSpeechEnvelope(requestBody)
+    : null
+  if (hasAcceptedSpeechEnvelope && !acceptedSpeechEnvelope) {
+    appendThoughtCoreTrace('config_error', {
+      detail: 'accepted prepared-sample speech envelope is invalid',
+    })
+    return res.status(400).json({
+      error: 'Accepted prepared-sample speech envelope is invalid',
+      errorCode: 'AIInvalidProperty',
+    })
+  }
+
+  const isAcceptedSpeechRoute = Boolean(acceptedSpeechEnvelope)
+  const text = acceptedSpeechEnvelope
+    ? acceptedSpeechEnvelope.private_turn.text
+    : typeof query === 'string'
+      ? query.trim()
+      : ''
   if (!text) {
     appendThoughtCoreTrace('config_error', {
       detail: 'query is empty',
@@ -576,9 +800,17 @@ export default async function handler(
   try {
     baseUrl = resolveThoughtCoreBaseUrl(url)
   } catch (error) {
+    const detail = isAcceptedSpeechRoute
+      ? error instanceof Error &&
+        error.message === ACCEPTED_PRIVATE_STREAM_ERROR
+        ? ACCEPTED_PRIVATE_STREAM_ERROR
+        : ACCEPTED_PRIVATE_UPSTREAM_EXCEPTION
+      : error instanceof Error
+        ? error.message
+        : String(error)
     appendThoughtCoreTrace('config_error', {
-      detail: error instanceof Error ? error.message : String(error),
-      query: truncate(text, 180),
+      detail,
+      ...(isAcceptedSpeechRoute ? {} : { query: truncate(text, 180) }),
     })
     return res.status(400).json({
       error: 'Thought Core Invalid URL',
@@ -586,14 +818,16 @@ export default async function handler(
     })
   }
 
-  const requestSessionId =
-    typeof sessionId === 'string' && sessionId.trim()
+  const requestSessionId = acceptedSpeechEnvelope
+    ? acceptedSpeechEnvelope.private_turn.session_id
+    : typeof sessionId === 'string' && sessionId.trim()
       ? sessionId.trim()
       : process.env.THOUGHT_CORE_SESSION_ID || 'aituber-kit'
   const requestLocale =
-    typeof locale === 'string' && locale.trim()
+    acceptedSpeechEnvelope?.private_turn.locale ??
+    (typeof locale === 'string' && locale.trim()
       ? locale.trim()
-      : process.env.THOUGHT_CORE_LOCALE || 'ja-JP'
+      : process.env.THOUGHT_CORE_LOCALE || 'ja-JP')
   const requestContextRefs: Record<string, unknown> =
     contextRefs &&
     typeof contextRefs === 'object' &&
@@ -601,34 +835,44 @@ export default async function handler(
       ? (contextRefs as Record<string, unknown>)
       : {}
 
-  const payload = {
-    text,
-    turn_id: buildTurnId(turnId),
-    session_id: requestSessionId,
-    locale: requestLocale,
-    context_refs: {
+  const requestTurnId = acceptedSpeechEnvelope
+    ? acceptedSpeechEnvelope.private_turn.turn_id
+    : buildTurnId(turnId)
+  const payload =
+    acceptedSpeechEnvelope ??
+    ({
+      text,
+      turn_id: requestTurnId,
+      session_id: requestSessionId,
+      locale: requestLocale,
+      context_refs: {
+        source: 'aituber-kit',
+        route: 'projection-visual',
+        ...requestContextRefs,
+      },
+    } as const)
+  const shouldStream = isAcceptedSpeechRoute || stream !== false
+  const traceQuery = isAcceptedSpeechRoute
+    ? 'accepted_prepared_sample_private_turn'
+    : truncate(text, 180)
+
+  if (!isAcceptedSpeechRoute) {
+    appendConversationLog('user', text, {
       source: 'aituber-kit',
       route: 'projection-visual',
-      ...requestContextRefs,
-    },
+      turn_id: requestTurnId,
+      session_id: requestSessionId,
+      issue_id:
+        typeof requestContextRefs.issue_id === 'string'
+          ? requestContextRefs.issue_id
+          : typeof requestContextRefs.issueId === 'string'
+            ? requestContextRefs.issueId
+            : null,
+    })
   }
-  const shouldStream = stream !== false
-
-  appendConversationLog('user', text, {
-    source: 'aituber-kit',
-    route: 'projection-visual',
-    turn_id: payload.turn_id,
-    session_id: requestSessionId,
-    issue_id:
-      typeof requestContextRefs.issue_id === 'string'
-        ? requestContextRefs.issue_id
-        : typeof requestContextRefs.issueId === 'string'
-          ? requestContextRefs.issueId
-          : null,
-  })
   appendThoughtCoreTrace('request_started', {
-    query: truncate(text, 180),
-    turn_id: payload.turn_id,
+    query: traceQuery,
+    turn_id: requestTurnId,
     session_id: requestSessionId,
     response_mode: shouldStream ? 'streaming' : 'blocking',
     thought_core_url: baseUrl,
@@ -648,82 +892,117 @@ export default async function handler(
     )
 
     if (!response.ok) {
-      const detail = await readThoughtCoreErrorDetail(response)
+      const detail = isAcceptedSpeechRoute
+        ? ACCEPTED_PRIVATE_UPSTREAM_HTTP_ERROR
+        : await readThoughtCoreErrorDetail(response)
       appendThoughtCoreTrace('request_failed', {
         status: response.status,
-        status_text: response.statusText,
+        status_text: isAcceptedSpeechRoute
+          ? ACCEPTED_PRIVATE_UPSTREAM_HTTP_ERROR
+          : response.statusText,
         detail,
         latency_ms: Date.now() - startedAt,
-        query: truncate(text, 180),
-        turn_id: payload.turn_id,
+        query: traceQuery,
+        turn_id: requestTurnId,
         session_id: requestSessionId,
       })
-      console.error('Thought Core API request failed:', {
-        status: response.status,
-        statusText: response.statusText,
-        url: baseUrl,
-        detail,
-      })
+      console.error(
+        'Thought Core API request failed:',
+        isAcceptedSpeechRoute
+          ? {
+              status: response.status,
+              errorClass: ACCEPTED_PRIVATE_UPSTREAM_HTTP_ERROR,
+            }
+          : {
+              status: response.status,
+              statusText: response.statusText,
+              url: baseUrl,
+              detail,
+            }
+      )
 
       return res.status(response.status).json({
-        error: 'Thought Core API request failed',
+        error: isAcceptedSpeechRoute
+          ? 'Accepted private Thought Core upstream request failed'
+          : 'Thought Core API request failed',
         errorCode: 'AIAPIError',
         detail,
       })
     }
 
     if (shouldStream) {
+      if (isAcceptedSpeechRoute && !response.body) {
+        throw new Error(ACCEPTED_PRIVATE_STREAM_ERROR)
+      }
       appendThoughtCoreTrace('stream_opened', {
         status: response.status,
         latency_ms: Date.now() - startedAt,
-        query: truncate(text, 180),
-        turn_id: payload.turn_id,
+        query: traceQuery,
+        turn_id: requestTurnId,
         session_id: requestSessionId,
       })
       const streamResponse = new Response(
         createTracedThoughtCoreStream(response.body, {
-          query: text,
+          query: traceQuery,
           startedAt,
-          turnId: payload.turn_id,
+          turnId: requestTurnId,
           sessionId: requestSessionId,
+          privateAcceptedSpeechRoute: isAcceptedSpeechRoute,
+          expectedConversationAttemptRef:
+            acceptedSpeechEnvelope?.private_turn.context_refs
+              .conversation_attempt_ref,
         }),
         {
           headers: { 'Content-Type': 'text/event-stream' },
         }
       )
-      return pipeResponse(streamResponse, res)
+      return await pipeResponse(streamResponse, res)
     }
 
     const data = await response.json()
-    appendConversationLog('assistant', extractResponseText(data), {
-      source: 'thought-core',
-      route: 'projection-visual',
-      event: 'request_succeeded',
-      turn_id: payload.turn_id,
-      session_id: requestSessionId,
-      latency_ms: Date.now() - startedAt,
-    })
+    if (!isAcceptedSpeechRoute) {
+      appendConversationLog('assistant', extractResponseText(data), {
+        source: 'thought-core',
+        route: 'projection-visual',
+        event: 'request_succeeded',
+        turn_id: requestTurnId,
+        session_id: requestSessionId,
+        latency_ms: Date.now() - startedAt,
+      })
+    }
     appendThoughtCoreTrace('request_succeeded', {
       status: response.status,
       latency_ms: Date.now() - startedAt,
-      query: truncate(text, 180),
-      turn_id: payload.turn_id,
+      query: traceQuery,
+      turn_id: requestTurnId,
       session_id: requestSessionId,
     })
     return res.status(200).json(data)
   } catch (error) {
+    const detail = isAcceptedSpeechRoute
+      ? ACCEPTED_PRIVATE_UPSTREAM_EXCEPTION
+      : error instanceof Error
+        ? error.message
+        : String(error)
     appendThoughtCoreTrace('request_exception', {
-      detail: error instanceof Error ? error.message : String(error),
+      detail,
       latency_ms: Date.now() - startedAt,
-      query: truncate(text, 180),
-      turn_id: payload.turn_id,
+      query: traceQuery,
+      turn_id: requestTurnId,
       session_id: requestSessionId,
     })
-    console.error('Error in Thought Core API call:', error)
+    console.error(
+      'Error in Thought Core API call:',
+      isAcceptedSpeechRoute ? { errorClass: detail } : error
+    )
     return res.status(500).json({
-      error: 'Thought Core Internal Server Error',
+      error: isAcceptedSpeechRoute
+        ? detail === ACCEPTED_PRIVATE_STREAM_ERROR
+          ? 'Accepted private Thought Core stream error'
+          : 'Accepted private Thought Core upstream exception'
+        : 'Thought Core Internal Server Error',
       errorCode: 'AIAPIError',
-      detail: error instanceof Error ? error.message : String(error),
+      detail,
     })
   }
 }

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useBrowserSpeechRecognition } from '@/hooks/useBrowserSpeechRecognition'
+import { submitAcceptedPreparedSampleBrowserSpeech } from '@/features/chat/thoughtCoreChat'
 import { CONVERSATION_ATTEMPT_REF_PATTERN } from '@/utils/speechOutputParitySummary'
 import {
   PREPARED_SAMPLE_ATTEMPT_COUNT,
   PREPARED_SAMPLE_ATTEMPT_TIMEOUT_MS,
+  createAcceptedPreparedSampleSpeechEnvelope,
   createPreparedSampleRun,
   recordPreparedSampleAttempt,
   summarizePreparedSampleRun,
@@ -193,17 +195,19 @@ const readParentPreflightQuery = (): ParentPreflightQuery => {
   }
 }
 
-const ignoreSubmission = () => {}
-
 const PreparedSampleSttOperator = () => {
   const explicitAudioTrackCleanupFailedHandlerRef = useRef<() => void>(() => {})
+  const acceptedBrowserFinalHandlerRef = useRef<(text: string) => void>(
+    () => {}
+  )
   const {
     isListening,
     startListeningWithAudioTrack,
     releaseExplicitAudioTrack,
     stopListening,
-  } = useBrowserSpeechRecognition(ignoreSubmission, () =>
-    explicitAudioTrackCleanupFailedHandlerRef.current()
+  } = useBrowserSpeechRecognition(
+    (text) => acceptedBrowserFinalHandlerRef.current(text),
+    () => explicitAudioTrackCleanupFailedHandlerRef.current()
   )
   const [parentPreflight, setParentPreflight] = useState<ParentPreflightState>({
     value: null,
@@ -222,6 +226,41 @@ const PreparedSampleSttOperator = () => {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ownedAudioTrackRef = useRef<MediaStreamTrack | null>(null)
   const cleanupFailureRef = useRef(false)
+  const acceptedFinalEligibleRef = useRef(false)
+  const acceptedFinalSubmittedRef = useRef(false)
+
+  acceptedBrowserFinalHandlerRef.current = (recognizedText) => {
+    const preflight = parentPreflight.value
+    if (acceptedFinalSubmittedRef.current) {
+      setStatus('accepted_final_duplicate_rejected')
+      return
+    }
+    if (!preflight || !acceptedFinalEligibleRef.current) {
+      setStatus('accepted_final_outside_active_attempt_rejected')
+      return
+    }
+
+    acceptedFinalSubmittedRef.current = true
+    acceptedFinalEligibleRef.current = false
+    let envelope
+    try {
+      envelope = createAcceptedPreparedSampleSpeechEnvelope({
+        conversationAttemptRef: preflight.conversationAttemptRef,
+        selectedSampleId: preflight.selectedSampleId,
+        recognizedText,
+        generatedAt: new Date().toISOString(),
+      })
+    } catch {
+      setStatus('accepted_final_invalid_rejected')
+      return
+    }
+
+    setStatus('accepted_candidate_request_pending')
+    void submitAcceptedPreparedSampleBrowserSpeech(envelope).then(
+      () => setStatus('accepted_candidate_request_completed'),
+      () => setStatus('accepted_candidate_request_failed')
+    )
+  }
 
   explicitAudioTrackCleanupFailedHandlerRef.current = () => {
     if (cleanupFailureRef.current) return
@@ -301,6 +340,7 @@ const PreparedSampleSttOperator = () => {
       }
     }
     return () => {
+      acceptedFinalEligibleRef.current = false
       releaseOwnedAudioTrack()
       delete privateWindow.__preparedSampleSttReleaseAudioTrack
       delete privateWindow.__preparedSampleSttFinalizeAudioInput
@@ -320,6 +360,7 @@ const PreparedSampleSttOperator = () => {
     }
 
     attemptActiveRef.current = false
+    acceptedFinalEligibleRef.current = false
     setDrainFinalizationPending(false)
     completionInFlightRef.current = true
     clearAttemptTimeout()
@@ -413,6 +454,7 @@ const PreparedSampleSttOperator = () => {
       finalResultCountRef.current = 0
       latestTranscriptRef.current = ''
       attemptActiveRef.current = true
+      acceptedFinalEligibleRef.current = false
       cleanupFailureRef.current = false
       setDrainFinalizationPending(false)
       const track = await acquireExplicitAudioTrack()
@@ -433,12 +475,14 @@ const PreparedSampleSttOperator = () => {
         }
         return
       }
+      acceptedFinalEligibleRef.current = true
       timeoutRef.current = setTimeout(() => {
         void finishAttempt(true)
       }, PREPARED_SAMPLE_ATTEMPT_TIMEOUT_MS)
       setStatus('attempt_listening')
     } catch (error) {
       attemptActiveRef.current = false
+      acceptedFinalEligibleRef.current = false
       releaseOwnedAudioTrack()
       if (!cleanupFailureRef.current) {
         setStatus(
@@ -457,8 +501,8 @@ const PreparedSampleSttOperator = () => {
     <main className="mx-auto max-w-2xl space-y-4 p-6">
       <h1>Prepared Sample Browser STT</h1>
       <p>
-        Parent-preflight-bound browser recognition only. This surface does not
-        materialize a Thought Core turn.
+        Parent-preflight-bound browser recognition only. One accepted final may
+        create one private Thought Core request for the retained attempt ref.
       </p>
       <p data-testid="prepared-sample-parent-preflight">
         {parentPreflight.value

@@ -1,5 +1,6 @@
 import {
   PREPARED_SAMPLE_ATTEMPT_COUNT,
+  createAcceptedPreparedSampleSpeechEnvelope,
   createPreparedSampleRun,
   recordPreparedSampleAttempt,
   summarizePreparedSampleRun,
@@ -261,5 +262,99 @@ describe('preparedSampleBrowserStt', () => {
         textPublication: publication,
       }).conversationAttemptRef
     ).toBe(conversationAttemptRef)
+  })
+
+  it('creates one textless canonical candidate paired with one private turn', () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: '  prepared private speech  ',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+
+    expect(envelope.private_turn).toEqual({
+      text: 'prepared private speech',
+      turn_id: 'prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+      session_id: 'prepared_sample_browser_stt_operator',
+      locale: 'ja-JP',
+      context_refs: { conversation_attempt_ref: conversationAttemptRef },
+    })
+    expect(envelope.accepted_user_speech_candidate).toMatchObject({
+      schema_version: 'accepted_user_speech_candidate_input_gate.v0',
+      candidate_id:
+        'ausc_prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+      candidate_route: 'prepared_sample_browser_stt',
+      acceptance_decision: {
+        acceptance_status: 'accepted_user_speech_candidate',
+        may_materialize_thought_core_turninput: true,
+        private_text_handoff_required: true,
+        shared_artifact_contains_text: false,
+        thought_core_turninput_materialized: false,
+        thought_core_turninput_count: 0,
+        thought_core_turninput_ref: null,
+        turn_materialization_route: 'separate_private_runtime_handoff_required',
+      },
+    })
+    expect(
+      JSON.stringify(envelope.accepted_user_speech_candidate)
+    ).not.toContain('prepared private speech')
+    expect(envelope.accepted_user_speech_candidate.text_publication).toEqual({
+      text_publication_policy: 'text_redacted_or_absent',
+      text_provenance_class: 'redacted_or_absent',
+      expected_sample_text: null,
+      recognized_text: null,
+      content_match_text: null,
+      non_sample_or_live_text_policy: 'protected_or_redacted',
+    })
+  })
+
+  it.each([
+    '',
+    'raw-private-marker',
+    'C:\\private\\attempt.wav',
+    'm4.prepared_sample_attempt0123456789abcdef0123456789abcdef',
+    'm4.prepared_sample_attempt:0123456789ABCDEF0123456789abcdef',
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef0',
+  ])(
+    'fails closed without echoing an invalid attempt ref: %p',
+    (invalidRef) => {
+      expect(() =>
+        createAcceptedPreparedSampleSpeechEnvelope({
+          conversationAttemptRef: invalidRef,
+          selectedSampleId: 'voice.local_sample_001',
+          recognizedText: 'private speech',
+          generatedAt: '2026-07-13T01:02:03.000Z',
+        })
+      ).toThrow(
+        'conversationAttemptRef must be a canonical prepared sample attempt reference'
+      )
+    }
+  )
+
+  it('rejects empty or oversized private text and non-canonical timestamps', () => {
+    const base = {
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    }
+    expect(() =>
+      createAcceptedPreparedSampleSpeechEnvelope({
+        ...base,
+        recognizedText: ' ',
+      })
+    ).toThrow('recognizedText must be a bounded private turn')
+    expect(() =>
+      createAcceptedPreparedSampleSpeechEnvelope({
+        ...base,
+        recognizedText: 'x'.repeat(4_001),
+      })
+    ).toThrow('recognizedText must be a bounded private turn')
+    expect(() =>
+      createAcceptedPreparedSampleSpeechEnvelope({
+        ...base,
+        recognizedText: 'private speech',
+        generatedAt: '2026-07-13',
+      })
+    ).toThrow('generatedAt must be a canonical UTC timestamp')
   })
 })

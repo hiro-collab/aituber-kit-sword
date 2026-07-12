@@ -10,6 +10,10 @@ jest.mock('fs', () => ({
 
 import type { NextApiRequest, NextApiResponse } from 'next'
 import path from 'path'
+import { createAcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampleBrowserStt'
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
 function createMockReq(
   overrides: Partial<NextApiRequest> = {}
@@ -57,6 +61,74 @@ function createMockRes() {
     _headers: Record<string, string>
     _chunks: Uint8Array[]
     _ended: boolean
+  }
+}
+
+const canonicalConversationAttemptRef =
+  'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+const coreMotionEventId = 'evt_0123456789abcdef0123456789abcdef'
+const coreMotionTimestamp = '2026-07-13T01:02:04.000Z'
+
+function createCoreMotionRequestedEvent(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const data = {
+    schema_version: 'motion_stimulus.v0',
+    motion_event_id: 'mot_evt_prepared_sample_001',
+    stimulus_id: 'mot_stim_prepared_sample_expression',
+    stimulus_instance_id: 'mot_inst_prepared_sample_001',
+    source_class: 'user_command',
+    source_family: 'user_or_operator_command',
+    source_origin: 'thought_core',
+    requested_at: coreMotionTimestamp,
+    kind: 'expression',
+    request_mode: 'apply',
+    phase: 'queued',
+    lifecycle_state: 'queued',
+    safe_visible_state: 'requested',
+    target_model_type: 'vrm',
+    requirements: {
+      required_tracks: ['expression'],
+      provider_detail: 'SECRET_UNPROJECTED_NESTED_VALUE',
+    },
+    trace: {
+      event_id: coreMotionEventId,
+      turn_id: 'prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+      selection_id: 'mot_sel_prepared_sample_001',
+      runtime_result_id: 'mot_res_prepared_sample_pending_001',
+      motion_event_id: 'mot_evt_prepared_sample_001',
+      stimulus_id: 'mot_stim_prepared_sample_expression',
+      stimulus_instance_id: 'mot_inst_prepared_sample_001',
+    },
+    redaction: {
+      redaction_status: 'summary_only',
+    },
+  }
+  const overrideData = isRecord(overrides.data) ? overrides.data : {}
+  return {
+    type: 'motion.requested',
+    event_id: coreMotionEventId,
+    timestamp: coreMotionTimestamp,
+    turn_id: 'prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+    session_id: 'prepared_sample_browser_stt_operator',
+    seq: 1,
+    source: 'thought-core',
+    conversation_attempt_ref: canonicalConversationAttemptRef,
+    ...overrides,
+    data: { ...data, ...overrideData },
+  }
+}
+
+async function readByteStream(
+  stream: ReadableStream<Uint8Array> | null
+): Promise<Uint8Array[]> {
+  if (!stream) return []
+  const chunks: Uint8Array[] = []
+  const reader = stream.getReader()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) return chunks
+    chunks.push(value)
   }
 }
 
@@ -217,6 +289,454 @@ describe('/api/thoughtCoreChat', () => {
     })
   })
 
+  it('forwards one exact accepted candidate/private turn and records only the validated motion envelope ref', async () => {
+    const stateDir = path.resolve('C:/tmp/home-control-stack-live')
+    process.env.HOME_CONTROL_STACK_STATE_DIR = stateDir
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef: canonicalConversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'SECRET_PRIVATE_PREPARED_SPEECH',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify(createCoreMotionRequestedEvent())}\n\n`
+          )
+        )
+        controller.close()
+      },
+    })
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    ) as any
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const mockedFs = jest.requireMock('fs') as {
+      appendFileSync: jest.Mock
+    }
+    const res = createMockRes()
+
+    await handler(
+      createMockReq({
+        body: {
+          ...envelope,
+          stream: true,
+          contextRefs: {
+            conversation_attempt_ref:
+              'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210',
+            arbitrary_payload: 'SECRET_ARBITRARY_CONTEXT',
+          },
+        },
+      }),
+      res
+    )
+
+    expect(res._status).toBe(200)
+    expect(res._chunks).toEqual([])
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const coreBody = JSON.parse(
+      (global.fetch as jest.Mock).mock.calls[0][1].body
+    )
+    expect(coreBody).toEqual(envelope)
+    const traceLines = mockedFs.appendFileSync.mock.calls
+      .filter(([filePath]) =>
+        String(filePath).endsWith('thought-core-chat-events.jsonl')
+      )
+      .map(([, line]) => JSON.parse(String(line)))
+    const completed = traceLines.find(
+      (event) => event.event === 'stream_completed'
+    )
+    expect(completed.notable_events).toEqual([
+      expect.objectContaining({
+        type: 'motion.requested',
+        event_id: coreMotionEventId,
+        timestamp: coreMotionTimestamp,
+        conversation_attempt_ref: canonicalConversationAttemptRef,
+        summary: {
+          schema_version: 'motion_stimulus.v0',
+          motion_event_id: 'mot_evt_prepared_sample_001',
+          stimulus_id: 'mot_stim_prepared_sample_expression',
+          stimulus_instance_id: 'mot_inst_prepared_sample_001',
+          phase: 'queued',
+          lifecycle_state: 'queued',
+          safe_visible_state: 'requested',
+          requested_at: coreMotionTimestamp,
+          trace: { event_id: coreMotionEventId },
+        },
+      }),
+    ])
+    const serializedTrace = JSON.stringify(traceLines)
+    expect(serializedTrace).not.toContain('SECRET_PRIVATE_PREPARED_SPEECH')
+    expect(serializedTrace).not.toContain('SECRET_UNPROJECTED_NESTED_VALUE')
+    expect(serializedTrace).not.toContain('SECRET_ARBITRARY_CONTEXT')
+    expect(serializedTrace).not.toContain(
+      'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
+    )
+  })
+
+  it.each([
+    ['missing', undefined],
+    ['malformed', 'raw-private-marker'],
+    ['path-like', 'C:\\private\\attempt.wav'],
+    ['oversized', `m4.prepared_sample_attempt:${'0'.repeat(33)}`],
+    ['changed', 'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'],
+  ])(
+    'rejects a %s accepted-speech ref with a fixed non-echoing error',
+    async (_label, replacementRef) => {
+      const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+        conversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+        selectedSampleId: 'voice.local_sample_001',
+        recognizedText: 'SECRET_PRIVATE_PREPARED_SPEECH',
+        generatedAt: '2026-07-13T01:02:03.000Z',
+      }) as any
+      if (replacementRef === undefined) {
+        delete envelope.private_turn.context_refs.conversation_attempt_ref
+      } else {
+        envelope.private_turn.context_refs.conversation_attempt_ref =
+          replacementRef
+      }
+      const handler = require('@/pages/api/thoughtCoreChat').default
+      const res = createMockRes()
+
+      await handler(createMockReq({ body: envelope }), res)
+
+      expect(res._status).toBe(400)
+      expect(res._json).toEqual({
+        error: 'Accepted prepared-sample speech envelope is invalid',
+        errorCode: 'AIInvalidProperty',
+      })
+      expect(JSON.stringify(res._json)).not.toContain(String(replacementRef))
+      expect(global.fetch).not.toHaveBeenCalled()
+    }
+  )
+
+  it('normalizes an accepted-route upstream HTTP body in trace, console, and API response', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef: canonicalConversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'SECRET_PRIVATE_PREPARED_SPEECH',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: 'SECRET_PROVIDER_HTTP_BODY_C:\\private\\provider.json',
+        }),
+        {
+          status: 502,
+          statusText: 'SECRET_PROVIDER_STATUS_TEXT',
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    ) as any
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {})
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const res = createMockRes()
+
+    await handler(createMockReq({ body: { ...envelope, stream: true } }), res)
+
+    expect(res._status).toBe(502)
+    expect(res._json).toEqual({
+      error: 'Accepted private Thought Core upstream request failed',
+      errorCode: 'AIAPIError',
+      detail: 'accepted_private_upstream_http_error',
+    })
+    const mockedFs = jest.requireMock('fs') as {
+      appendFileSync: jest.Mock
+    }
+    const serialized = JSON.stringify({
+      response: res._json,
+      console: consoleError.mock.calls,
+      traces: mockedFs.appendFileSync.mock.calls,
+    })
+    expect(serialized).toContain('accepted_private_upstream_http_error')
+    expect(serialized).not.toContain('SECRET_PROVIDER_HTTP_BODY')
+    expect(serialized).not.toContain('SECRET_PROVIDER_STATUS_TEXT')
+    expect(serialized).not.toContain('private\\provider.json')
+    consoleError.mockRestore()
+  })
+
+  it('normalizes an accepted-route thrown exception in trace, console, and API response', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef: canonicalConversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'SECRET_PRIVATE_PREPARED_SPEECH',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(
+        new Error('SECRET_THROWN_PROVIDER_PATH_C:\\private\\provider.json')
+      ) as any
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {})
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const res = createMockRes()
+
+    await handler(createMockReq({ body: { ...envelope, stream: true } }), res)
+
+    expect(res._status).toBe(500)
+    expect(res._json).toEqual({
+      error: 'Accepted private Thought Core upstream exception',
+      errorCode: 'AIAPIError',
+      detail: 'accepted_private_upstream_exception',
+    })
+    const mockedFs = jest.requireMock('fs') as {
+      appendFileSync: jest.Mock
+    }
+    const serialized = JSON.stringify({
+      response: res._json,
+      console: consoleError.mock.calls,
+      traces: mockedFs.appendFileSync.mock.calls,
+    })
+    expect(serialized).toContain('accepted_private_upstream_exception')
+    expect(serialized).not.toContain('SECRET_THROWN_PROVIDER_PATH')
+    expect(serialized).not.toContain('private\\provider.json')
+    consoleError.mockRestore()
+  })
+
+  it('normalizes accepted-route stream errors before trace or client publication', async () => {
+    const {
+      createTracedThoughtCoreStream,
+    } = require('@/pages/api/thoughtCoreChat')
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(
+          new Error('SECRET_STREAM_PROVIDER_PATH_C:\\private\\stream.json')
+        )
+      },
+    })
+    const traced = createTracedThoughtCoreStream(upstream, {
+      query: 'accepted_prepared_sample_private_turn',
+      startedAt: Date.now(),
+      turnId: 'prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+      sessionId: 'prepared_sample_browser_stt_operator',
+      privateAcceptedSpeechRoute: true,
+      expectedConversationAttemptRef: canonicalConversationAttemptRef,
+    })
+
+    await expect(readByteStream(traced)).rejects.toThrow(
+      'accepted_private_stream_error'
+    )
+    const mockedFs = jest.requireMock('fs') as {
+      appendFileSync: jest.Mock
+    }
+    const serialized = JSON.stringify(mockedFs.appendFileSync.mock.calls)
+    expect(serialized).toContain('accepted_private_stream_error')
+    expect(serialized).not.toContain('SECRET_STREAM_PROVIDER_PATH')
+    expect(serialized).not.toContain('private\\stream.json')
+  })
+
+  it('passes only the fixed accepted-route stream error to the API console boundary', async () => {
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef: canonicalConversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'SECRET_PRIVATE_PREPARED_SPEECH',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(
+          new Error('SECRET_PIPE_PROVIDER_PATH_C:\\private\\pipe.json')
+        )
+      },
+    })
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    ) as any
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {})
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const res = createMockRes()
+
+    await handler(createMockReq({ body: { ...envelope, stream: true } }), res)
+
+    expect(res._status).toBe(200)
+    expect(res._chunks).toEqual([])
+    expect(res._ended).toBe(true)
+    const mockedFs = jest.requireMock('fs') as {
+      appendFileSync: jest.Mock
+    }
+    const serialized = JSON.stringify({
+      console: consoleError.mock.calls,
+      traces: mockedFs.appendFileSync.mock.calls,
+    })
+    expect(serialized).toContain('accepted_private_stream_error')
+    expect(serialized).not.toContain('SECRET_PIPE_PROVIDER_PATH')
+    expect(serialized).not.toContain('private\\pipe.json')
+    consoleError.mockRestore()
+  })
+
+  it('normalizes accepted-route cancellation before trace or upstream publication', async () => {
+    const {
+      createTracedThoughtCoreStream,
+    } = require('@/pages/api/thoughtCoreChat')
+    const upstreamCancel = jest.fn()
+    const upstream = new ReadableStream<Uint8Array>({
+      cancel: upstreamCancel,
+    })
+    const traced = createTracedThoughtCoreStream(upstream, {
+      query: 'accepted_prepared_sample_private_turn',
+      startedAt: Date.now(),
+      turnId: 'prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+      sessionId: 'prepared_sample_browser_stt_operator',
+      privateAcceptedSpeechRoute: true,
+      expectedConversationAttemptRef: canonicalConversationAttemptRef,
+    })
+
+    await traced?.cancel(
+      new Error('SECRET_CANCEL_PROVIDER_PATH_C:\\private\\cancel.json')
+    )
+
+    expect(upstreamCancel).toHaveBeenCalledWith(
+      'accepted_private_stream_cancelled'
+    )
+    const mockedFs = jest.requireMock('fs') as {
+      appendFileSync: jest.Mock
+    }
+    const serialized = JSON.stringify(mockedFs.appendFileSync.mock.calls)
+    expect(serialized).toContain('accepted_private_stream_cancelled')
+    expect(serialized).not.toContain('SECRET_CANCEL_PROVIDER_PATH')
+    expect(serialized).not.toContain('private\\cancel.json')
+  })
+
+  it.each([
+    [
+      'missing ref',
+      (event: Record<string, unknown>) => {
+        delete event.conversation_attempt_ref
+      },
+      undefined,
+    ],
+    [
+      'malformed ref',
+      (event: Record<string, unknown>) => {
+        event.conversation_attempt_ref = 'raw-private-marker'
+      },
+      'raw-private-marker',
+    ],
+    [
+      'changed ref',
+      (event: Record<string, unknown>) => {
+        event.conversation_attempt_ref =
+          'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
+      },
+      'fedcba9876543210fedcba9876543210',
+    ],
+    [
+      'invalid top event id',
+      (event: Record<string, unknown>) => {
+        event.event_id = 'C:\\private\\event.json'
+      },
+      'C:\\private\\event.json',
+    ],
+    [
+      'invalid top timestamp',
+      (event: Record<string, unknown>) => {
+        event.timestamp = 'SECRET_PRIVATE_TIMESTAMP'
+      },
+      'SECRET_PRIVATE_TIMESTAMP',
+    ],
+    [
+      'deep projected field',
+      (event: Record<string, unknown>) => {
+        ;(event.data as Record<string, unknown>).motion_event_id = {
+          nested: { provider_detail: 'SECRET_DEEP_PROVIDER_DETAIL' },
+        }
+      },
+      'SECRET_DEEP_PROVIDER_DETAIL',
+    ],
+    [
+      'oversized projected field',
+      (event: Record<string, unknown>) => {
+        ;(event.data as Record<string, unknown>).stimulus_id =
+          `mot_${'x'.repeat(256)}`
+      },
+      'x'.repeat(256),
+    ],
+    [
+      'private marker under a projected field',
+      (event: Record<string, unknown>) => {
+        ;(event.data as Record<string, unknown>).stimulus_instance_id =
+          'mot_inst_private_provider_001'
+      },
+      'mot_inst_private_provider_001',
+    ],
+    [
+      'deep extra trace field',
+      (event: Record<string, unknown>) => {
+        const data = event.data as Record<string, unknown>
+        data.trace = {
+          ...(data.trace as Record<string, unknown>),
+          provider_detail: {
+            nested: 'SECRET_TRACE_NESTING',
+          },
+        }
+      },
+      'SECRET_TRACE_NESTING',
+    ],
+  ])(
+    'rejects %s without publishing the rejected value',
+    async (_label, mutate, forbiddenValue) => {
+      const {
+        createTracedThoughtCoreStream,
+      } = require('@/pages/api/thoughtCoreChat')
+      const event = createCoreMotionRequestedEvent()
+      mutate(event)
+      const encoder = new TextEncoder()
+      const upstream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          )
+          controller.close()
+        },
+      })
+      const traced = createTracedThoughtCoreStream(upstream, {
+        query: 'accepted_prepared_sample_private_turn',
+        startedAt: Date.now(),
+        turnId: 'prepared_sample_browser_stt_0123456789abcdef0123456789abcdef',
+        sessionId: 'prepared_sample_browser_stt_operator',
+        privateAcceptedSpeechRoute: true,
+        expectedConversationAttemptRef: canonicalConversationAttemptRef,
+      })
+
+      await expect(readByteStream(traced)).resolves.toEqual([])
+
+      const mockedFs = jest.requireMock('fs') as {
+        appendFileSync: jest.Mock
+      }
+      const traceLines = mockedFs.appendFileSync.mock.calls
+        .filter(([filePath]) =>
+          String(filePath).endsWith('thought-core-chat-events.jsonl')
+        )
+        .map(([, line]) => JSON.parse(String(line)))
+      const completed = traceLines.find(
+        (entry) => entry.event === 'stream_completed'
+      )
+      expect(completed).toMatchObject({
+        notable_event_count: 0,
+      })
+      expect(completed).not.toHaveProperty('notable_events')
+      if (forbiddenValue) {
+        expect(JSON.stringify(traceLines)).not.toContain(forbiddenValue)
+      }
+    }
+  )
+
   it('writes Thought Core trace logs under HOME_CONTROL_STACK_STATE_DIR', async () => {
     const stateDir = path.resolve('C:/tmp/home-control-stack-live')
     process.env.HOME_CONTROL_STACK_STATE_DIR = stateDir
@@ -323,57 +843,27 @@ describe('/api/thoughtCoreChat', () => {
           access_token: 'SECRET_ACCESS_TOKEN',
         },
       },
-      {
-        type: 'motion.requested',
-        event_id: 'event-motion-requested',
+      createCoreMotionRequestedEvent({
         turn_id: 'turn_stream_001',
         session_id: 'session-stream',
         seq: 4,
         data: {
-          schema_version: 'motion_stimulus.v0',
-          motion_event_id: 'mot_evt_turn_stream_001',
-          stimulus_id: 'mot_stim_turn_stream_dance_sequence',
-          stimulus_instance_id: 'mot_inst_turn_stream_001',
-          source_class: 'user_command',
-          source_origin: 'thought_core',
-          requested_at: '2026-06-12T06:30:00.000Z',
-          kind: 'dance_sequence',
-          request_mode: 'play',
-          phase: 'requested',
-          lifecycle_state: 'request_issued',
-          safe_visible_state: 'motion_requested',
-          target_model_type: 'vrm',
-          payload_ref: 'motion.thought_core.dance_sequence.v0',
-          track_mask: { scope: 'full_body' },
-          requirements: { visible_motion: true },
-          trace: {
-            event_id: 'event-motion-requested',
-            turn_id: 'turn_stream_001',
-            session_id: 'session-stream',
-            request_id: 'motion-request-stream',
-            runtime_result_id: 'mot_res_turn_stream_pending_001',
-            driver_result_id: 'DRIVER_RESULT_SHOULD_NOT_LOG',
-          },
-          is_home_action: true,
-          entity_id: 'light_living_room',
           raw_prompt: 'SECRET_RAW_MOTION_PROMPT',
           provider_payload: 'SECRET_PROVIDER_PAYLOAD',
           private_path: 'SECRET_PRIVATE_PATH',
-          redaction: {
-            shared_summary_only: true,
-            contains_raw_prompt: false,
-            contains_raw_transcript: false,
-            contains_provider_payload: false,
-          },
         },
-      },
+      }),
       {
         type: 'assistant.speech_delta',
         event_id: 'event-answer',
         turn_id: 'turn_stream_001',
         session_id: 'session-stream',
         seq: 5,
-        data: { delta: 'hello' },
+        data: {
+          delta: 'hello',
+          conversation_attempt_ref:
+            'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+        },
       },
     ]
     const body = new ReadableStream<Uint8Array>({
@@ -462,25 +952,29 @@ describe('/api/thoughtCoreChat', () => {
         }),
         expect.objectContaining({
           type: 'motion.requested',
-          event_id: 'event-motion-requested',
-          summary: expect.objectContaining({
+          event_id: coreMotionEventId,
+          timestamp: coreMotionTimestamp,
+          conversation_attempt_ref: canonicalConversationAttemptRef,
+          summary: {
             schema_version: 'motion_stimulus.v0',
-            motion_event_id: 'mot_evt_turn_stream_001',
-            stimulus_id: 'mot_stim_turn_stream_dance_sequence',
-            stimulus_instance_id: 'mot_inst_turn_stream_001',
-            kind: 'dance_sequence',
-            request_mode: 'play',
-            payload_ref: 'motion.thought_core.dance_sequence.v0',
-            target_model_type: 'vrm',
-            trace: expect.objectContaining({
-              runtime_result_id: 'mot_res_turn_stream_pending_001',
-            }),
-          }),
+            motion_event_id: 'mot_evt_prepared_sample_001',
+            stimulus_id: 'mot_stim_prepared_sample_expression',
+            stimulus_instance_id: 'mot_inst_prepared_sample_001',
+            phase: 'queued',
+            lifecycle_state: 'queued',
+            safe_visible_state: 'requested',
+            requested_at: coreMotionTimestamp,
+            trace: { event_id: coreMotionEventId },
+          },
         }),
       ])
     )
     const motionEvent = completedEvent.notable_events.find(
       (event: { type?: string }) => event.type === 'motion.requested'
+    )
+    expect(motionEvent).toHaveProperty(
+      'conversation_attempt_ref',
+      canonicalConversationAttemptRef
     )
     expect(JSON.stringify(motionEvent)).not.toContain('is_home_action')
     expect(JSON.stringify(motionEvent)).not.toContain('entity_id')
@@ -496,6 +990,6 @@ describe('/api/thoughtCoreChat', () => {
     expect(completedLine).not.toContain('SECRET_RAW_MOTION_PROMPT')
     expect(completedLine).not.toContain('SECRET_PROVIDER_PAYLOAD')
     expect(completedLine).not.toContain('SECRET_PRIVATE_PATH')
-    expect(completedLine).not.toContain('DRIVER_RESULT_SHOULD_NOT_LOG')
+    expect(completedLine).not.toContain('SECRET_UNPROJECTED_NESTED_VALUE')
   })
 })
