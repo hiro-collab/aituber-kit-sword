@@ -14,6 +14,7 @@ export const ATTEMPT_COUNT = 5
 export const INTEGRATED_ATTEMPT_COUNT = 1
 export const ATTEMPT_TIMEOUT_MS = 10_000
 export const ROUTE_TIMEOUT_MS = 90_000
+export const PRESENTATION_TIMEOUT_MS = 30_000
 export const ROUTE_CANCEL_SETTLE_MS = 2_000
 export const OPERATOR_PORT = 3000
 export const AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT = 'system_default'
@@ -735,7 +736,7 @@ export const runPreparedSampleController = async ({
           AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
         ) {
           await runRouteStep(signal, () =>
-            adapter.waitForAcceptedCandidateCompletion(ATTEMPT_TIMEOUT_MS)
+            adapter.waitForAcceptedCandidateCompletion(PRESENTATION_TIMEOUT_MS)
           )
         }
 
@@ -1096,6 +1097,33 @@ export const stopTrackedServer = async ({
   return { serverMode: 'none', serverChild: null }
 }
 
+export const openCanonicalPresentationPages = async ({
+  context,
+  operatorUrl,
+  timeoutMs = PRESENTATION_TIMEOUT_MS,
+}) => {
+  const projectionPage = context.pages()[0] ?? (await context.newPage())
+  const projectionUrl = new URL('/projection-visual', operatorUrl).href
+  await projectionPage.goto(projectionUrl, { waitUntil: 'domcontentloaded' })
+  await projectionPage.waitForFunction(
+    () =>
+      typeof window.__openPreparedSamplePresentationOperator === 'function',
+    undefined,
+    { timeout: timeoutMs }
+  )
+  const operatorPagePromise = context.waitForEvent('page', {
+    timeout: timeoutMs,
+  })
+  await projectionPage.evaluate((targetUrl) => {
+    if (!window.__openPreparedSamplePresentationOperator?.(targetUrl)) {
+      throw new Error('canonical_presentation_owner_unavailable')
+    }
+  }, operatorUrl)
+  const operatorPage = await operatorPagePromise
+  await operatorPage.waitForLoadState('domcontentloaded')
+  return { projectionPage, operatorPage }
+}
+
 export const createRuntimeAdapter = ({
   operatorUrl,
   audioPath,
@@ -1111,6 +1139,7 @@ export const createRuntimeAdapter = ({
   let serverChild = null
   let context = initialContext
   let page = initialPage
+  let projectionPage = null
   let profileDirectory = null
   let serverMode = 'none'
   let externalServerIdentity = null
@@ -1175,7 +1204,10 @@ export const createRuntimeAdapter = ({
           channel: 'chrome',
           headless: false,
           timeout: 30_000,
-          args: ['--use-fake-ui-for-media-stream'],
+          args: [
+            '--use-fake-ui-for-media-stream',
+            '--disable-popup-blocking',
+          ],
           env: createPublicChildEnvironment(),
         })
         if (signal) throwIfRouteAborted(signal)
@@ -1183,8 +1215,7 @@ export const createRuntimeAdapter = ({
           origin: 'http://127.0.0.1:3000',
         })
         if (signal) throwIfRouteAborted(signal)
-        page = context.pages()[0] ?? (await context.newPage())
-        await page.addInitScript((expectedLocale) => {
+        await context.addInitScript((expectedLocale) => {
           window.__preparedSampleSttCounts = {
             resultCount: 0,
             finalCount: 0,
@@ -1210,7 +1241,12 @@ export const createRuntimeAdapter = ({
           })
         }, locale)
         if (signal) throwIfRouteAborted(signal)
-        await page.goto(operatorUrl, { waitUntil: 'domcontentloaded' })
+        const pages = await openCanonicalPresentationPages({
+          context,
+          operatorUrl,
+        })
+        projectionPage = pages.projectionPage
+        page = pages.operatorPage
         if (signal) throwIfRouteAborted(signal)
         await page.getByTestId('prepared-sample-stt-status').waitFor({
           state: 'visible',
@@ -1592,6 +1628,7 @@ export const createRuntimeAdapter = ({
     },
     async closeBrowser() {
       const closingPage = page
+      const closingProjectionPage = projectionPage
       const closingContext = context
       let cleanupFailed = false
       try {
@@ -1626,6 +1663,20 @@ export const createRuntimeAdapter = ({
           } catch {
             cleanupFailed = true
           }
+          try {
+            await closingPage.close()
+          } catch {
+            cleanupFailed = true
+          }
+        }
+        if (closingProjectionPage && !closingProjectionPage.isClosed()) {
+          try {
+            await closingProjectionPage.evaluate(() => {
+              delete window.__openPreparedSamplePresentationOperator
+            })
+          } catch {
+            cleanupFailed = true
+          }
         }
         try {
           await closingContext?.close()
@@ -1635,6 +1686,7 @@ export const createRuntimeAdapter = ({
       } finally {
         context = null
         page = null
+        projectionPage = null
       }
       if (cleanupFailed) throw new ControllerError('cleanup_incomplete')
     },

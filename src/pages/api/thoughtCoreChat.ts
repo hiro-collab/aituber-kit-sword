@@ -99,6 +99,11 @@ const ACCEPTED_PRIVATE_UPSTREAM_EXCEPTION =
   'accepted_private_upstream_exception'
 const ACCEPTED_PRIVATE_STREAM_ERROR = 'accepted_private_stream_error'
 const ACCEPTED_PRIVATE_STREAM_CANCELLED = 'accepted_private_stream_cancelled'
+const ACCEPTED_PRESENTATION_ASSISTANT_EVENT =
+  'accepted.presentation.assistant_delta'
+const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
+const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
+const MAX_ACCEPTED_ASSISTANT_DELTA_LENGTH = 4_000
 const RAW_TEXT_KEYS =
   /(?:^|_)(?:answer|content|delta|message|prompt|query|raw|speech|text|transcript|utterance)(?:_|$)/i
 const SENSITIVE_TRACE_KEYS =
@@ -315,6 +320,190 @@ function projectMotionRequestedNotableEvent(
   }
 }
 
+function projectPresentationMotionPayload(
+  value: unknown
+): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  const allowed = new Set([
+    'schema_version',
+    'motion_event_id',
+    'stimulus_id',
+    'stimulus_instance_id',
+    'source_class',
+    'source_origin',
+    'requested_at',
+    'kind',
+    'request_mode',
+    'phase',
+    'lifecycle_state',
+    'safe_visible_state',
+    'target_model_type',
+    'payload_ref',
+    'duration_ms',
+    'loop',
+    'interrupt_policy',
+    'fallback_state',
+    'stop_reason',
+    'track_mask',
+    'requirements',
+    'trace',
+    'redaction',
+  ])
+  const nestedKeys: Record<string, Set<string>> = {
+    track_mask: new Set(['scope', 'channel', 'channels']),
+    requirements: new Set([
+      'required_tracks',
+      'optional_tracks',
+      'compatible_model_types',
+      'provenance_required',
+      'allow_degraded',
+      'allow_fallback',
+      'expression_profile_ref',
+      'expected_visible_change',
+      'expected_roi',
+    ]),
+    trace: CORE_MOTION_TRACE_KEYS,
+    redaction: new Set([
+      'redaction_status',
+      'redaction_profile',
+      'shareability_class',
+      'proof_layer',
+    ]),
+  }
+  const projectNested = (
+    key: string,
+    nested: Record<string, unknown>
+  ): Record<string, unknown> | null => {
+    const keyAllowlist = nestedKeys[key]
+    if (!keyAllowlist) return null
+    const result: Record<string, unknown> = {}
+    for (const [nestedKey, nestedValue] of Object.entries(nested)) {
+      if (!keyAllowlist.has(nestedKey)) continue
+      if (typeof nestedValue === 'boolean' || typeof nestedValue === 'number') {
+        result[nestedKey] = nestedValue
+      } else if (typeof nestedValue === 'string') {
+        if (
+          nestedValue.length > 256 ||
+          PRIVATE_MOTION_IDENTIFIER_MARKER.test(nestedValue) ||
+          /(?:https?:\/\/|file:\/\/|[A-Za-z]:[\\/]|\\\\)/.test(nestedValue)
+        ) {
+          return null
+        }
+        result[nestedKey] = nestedValue
+      } else if (
+        Array.isArray(nestedValue) &&
+        nestedValue.length <= 32 &&
+        nestedValue.every(
+          (item) =>
+            typeof item === 'string' &&
+            BOUNDED_MOTION_IDENTIFIER_PATTERN.test(item) &&
+            !PRIVATE_MOTION_IDENTIFIER_MARKER.test(item)
+        )
+      ) {
+        result[nestedKey] = [...nestedValue]
+      } else {
+        return null
+      }
+    }
+    return Object.keys(result).length > 0 ? result : null
+  }
+  const projected: Record<string, unknown> = {}
+  for (const [key, nested] of Object.entries(value)) {
+    if (!allowed.has(key)) continue
+    if (typeof nested === 'string') {
+      if (
+        nested.length > 256 ||
+        PRIVATE_MOTION_IDENTIFIER_MARKER.test(nested) ||
+        /(?:https?:\/\/|file:\/\/|[A-Za-z]:[\\/]|\\\\)/.test(nested)
+      ) {
+        return null
+      }
+      projected[key] = nested
+    } else if (
+      typeof nested === 'number' ||
+      typeof nested === 'boolean' ||
+      nested === null
+    ) {
+      projected[key] = nested
+    } else if (Array.isArray(nested)) {
+      if (
+        nested.length > 32 ||
+        !nested.every(
+          (item) =>
+            typeof item === 'string' &&
+            BOUNDED_MOTION_IDENTIFIER_PATTERN.test(item) &&
+            !PRIVATE_MOTION_IDENTIFIER_MARKER.test(item)
+        )
+      ) {
+        return null
+      }
+      projected[key] = [...nested]
+    } else if (isRecord(nested)) {
+      const safe = projectNested(key, nested)
+      if (!safe) return null
+      projected[key] = safe
+    } else {
+      return null
+    }
+  }
+  return projected
+}
+
+function projectAcceptedPresentationEvent(
+  eventType: string,
+  data: Record<string, unknown>,
+  expectedConversationAttemptRef?: string
+): Record<string, unknown> | null {
+  const assistantPayload = isRecord(data.data) ? data.data : null
+  const candidateConversationAttemptRef =
+    eventType === 'assistant.speech_delta'
+      ? assistantPayload?.conversation_attempt_ref
+      : data.conversation_attempt_ref
+  const conversationAttemptRef = safeConversationAttemptRef(
+    candidateConversationAttemptRef
+  )
+  if (
+    !expectedConversationAttemptRef ||
+    !conversationAttemptRef ||
+    conversationAttemptRef !== expectedConversationAttemptRef
+  ) {
+    return null
+  }
+  if (eventType === 'assistant.speech_delta') {
+    const delta = assistantPayload?.delta
+    if (
+      typeof delta !== 'string' ||
+      !delta ||
+      delta.length > MAX_ACCEPTED_ASSISTANT_DELTA_LENGTH
+    ) {
+      return null
+    }
+    return {
+      type: ACCEPTED_PRESENTATION_ASSISTANT_EVENT,
+      data: {
+        conversation_attempt_ref: conversationAttemptRef,
+        delta,
+      },
+    }
+  }
+  if (eventType === MOTION_REQUESTED_EVENT_TYPE) {
+    const notable = projectMotionRequestedNotableEvent(
+      data,
+      expectedConversationAttemptRef
+    )
+    const payload = projectPresentationMotionPayload(data.data)
+    if (!notable || !payload) return null
+    return {
+      type: ACCEPTED_PRESENTATION_MOTION_EVENT,
+      data: {
+        conversation_attempt_ref: conversationAttemptRef,
+        event: { type: MOTION_REQUESTED_EVENT_TYPE, data: payload },
+      },
+    }
+  }
+  return null
+}
+
 function buildNotableThoughtCoreEvent(
   eventType: string,
   data: Record<string, unknown>,
@@ -529,6 +718,7 @@ export function createTracedThoughtCoreStream(
 
   const reader = body.getReader()
   const decoder = new TextDecoder('utf-8')
+  const encoder = new TextEncoder()
   const eventCounts: Record<string, number> = {}
   let buffer = ''
   let answerChars = 0
@@ -543,6 +733,9 @@ export function createTracedThoughtCoreStream(
   const notableEvents: Record<string, unknown>[] = []
   let firstAnswerLogged = false
   let completedLogged = false
+  let acceptedPresentationAssistantSeen = false
+  let acceptedPresentationMotionSeen = false
+  let acceptedPresentationInvalid = false
 
   const query = truncate(String(context.query ?? ''), 180)
   const traceContext = () => ({
@@ -587,7 +780,8 @@ export function createTracedThoughtCoreStream(
     }
   }
 
-  const processText = (text: string) => {
+  const processText = (text: string): Record<string, unknown>[] => {
+    const presentationEvents: Record<string, unknown>[] = []
     buffer += text
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
@@ -652,6 +846,32 @@ export function createTracedThoughtCoreStream(
           }
         }
 
+        if (context.privateAcceptedSpeechRoute) {
+          const presentationEvent = projectAcceptedPresentationEvent(
+            eventType,
+            data as Record<string, unknown>,
+            context.expectedConversationAttemptRef
+          )
+          if (presentationEvent) {
+            if (eventType === 'assistant.speech_delta') {
+              acceptedPresentationAssistantSeen = true
+              presentationEvents.push(presentationEvent)
+            } else if (eventType === MOTION_REQUESTED_EVENT_TYPE) {
+              if (acceptedPresentationMotionSeen) {
+                acceptedPresentationInvalid = true
+              } else {
+                acceptedPresentationMotionSeen = true
+                presentationEvents.push(presentationEvent)
+              }
+            }
+          } else if (
+            eventType === 'assistant.speech_delta' ||
+            eventType === MOTION_REQUESTED_EVENT_TYPE
+          ) {
+            acceptedPresentationInvalid = true
+          }
+        }
+
         const payload =
           data?.data && typeof data.data === 'object' ? data.data : {}
         const answer =
@@ -690,8 +910,12 @@ export function createTracedThoughtCoreStream(
         }
       } catch {
         eventCounts.unparseable = (eventCounts.unparseable || 0) + 1
+        if (context.privateAcceptedSpeechRoute) {
+          acceptedPresentationInvalid = true
+        }
       }
     }
+    return presentationEvents
   }
 
   return new ReadableStream<Uint8Array>({
@@ -701,7 +925,29 @@ export function createTracedThoughtCoreStream(
           const { done, value } = await reader.read()
           if (done) {
             if (buffer) {
-              processText('\n')
+              for (const event of processText('\n')) {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+                )
+              }
+            }
+            if (
+              context.privateAcceptedSpeechRoute &&
+              context.expectedConversationAttemptRef &&
+              acceptedPresentationAssistantSeen &&
+              !acceptedPresentationInvalid
+            ) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    type: ACCEPTED_PRESENTATION_COMPLETED_EVENT,
+                    data: {
+                      conversation_attempt_ref:
+                        context.expectedConversationAttemptRef,
+                    },
+                  })}\n\n`
+                )
+              )
             }
             logCompletion('stream_completed')
             controller.close()
@@ -710,7 +956,17 @@ export function createTracedThoughtCoreStream(
           }
 
           if (value) {
-            processText(decoder.decode(value, { stream: true }))
+            const presentationEvents = processText(
+              decoder.decode(value, { stream: true })
+            )
+            if (context.privateAcceptedSpeechRoute) {
+              for (const event of presentationEvents) {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+                )
+              }
+              if (presentationEvents.length > 0) return
+            }
           }
           if (!context.privateAcceptedSpeechRoute && value) {
             controller.enqueue(value)

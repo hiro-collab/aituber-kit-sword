@@ -1,11 +1,13 @@
 import {
   handleSendChatFn,
   handleReceiveTextFromWsFn,
+  presentAcceptedPreparedSampleAssistantResponse,
   processAIResponse,
   speakMessageHandler,
 } from '../../../features/chat/handlers'
 import { getAIChatResponseStream } from '../../../features/chat/aiChatFactory'
 import { speakCharacter } from '../../../features/messages/speakCharacter'
+import { SpeakQueue } from '../../../features/messages/speakQueue'
 import homeStore from '../../../features/stores/home'
 import settingsStore from '../../../features/stores/settings'
 import slideStore from '../../../features/stores/slide'
@@ -20,6 +22,10 @@ jest.mock('../../../features/chat/aiChatFactory', () => ({
 
 jest.mock('../../../features/messages/speakCharacter', () => ({
   speakCharacter: jest.fn(),
+}))
+
+jest.mock('../../../features/messages/speakQueue', () => ({
+  SpeakQueue: { stopAll: jest.fn() },
 }))
 
 jest.mock('../../../components/slides', () => ({
@@ -58,6 +64,153 @@ describe('handlers', () => {
     delete (window as any).__projectionVisualSpeechOutputSummaryV0
     delete (window as any).__projectionVisualSpeechOutputParityV0
   })
+
+  it('presents one private-route assistant bubble through configured VOICEVOX without a user message', async () => {
+    let chatProcessingCount = 0
+    const upsertMessage = jest.fn()
+    ;(settingsStore.getState as jest.Mock).mockReturnValue({
+      selectVoice: 'voicevox',
+    })
+    ;(homeStore.getState as jest.Mock).mockImplementation(() => ({
+      chatProcessingCount,
+      upsertMessage,
+      incrementChatProcessingCount: () => {
+        chatProcessingCount += 1
+      },
+      decrementChatProcessingCount: () => {
+        chatProcessingCount -= 1
+      },
+    }))
+    ;(speakCharacter as jest.Mock).mockImplementationOnce(
+      (_sessionId, _talk, onStart, onComplete) => {
+        onStart?.()
+        onComplete?.()
+      }
+    )
+
+    await presentAcceptedPreparedSampleAssistantResponse(
+      {
+        conversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+        assistantSpeech: '統合された返答です。',
+      },
+      {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      }
+    )
+
+    expect(upsertMessage).toHaveBeenCalledTimes(2)
+    expect(upsertMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        role: 'assistant',
+        content: '統合された返答です。',
+        conversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+      })
+    )
+    expect(upsertMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'user' })
+    )
+    expect(speakCharacter).toHaveBeenCalledTimes(1)
+    expect((speakCharacter as jest.Mock).mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        message: '統合された返答です。',
+        sourceConversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+      })
+    )
+  })
+
+  it('aborts the route-owned presentation without late completion', async () => {
+    let chatProcessingCount = 0
+    const upsertMessage = jest.fn()
+    ;(settingsStore.getState as jest.Mock).mockReturnValue({
+      selectVoice: 'voicevox',
+    })
+    ;(homeStore.getState as jest.Mock).mockImplementation(() => ({
+      chatProcessingCount,
+      upsertMessage,
+      incrementChatProcessingCount: () => {
+        chatProcessingCount += 1
+      },
+      decrementChatProcessingCount: () => {
+        chatProcessingCount -= 1
+      },
+    }))
+    ;(speakCharacter as jest.Mock).mockImplementationOnce(
+      (_sessionId, _talk, onStart) => onStart?.()
+    )
+    const controller = new AbortController()
+    const presentation = presentAcceptedPreparedSampleAssistantResponse(
+      {
+        conversationAttemptRef:
+          'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+        assistantSpeech: '中断される返答です。',
+      },
+      { signal: controller.signal, deadlineMs: 30_000 }
+    )
+    controller.abort()
+
+    await expect(presentation).rejects.toThrow(
+      'accepted_prepared_sample_presentation_failed'
+    )
+    expect(SpeakQueue.stopAll).toHaveBeenCalledTimes(1)
+    expect(homeStore.setState).toHaveBeenCalledWith(expect.any(Function))
+  })
+
+  it.each(['punctuation_only', 'synchronous_speaker_throw'])(
+    'rolls back route-owned bubble for presenter failure %s',
+    async (failureClass) => {
+      const upsertMessage = jest.fn()
+      ;(settingsStore.getState as jest.Mock).mockReturnValue({
+        selectVoice: 'voicevox',
+      })
+      ;(homeStore.getState as jest.Mock).mockReturnValue({
+        chatProcessingCount: 0,
+        upsertMessage,
+        incrementChatProcessingCount: jest.fn(),
+        decrementChatProcessingCount: jest.fn(),
+      })
+      if (failureClass === 'synchronous_speaker_throw') {
+        ;(speakCharacter as jest.Mock).mockImplementationOnce(() => {
+          throw new Error('PRIVATE_SPEAKER_DETAIL')
+        })
+      }
+      await expect(
+        presentAcceptedPreparedSampleAssistantResponse(
+          {
+            conversationAttemptRef:
+              'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+            assistantSpeech:
+              failureClass === 'punctuation_only' ? '!!!' : '通常の返答です。',
+          },
+          {
+            signal: new AbortController().signal,
+            deadlineMs: 30_000,
+          }
+        )
+      ).rejects.toThrow('accepted_prepared_sample_presentation_failed')
+      expect(SpeakQueue.stopAll).toHaveBeenCalledTimes(1)
+      const rollbackCall = (homeStore.setState as jest.Mock).mock.calls.find(
+        ([value]) => typeof value === 'function'
+      )
+      expect(rollbackCall).toBeDefined()
+      const rolledBack = rollbackCall[0]({
+        chatLog: [
+          { id: 'unrelated', role: 'assistant', content: 'keep' },
+          {
+            id: upsertMessage.mock.calls[0][0].id,
+            role: 'assistant',
+            content: 'remove',
+          },
+        ],
+      })
+      expect(rolledBack.chatLog).toEqual([
+        { id: 'unrelated', role: 'assistant', content: 'keep' },
+      ])
+    }
+  )
 
   describe('handleSendChatFn', () => {
     it('メッセージが空の場合は処理を行わない', async () => {

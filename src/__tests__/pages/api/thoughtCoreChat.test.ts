@@ -87,8 +87,16 @@ function createCoreMotionRequestedEvent(
     lifecycle_state: 'queued',
     safe_visible_state: 'requested',
     target_model_type: 'vrm',
+    payload_ref: 'motion.thought_core.expression_visible.v0',
+    track_mask: {
+      scope: 'face_head',
+      channels: ['expression_weight'],
+    },
     requirements: {
       required_tracks: ['expression'],
+      expression_profile_ref: 'motion.runtime.vrm_expression_weights.v0',
+      expected_visible_change: 'face_expression',
+      expected_roi: 'avatar_face_head',
       provider_detail: 'SECRET_UNPROJECTED_NESTED_VALUE',
     },
     trace: {
@@ -306,6 +314,18 @@ describe('/api/thoughtCoreChat', () => {
             `data: ${JSON.stringify(createCoreMotionRequestedEvent())}\n\n`
           )
         )
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: 'assistant.speech_delta',
+              data: {
+                delta: '統合された返答',
+                conversation_attempt_ref: canonicalConversationAttemptRef,
+                provider_payload: 'SECRET_PROVIDER_FIELD',
+              },
+            })}\n\n`
+          )
+        )
         controller.close()
       },
     })
@@ -337,7 +357,39 @@ describe('/api/thoughtCoreChat', () => {
     )
 
     expect(res._status).toBe(200)
-    expect(res._chunks).toEqual([])
+    const projected = new TextDecoder().decode(
+      Uint8Array.from(res._chunks.flatMap((chunk) => [...chunk]))
+    )
+    const projectedEvents = projected
+      .trim()
+      .split('\n\n')
+      .map((line) => JSON.parse(line.replace(/^data:\s*/, '')))
+    expect(projectedEvents.map((event) => event.type)).toEqual([
+      'accepted.presentation.motion',
+      'accepted.presentation.assistant_delta',
+      'accepted.presentation.completed',
+    ])
+    expect(projectedEvents).toHaveLength(3)
+    expect(Object.keys(projectedEvents[0].data).sort()).toEqual([
+      'conversation_attempt_ref',
+      'event',
+    ])
+    expect(projectedEvents[0].data.conversation_attempt_ref).toBe(
+      canonicalConversationAttemptRef
+    )
+    expect(projectedEvents[0].data.event.type).toBe('motion.requested')
+    expect(Object.keys(projectedEvents[1].data).sort()).toEqual([
+      'conversation_attempt_ref',
+      'delta',
+    ])
+    expect(projectedEvents[2]).toEqual({
+      type: 'accepted.presentation.completed',
+      data: { conversation_attempt_ref: canonicalConversationAttemptRef },
+    })
+    expect(projected).toContain(canonicalConversationAttemptRef)
+    expect(projected).toContain('統合された返答')
+    expect(projected).not.toContain('SECRET_PROVIDER_FIELD')
+    expect(projected).not.toContain('SECRET_UNPROJECTED_NESTED_VALUE')
     expect(global.fetch).toHaveBeenCalledTimes(1)
     const coreBody = JSON.parse(
       (global.fetch as jest.Mock).mock.calls[0][1].body
@@ -700,6 +752,17 @@ describe('/api/thoughtCoreChat', () => {
       const upstream = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                type: 'assistant.speech_delta',
+                data: {
+                  delta: '安全な返答',
+                  conversation_attempt_ref: canonicalConversationAttemptRef,
+                },
+              })}\n\n`
+            )
+          )
+          controller.enqueue(
             encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
           )
           controller.close()
@@ -714,7 +777,13 @@ describe('/api/thoughtCoreChat', () => {
         expectedConversationAttemptRef: canonicalConversationAttemptRef,
       })
 
-      await expect(readByteStream(traced)).resolves.toEqual([])
+      const chunks = await readByteStream(traced)
+      const projected = new TextDecoder().decode(
+        Uint8Array.from(chunks.flatMap((chunk) => [...chunk]))
+      )
+      expect(projected).toContain('accepted.presentation.assistant_delta')
+      expect(projected).not.toContain('accepted.presentation.motion')
+      expect(projected).not.toContain('accepted.presentation.completed')
 
       const mockedFs = jest.requireMock('fs') as {
         appendFileSync: jest.Mock
@@ -736,6 +805,87 @@ describe('/api/thoughtCoreChat', () => {
       }
     }
   )
+
+  it('suppresses success terminal for duplicate projected motion', async () => {
+    const {
+      createTracedThoughtCoreStream,
+    } = require('@/pages/api/thoughtCoreChat')
+    const encoder = new TextEncoder()
+    const motion = createCoreMotionRequestedEvent()
+    const assistant = {
+      type: 'assistant.speech_delta',
+      data: {
+        delta: '安全な返答',
+        conversation_attempt_ref: canonicalConversationAttemptRef,
+        arbitrary_payload: 'SECRET_ARBITRARY_FIELD',
+      },
+    }
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of [assistant, motion, motion]) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          )
+        }
+        controller.close()
+      },
+    })
+    const traced = createTracedThoughtCoreStream(upstream, {
+      query: 'accepted_prepared_sample_private_turn',
+      startedAt: Date.now(),
+      privateAcceptedSpeechRoute: true,
+      expectedConversationAttemptRef: canonicalConversationAttemptRef,
+    })
+    const chunks = await readByteStream(traced)
+    const serialized = new TextDecoder().decode(
+      Uint8Array.from(chunks.flatMap((chunk) => [...chunk]))
+    )
+    expect(serialized.match(/accepted\.presentation\.motion/g)).toHaveLength(1)
+    expect(serialized).toContain('accepted.presentation.assistant_delta')
+    expect(serialized).not.toContain('accepted.presentation.completed')
+    expect(serialized).not.toContain('SECRET_ARBITRARY_FIELD')
+  })
+
+  it('suppresses success terminal after malformed private SSE without echo', async () => {
+    const {
+      createTracedThoughtCoreStream,
+    } = require('@/pages/api/thoughtCoreChat')
+    const encoder = new TextEncoder()
+    const malformed = 'SECRET_MALFORMED_PRIVATE_{'
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: 'assistant.speech_delta',
+              data: {
+                delta: '安全な返答',
+                conversation_attempt_ref: canonicalConversationAttemptRef,
+              },
+            })}\n\n`
+          )
+        )
+        controller.enqueue(encoder.encode(`data: ${malformed}\n\n`))
+        controller.close()
+      },
+    })
+    const traced = createTracedThoughtCoreStream(upstream, {
+      query: 'accepted_prepared_sample_private_turn',
+      startedAt: Date.now(),
+      privateAcceptedSpeechRoute: true,
+      expectedConversationAttemptRef: canonicalConversationAttemptRef,
+    })
+    const chunks = await readByteStream(traced)
+    const projected = new TextDecoder().decode(
+      Uint8Array.from(chunks.flatMap((chunk) => [...chunk]))
+    )
+    expect(projected).toContain('accepted.presentation.assistant_delta')
+    expect(projected).not.toContain('accepted.presentation.completed')
+    expect(projected).not.toContain(malformed)
+    const mockedFs = jest.requireMock('fs') as { appendFileSync: jest.Mock }
+    const serializedTrace = JSON.stringify(mockedFs.appendFileSync.mock.calls)
+    expect(serializedTrace).not.toContain(malformed)
+  })
 
   it('writes Thought Core trace logs under HOME_CONTROL_STACK_STATE_DIR', async () => {
     const stateDir = path.resolve('C:/tmp/home-control-stack-live')

@@ -35,6 +35,11 @@ import {
 } from '@/utils/projectionVisualQuery'
 import { ProjectionVisualStimulusRefBridge } from '@/features/motionRuntime/projectionVisualStimulusRefBridge'
 import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motionRuntime/motionRuntimeSession'
+import {
+  registerAcceptedPreparedSamplePresentationOwner,
+  requestAcceptedPreparedSamplePresentation,
+} from '@/features/chat/thoughtCoreChat'
+import { presentAcceptedPreparedSampleAssistantResponse } from '@/features/chat/handlers'
 import '@/lib/i18n'
 
 const projectionVisualAIService = ((): 'thought-core' | null => {
@@ -176,6 +181,34 @@ const ProjectionVisual = () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [characterPresets, isDisplayOnlyMode, t])
+
+  useEffect(() => {
+    if (isDisplayOnlyMode || !controlOwner.isOwner) return
+    const registration = registerAcceptedPreparedSamplePresentationOwner(
+      (envelope, options) =>
+        requestAcceptedPreparedSamplePresentation(
+          envelope,
+          presentAcceptedPreparedSampleAssistantResponse,
+          options
+        )
+    )
+    const privateWindow = window as Window & {
+      __openPreparedSamplePresentationOperator?: (url: string) => boolean
+    }
+    Object.defineProperty(
+      privateWindow,
+      '__openPreparedSamplePresentationOperator',
+      {
+        value: (url: string) => Boolean(registration.openOperator(url)),
+        configurable: true,
+        enumerable: false,
+      }
+    )
+    return () => {
+      delete privateWindow.__openPreparedSamplePresentationOperator
+      registration.dispose()
+    }
+  }, [controlOwner.isOwner, isDisplayOnlyMode])
 
   return (
     <div

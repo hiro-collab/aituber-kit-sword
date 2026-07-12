@@ -1,6 +1,7 @@
 import { getAIChatResponseStream } from '@/features/chat/aiChatFactory'
 import { Message, EmotionType } from '@/features/messages/messages'
 import { speakCharacter } from '@/features/messages/speakCharacter'
+import { SpeakQueue } from '@/features/messages/speakQueue'
 import { judgeSlide } from '@/features/slide/slideAIHelpers'
 import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
@@ -20,8 +21,10 @@ import { THINKING_MARKER } from '@/features/chat/vercelAIChat'
 import { compactReviewProofMessage } from '@/utils/reviewProofMessage'
 import {
   buildSpeechOutputSummary,
+  safeConversationAttemptRef,
   writeWindowSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
+import type { AcceptedPreparedSamplePresentation } from './thoughtCoreChat'
 
 // セッションIDを生成する関数
 const generateSessionId = () => generateMessageId()
@@ -218,6 +221,7 @@ type AssistantSpeechLink = {
   assistantTurnId?: string
   conversationAttemptRef?: string
   displayMessage?: string
+  onComplete?: () => void
 }
 
 const publishAssistantDisplayMessage = (
@@ -310,10 +314,99 @@ const handleSpeakAndStateUpdate = (
       homeStore.setState({
         slideMessages: [...currentSlideMessagesRef.current],
       })
+      speechLink.onComplete?.()
     }
   )
 
   return true
+}
+
+export const presentAcceptedPreparedSampleAssistantResponse = async (
+  presentation: AcceptedPreparedSamplePresentation,
+  options: { signal: AbortSignal; deadlineMs: number }
+): Promise<void> => {
+  const conversationAttemptRef = safeConversationAttemptRef(
+    presentation.conversationAttemptRef
+  )
+  const assistantSpeech = presentation.assistantSpeech.trim()
+  if (
+    !conversationAttemptRef ||
+    conversationAttemptRef !== presentation.conversationAttemptRef ||
+    !assistantSpeech ||
+    assistantSpeech.length > 8_000 ||
+    settingsStore.getState().selectVoice !== 'voicevox' ||
+    options.signal.aborted ||
+    options.deadlineMs !== 30_000
+  ) {
+    throw new Error('accepted_prepared_sample_presentation_failed')
+  }
+
+  const sessionId = `accepted_${conversationAttemptRef.slice(-32)}`
+  const messageId = generateMessageId()
+  const currentSlideMessagesRef = { current: [] as string[] }
+  const assistantMessageListRef = { current: [] as string[] }
+  homeStore.setState({ chatProcessing: true })
+  publishAssistantDisplayMessage(
+    messageId,
+    assistantSpeech,
+    undefined,
+    conversationAttemptRef
+  )
+  homeStore.getState().upsertMessage({
+    id: messageId,
+    role: 'assistant',
+    content: assistantSpeech,
+    conversationAttemptRef,
+  })
+
+  let presentationRolledBack = false
+  const cancelPresentation = () => {
+    if (presentationRolledBack) return
+    presentationRolledBack = true
+    SpeakQueue.stopAll()
+    homeStore.setState((state) => ({
+      chatLog: state.chatLog.filter((message) => message.id !== messageId),
+      chatProcessing: false,
+    }))
+  }
+  options.signal.addEventListener('abort', cancelPresentation, { once: true })
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const rejectAbort = () =>
+        reject(new Error('accepted_prepared_sample_presentation_failed'))
+      options.signal.addEventListener('abort', rejectAbort, { once: true })
+      const complete = () => {
+        options.signal.removeEventListener('abort', rejectAbort)
+        resolve()
+      }
+      const started = handleSpeakAndStateUpdate(
+        sessionId,
+        assistantSpeech,
+        '',
+        assistantMessageListRef,
+        currentSlideMessagesRef,
+        undefined,
+        {
+          assistantMessageId: messageId,
+          assistantTurnId: sessionId,
+          conversationAttemptRef,
+          displayMessage: assistantSpeech,
+          onComplete: complete,
+        }
+      )
+      if (!started) {
+        options.signal.removeEventListener('abort', rejectAbort)
+        reject(new Error('accepted_prepared_sample_presentation_failed'))
+      }
+    })
+  } catch {
+    cancelPresentation()
+    throw new Error('accepted_prepared_sample_presentation_failed')
+  } finally {
+    options.signal.removeEventListener('abort', cancelPresentation)
+    homeStore.setState({ chatProcessing: false })
+  }
 }
 
 /**

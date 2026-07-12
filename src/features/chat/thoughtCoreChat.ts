@@ -17,6 +17,36 @@ export type ThoughtCoreResponseMetadata = {
   conversationAttemptRef?: string
 }
 
+export type AcceptedPreparedSamplePresentation = {
+  conversationAttemptRef: string
+  assistantSpeech: string
+}
+
+type AcceptedPreparedSamplePresentationOwner = (
+  envelope: AcceptedPreparedSampleSpeechEnvelope,
+  options: { signal: AbortSignal; deadlineMs: number }
+) => Promise<void>
+
+type PreparedSamplePresentationBridgeMessage = {
+  type:
+    | 'presentation_probe'
+    | 'presentation_ready'
+    | 'presentation_request'
+    | 'presentation_ack'
+    | 'presentation_completed'
+    | 'presentation_cancelled'
+    | 'presentation_failed'
+  conversation_attempt_ref: string
+  envelope?: AcceptedPreparedSampleSpeechEnvelope
+}
+
+export const PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS = 30_000
+const ACCEPTED_PRESENTATION_FAILED = 'accepted_prepared_sample_request_failed'
+const ACCEPTED_PRESENTATION_ASSISTANT_EVENT =
+  'accepted.presentation.assistant_delta'
+const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
+const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
+
 const THOUGHT_CORE_MOTION_REQUEST_EVENT = 'motion.requested'
 const MOTION_STIMULUS_SCHEMA_VERSION = 'motion_stimulus.v0'
 const DANCE_SEQUENCE_KIND = 'dance_sequence'
@@ -498,35 +528,341 @@ function hasExpressionVisibleRequirements(value: unknown): boolean {
   )
 }
 
+function readEnvelopeConversationAttemptRef(
+  envelope: AcceptedPreparedSampleSpeechEnvelope
+): string | null {
+  const value = safeConversationAttemptRef(
+    envelope.private_turn.context_refs.conversation_attempt_ref
+  )
+  return value &&
+    value === envelope.private_turn.context_refs.conversation_attempt_ref
+    ? value
+    : null
+}
+
+function isBridgeMessage(
+  value: unknown
+): value is PreparedSamplePresentationBridgeMessage {
+  if (!isRecord(value)) return false
+  const conversationAttemptRef = safeConversationAttemptRef(
+    value.conversation_attempt_ref
+  )
+  return Boolean(
+    conversationAttemptRef &&
+    conversationAttemptRef === value.conversation_attempt_ref &&
+    typeof value.type === 'string'
+  )
+}
+
+export function registerAcceptedPreparedSamplePresentationOwner(
+  owner: AcceptedPreparedSamplePresentationOwner
+): {
+  openOperator: (url: string) => WindowProxy
+  dispose: () => void
+} {
+  if (typeof window === 'undefined')
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+  const ownerWindow = window as Window & {
+    __preparedSamplePresentationOwnerActive?: boolean
+  }
+  if (ownerWindow.__preparedSamplePresentationOwnerActive) {
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+  }
+  ownerWindow.__preparedSamplePresentationOwnerActive = true
+  let expectedChild: WindowProxy | null = null
+  const ports = new Set<MessagePort>()
+  const requests = new Map<
+    string,
+    {
+      promise: Promise<void>
+      controller: AbortController
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
+  let disposed = false
+
+  const handleWindowMessage = (event: MessageEvent) => {
+    if (
+      disposed ||
+      event.origin !== window.location.origin ||
+      !expectedChild ||
+      event.source !== expectedChild ||
+      event.ports.length !== 1 ||
+      !isBridgeMessage(event.data) ||
+      event.data.type !== 'presentation_probe'
+    ) {
+      return
+    }
+    const conversationAttemptRef = event.data.conversation_attempt_ref
+    const port = event.ports[0]
+    ports.add(port)
+    port.onmessage = (portEvent) => {
+      if (
+        !isBridgeMessage(portEvent.data) ||
+        portEvent.data.conversation_attempt_ref !== conversationAttemptRef
+      ) {
+        return
+      }
+      if (portEvent.data.type === 'presentation_cancelled') {
+        requests.get(conversationAttemptRef)?.controller.abort()
+        return
+      }
+      if (portEvent.data.type !== 'presentation_request') return
+      const envelope = portEvent.data.envelope
+      if (
+        !envelope ||
+        readEnvelopeConversationAttemptRef(envelope) !== conversationAttemptRef
+      ) {
+        port.postMessage({
+          type: 'presentation_failed',
+          conversation_attempt_ref: conversationAttemptRef,
+        } satisfies PreparedSamplePresentationBridgeMessage)
+        return
+      }
+      port.postMessage({
+        type: 'presentation_ack',
+        conversation_attempt_ref: conversationAttemptRef,
+      } satisfies PreparedSamplePresentationBridgeMessage)
+      let request = requests.get(conversationAttemptRef)
+      if (!request) {
+        const controller = new AbortController()
+        const timer = setTimeout(
+          () => controller.abort(),
+          PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS
+        )
+        const promise = owner(envelope, {
+          signal: controller.signal,
+          deadlineMs: PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS,
+        }).finally(() => clearTimeout(timer))
+        request = { promise, controller, timer }
+        requests.set(conversationAttemptRef, request)
+      }
+      void request.promise.then(
+        () =>
+          port.postMessage({
+            type: 'presentation_completed',
+            conversation_attempt_ref: conversationAttemptRef,
+          } satisfies PreparedSamplePresentationBridgeMessage),
+        () =>
+          port.postMessage({
+            type: 'presentation_failed',
+            conversation_attempt_ref: conversationAttemptRef,
+          } satisfies PreparedSamplePresentationBridgeMessage)
+      )
+    }
+    port.postMessage({
+      type: 'presentation_ready',
+      conversation_attempt_ref: conversationAttemptRef,
+    } satisfies PreparedSamplePresentationBridgeMessage)
+    port.start()
+  }
+  window.addEventListener('message', handleWindowMessage)
+
+  return {
+    openOperator(url) {
+      if (disposed || (expectedChild && !expectedChild.closed)) {
+        throw new Error(ACCEPTED_PRESENTATION_FAILED)
+      }
+      const parsed = new URL(url, window.location.href)
+      if (
+        parsed.origin !== window.location.origin ||
+        parsed.pathname !== '/operator/prepared-sample-stt'
+      ) {
+        throw new Error(ACCEPTED_PRESENTATION_FAILED)
+      }
+      const child = window.open(parsed.href, '_blank')
+      if (!child) throw new Error(ACCEPTED_PRESENTATION_FAILED)
+      expectedChild = child
+      return child
+    },
+    dispose() {
+      if (disposed) return
+      disposed = true
+      window.removeEventListener('message', handleWindowMessage)
+      for (const request of requests.values()) {
+        clearTimeout(request.timer)
+        request.controller.abort()
+      }
+      for (const port of ports) port.close()
+      requests.clear()
+      ports.clear()
+      expectedChild = null
+      delete ownerWindow.__preparedSamplePresentationOwnerActive
+    },
+  }
+}
+
 export async function submitAcceptedPreparedSampleBrowserSpeech(
   envelope: AcceptedPreparedSampleSpeechEnvelope
 ): Promise<void> {
+  const conversationAttemptRef = readEnvelopeConversationAttemptRef(envelope)
+  if (
+    !conversationAttemptRef ||
+    typeof window === 'undefined' ||
+    !window.opener ||
+    window.opener === window ||
+    window.opener.closed
+  ) {
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+  }
+  const portChannel = new MessageChannel()
+  const port = portChannel.port1
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let cancelled = false
+  const cancel = () => {
+    if (cancelled) return
+    cancelled = true
+    port.postMessage({
+      type: 'presentation_cancelled',
+      conversation_attempt_ref: conversationAttemptRef,
+    } satisfies PreparedSamplePresentationBridgeMessage)
+  }
+  window.addEventListener('pagehide', cancel, { once: true })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let requestSent = false
+      let acknowledged = false
+      timeout = setTimeout(
+        () => reject(new Error(ACCEPTED_PRESENTATION_FAILED)),
+        PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS
+      )
+      port.onmessage = (message) => {
+        if (
+          !isBridgeMessage(message.data) ||
+          message.data.conversation_attempt_ref !== conversationAttemptRef
+        ) {
+          return
+        }
+        if (message.data.type === 'presentation_ready' && !requestSent) {
+          requestSent = true
+          port.postMessage({
+            type: 'presentation_request',
+            conversation_attempt_ref: conversationAttemptRef,
+            envelope,
+          } satisfies PreparedSamplePresentationBridgeMessage)
+        } else if (message.data.type === 'presentation_ack') {
+          acknowledged = true
+        } else if (
+          message.data.type === 'presentation_completed' &&
+          acknowledged
+        ) {
+          resolve()
+        } else if (message.data.type === 'presentation_failed') {
+          reject(new Error(ACCEPTED_PRESENTATION_FAILED))
+        }
+      }
+      window.opener.postMessage(
+        {
+          type: 'presentation_probe',
+          conversation_attempt_ref: conversationAttemptRef,
+        } satisfies PreparedSamplePresentationBridgeMessage,
+        window.location.origin,
+        [portChannel.port2]
+      )
+      port.start()
+    })
+  } catch {
+    cancel()
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    window.removeEventListener('pagehide', cancel)
+    port.close()
+  }
+}
+
+export async function requestAcceptedPreparedSamplePresentation(
+  envelope: AcceptedPreparedSampleSpeechEnvelope,
+  presentAssistant: (
+    presentation: AcceptedPreparedSamplePresentation,
+    options: { signal: AbortSignal; deadlineMs: number }
+  ) => Promise<void>,
+  options: { signal: AbortSignal; deadlineMs: number }
+): Promise<void> {
+  const expectedRef = readEnvelopeConversationAttemptRef(envelope)
+  if (!expectedRef) throw new Error(ACCEPTED_PRESENTATION_FAILED)
   try {
     const response = await fetch('/api/thoughtCoreChat/', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         accepted_user_speech_candidate: envelope.accepted_user_speech_candidate,
         private_turn: envelope.private_turn,
         stream: true,
       }),
+      signal: options.signal,
     })
-    if (!response.ok || !response.body) {
-      throw new Error('accepted_prepared_sample_request_failed')
-    }
+    if (!response.ok || !response.body) throw new Error()
 
     const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    let assistantSpeech = ''
+    let completed = false
+    let readerCancelled = false
+    let normalCompletion = false
+    const motionEvents: unknown[] = []
     try {
-      while (!(await reader.read()).done) {
-        // The private route intentionally discards every upstream byte.
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const rawLine of lines) {
+          const line = rawLine.trim()
+          if (!line.startsWith('data:')) continue
+          const parsed = JSON.parse(line.slice(5).trim()) as unknown
+          if (!isRecord(parsed) || !isRecord(parsed.data)) throw new Error()
+          if (completed) throw new Error()
+          const ref = safeConversationAttemptRef(
+            parsed.data.conversation_attempt_ref
+          )
+          if (!ref || ref !== expectedRef) throw new Error()
+          if (parsed.type === ACCEPTED_PRESENTATION_ASSISTANT_EVENT) {
+            const delta = parsed.data.delta
+            if (typeof delta !== 'string' || !delta || delta.length > 4_000) {
+              throw new Error()
+            }
+            assistantSpeech += delta
+            if (assistantSpeech.length > 8_000) throw new Error()
+          } else if (parsed.type === ACCEPTED_PRESENTATION_MOTION_EVENT) {
+            if (motionEvents.length > 0) throw new Error()
+            motionEvents.push(parsed.data.event)
+          } else if (parsed.type === ACCEPTED_PRESENTATION_COMPLETED_EVENT) {
+            completed = true
+          } else {
+            throw new Error()
+          }
+        }
       }
+      normalCompletion = completed
+    } catch (error) {
+      if (!readerCancelled) {
+        readerCancelled = true
+        await reader.cancel(ACCEPTED_PRESENTATION_FAILED).catch(() => undefined)
+      }
+      throw error
     } finally {
       reader.releaseLock()
     }
+    if (!completed || !assistantSpeech.trim()) throw new Error()
+    if (
+      motionEvents.some((event) => !extractThoughtCoreMotionStimulus(event))
+    ) {
+      throw new Error()
+    }
+    if (!normalCompletion || options.signal.aborted) throw new Error()
+    await presentAssistant(
+      { conversationAttemptRef: expectedRef, assistantSpeech },
+      options
+    )
+    if (options.signal.aborted) throw new Error()
+    for (const motionEvent of motionEvents) {
+      if (!dispatchThoughtCoreMotionStimulus(motionEvent)) throw new Error()
+    }
   } catch {
-    throw new Error('accepted_prepared_sample_request_failed')
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
   }
 }
 

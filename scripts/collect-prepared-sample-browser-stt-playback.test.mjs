@@ -12,6 +12,7 @@ import {
   BROWSER_PLAYBACK_GAIN_DB,
   BROWSER_PLAYBACK_GAIN_LINEAR,
   INTEGRATED_ATTEMPT_COUNT,
+  PRESENTATION_TIMEOUT_MS,
   ROUTE_CANCEL_SETTLE_MS,
   ROUTE_TIMEOUT_MS,
   SAFE_PUBLIC_CHILD_ENV_KEYS,
@@ -20,6 +21,7 @@ import {
   classifyFixedAudioEndpointSelection,
   createPublicChildEnvironment,
   createRuntimeAdapter,
+  openCanonicalPresentationPages,
   releaseBrowserRoutedPlayback,
   requireBrowserAudioAvailability,
   resolveOperatorServerMode,
@@ -30,6 +32,53 @@ import {
   validateRouteOptions,
   waitForAcceptedCandidateCompletion,
 } from './collect-prepared-sample-browser-stt-playback.mjs'
+
+test('opens Projection Visual first and then its exact operator child', async () => {
+  const order = []
+  const operatorPage = {
+    async waitForLoadState(state) {
+      order.push(`operator:${state}`)
+    },
+  }
+  const projectionPage = {
+    async goto(url, options) {
+      order.push(`projection:${url}:${options.waitUntil}`)
+    },
+    async waitForFunction(_predicate, _argument, options) {
+      assert.equal(options.timeout, PRESENTATION_TIMEOUT_MS)
+      order.push('projection:owner-ready')
+    },
+    async evaluate(_callback, targetUrl) {
+      order.push(`projection:open-child:${targetUrl}`)
+    },
+  }
+  const context = {
+    pages: () => [projectionPage],
+    async waitForEvent(event, options) {
+      assert.equal(event, 'page')
+      assert.equal(options.timeout, PRESENTATION_TIMEOUT_MS)
+      order.push('context:wait-child')
+      return operatorPage
+    },
+  }
+
+  const pages = await openCanonicalPresentationPages({
+    context,
+    operatorUrl: 'http://127.0.0.1:3000/operator/prepared-sample-stt?opaque=1',
+  })
+
+  assert.equal(pages.projectionPage, projectionPage)
+  assert.equal(pages.operatorPage, operatorPage)
+  assert.deepEqual(order, [
+    'projection:http://127.0.0.1:3000/projection-visual:domcontentloaded',
+    'projection:owner-ready',
+    'context:wait-child',
+    'projection:open-child:http://127.0.0.1:3000/operator/prepared-sample-stt?opaque=1',
+    'operator:domcontentloaded',
+  ])
+  assert.equal(PRESENTATION_TIMEOUT_MS, 30_000)
+  assert.ok(PRESENTATION_TIMEOUT_MS < ROUTE_TIMEOUT_MS)
+})
 
 const privateExpectedText = 'PRIVATE_EXPECTED_TEXT_SENTINEL'
 const fixtureAitRoot = 'C:\\fixture\\ait'

@@ -5,6 +5,8 @@
 import {
   dispatchThoughtCoreMotionStimulus,
   getThoughtCoreChatResponseStream,
+  registerAcceptedPreparedSamplePresentationOwner,
+  requestAcceptedPreparedSamplePresentation,
   submitAcceptedPreparedSampleBrowserSpeech,
 } from '../../../features/chat/thoughtCoreChat'
 import { MOTION_STIMULUS_RECEIVER_EVENT } from '../../../features/motionRuntime/motionStimulusReceiver'
@@ -43,7 +45,10 @@ async function readTextStream(stream: ReadableStream<string>): Promise<string> {
 }
 
 describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
+  const originalMessageChannel = global.MessageChannel
   const originalFetch = global.fetch
+  const originalOpen = window.open
+  const originalOpener = window.opener
   const conversationAttemptRef =
     'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
 
@@ -53,36 +58,154 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
 
   afterEach(() => {
     global.fetch = originalFetch
+    global.MessageChannel = originalMessageChannel
+    window.open = originalOpen
+    Object.defineProperty(window, 'opener', {
+      value: originalOpener,
+      configurable: true,
+    })
   })
 
-  it('sends one exact candidate/private-turn envelope and discards response text', async () => {
+  it('uses one acknowledged in-memory UI owner and never calls Core directly', async () => {
+    class MemoryPort {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      peer: MemoryPort | null = null
+      postMessage(data: unknown) {
+        this.peer?.onmessage?.({ data } as MessageEvent)
+      }
+      start() {}
+      close() {}
+    }
+    class MemoryMessageChannel {
+      port1 = new MemoryPort()
+      port2 = new MemoryPort()
+      constructor() {
+        this.port1.peer = this.port2
+        this.port2.peer = this.port1
+      }
+    }
+    global.MessageChannel = MemoryMessageChannel as any
+    const childProxy = { closed: false }
+    window.open = jest.fn(() => childProxy as any)
+    const opener = {
+      closed: false,
+      postMessage: (data: unknown, origin: string, ports: MessagePort[]) => {
+        const event = new Event('message')
+        Object.defineProperties(event, {
+          data: { value: data },
+          origin: { value: origin },
+          source: { value: childProxy },
+          ports: { value: ports },
+        })
+        window.dispatchEvent(event)
+      },
+    }
+    Object.defineProperty(window, 'opener', {
+      value: opener,
+      configurable: true,
+    })
     const envelope = createAcceptedPreparedSampleSpeechEnvelope({
       conversationAttemptRef,
       selectedSampleId: 'voice.local_sample_001',
       recognizedText: 'private prepared speech',
       generatedAt: '2026-07-13T01:02:03.000Z',
     })
-    ;(global.fetch as jest.Mock).mockResolvedValue(
-      createSseResponse([
-        {
-          type: 'assistant.speech_delta',
-          data: { delta: 'assistant text must be discarded' },
-        },
-      ])
+    const owner = jest.fn(async () => {})
+    const registration = registerAcceptedPreparedSamplePresentationOwner(owner)
+    registration.openOperator(
+      `${window.location.origin}/operator/prepared-sample-stt`
     )
+    const spoofChannel = new MemoryMessageChannel()
+    const spoofEvent = new Event('message')
+    Object.defineProperties(spoofEvent, {
+      data: {
+        value: {
+          type: 'presentation_probe',
+          conversation_attempt_ref: conversationAttemptRef,
+        },
+      },
+      origin: { value: window.location.origin },
+      source: { value: { closed: false } },
+      ports: { value: [spoofChannel.port2] },
+    })
+    window.dispatchEvent(spoofEvent)
+    expect(owner).not.toHaveBeenCalled()
 
     await submitAcceptedPreparedSampleBrowserSpeech(envelope)
+    await submitAcceptedPreparedSampleBrowserSpeech(envelope)
 
-    expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(global.fetch).toHaveBeenCalledWith('/api/thoughtCoreChat/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        accepted_user_speech_candidate: envelope.accepted_user_speech_candidate,
-        private_turn: envelope.private_turn,
-        stream: true,
-      }),
+    expect(owner).toHaveBeenCalledTimes(1)
+    expect(owner).toHaveBeenCalledWith(
+      envelope,
+      expect.objectContaining({ deadlineMs: 30_000 })
+    )
+    expect(global.fetch).not.toHaveBeenCalled()
+    registration.dispose()
+  })
+
+  it('rejects a second canonical presentation owner', () => {
+    const registration = registerAcceptedPreparedSamplePresentationOwner(
+      async () => {}
+    )
+    expect(() =>
+      registerAcceptedPreparedSamplePresentationOwner(async () => {})
+    ).toThrow('accepted_prepared_sample_request_failed')
+    registration.dispose()
+  })
+
+  it('ready without ACK reaches no Core and sends one cancellation', async () => {
+    jest.useFakeTimers()
+    class MemoryPort {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      peer: MemoryPort | null = null
+      postMessage(data: unknown) {
+        this.peer?.onmessage?.({ data } as MessageEvent)
+      }
+      start() {}
+      close() {}
+    }
+    class MemoryMessageChannel {
+      port1 = new MemoryPort()
+      port2 = new MemoryPort()
+      constructor() {
+        this.port1.peer = this.port2
+        this.port2.peer = this.port1
+      }
+    }
+    global.MessageChannel = MemoryMessageChannel as any
+    let cancellationCount = 0
+    Object.defineProperty(window, 'opener', {
+      value: {
+        closed: false,
+        postMessage: (data: any, _origin: string, ports: MemoryPort[]) => {
+          const ownerPort = ports[0]
+          ownerPort.onmessage = (event) => {
+            if (event.data.type === 'presentation_cancelled') {
+              cancellationCount += 1
+            }
+          }
+          ownerPort.postMessage({
+            type: 'presentation_ready',
+            conversation_attempt_ref: data.conversation_attempt_ref,
+          })
+        },
+      },
+      configurable: true,
     })
+    const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+      conversationAttemptRef,
+      selectedSampleId: 'voice.local_sample_001',
+      recognizedText: 'private prepared speech',
+      generatedAt: '2026-07-13T01:02:03.000Z',
+    })
+    const pending = expect(
+      submitAcceptedPreparedSampleBrowserSpeech(envelope)
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+    await jest.advanceTimersByTimeAsync(30_001)
+    await pending
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(cancellationCount).toBe(1)
+    jest.useRealTimers()
   })
 
   it('returns a fixed failure without echoing an API body', async () => {
@@ -140,6 +263,258 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
     await expect(
       submitAcceptedPreparedSampleBrowserSpeech(envelope)
     ).rejects.toThrow('accepted_prepared_sample_request_failed')
+  })
+})
+
+describe('requestAcceptedPreparedSamplePresentation', () => {
+  const originalFetch = global.fetch
+  const conversationAttemptRef =
+    'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef'
+  const envelope = createAcceptedPreparedSampleSpeechEnvelope({
+    conversationAttemptRef,
+    selectedSampleId: 'voice.local_sample_001',
+    recognizedText: 'private prepared speech',
+    generatedAt: '2026-07-13T01:02:03.000Z',
+  })
+
+  beforeEach(() => {
+    global.fetch = jest.fn() as any
+  })
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('presents one exact projected assistant response after terminal validation', async () => {
+    const present = jest.fn(async () => {})
+    const dispatched: CustomEvent[] = []
+    window.addEventListener(MOTION_STIMULUS_RECEIVER_EVENT, (event) => {
+      dispatched.push(event as CustomEvent)
+    })
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            delta: '返答',
+          },
+        },
+        {
+          type: 'accepted.presentation.motion',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            event: createMotionRequestedEvent(),
+          },
+        },
+        {
+          type: 'accepted.presentation.completed',
+          data: { conversation_attempt_ref: conversationAttemptRef },
+        },
+      ])
+    )
+    await requestAcceptedPreparedSamplePresentation(envelope, present, {
+      signal: new AbortController().signal,
+      deadlineMs: 30_000,
+    })
+    expect(present).toHaveBeenCalledWith(
+      { conversationAttemptRef, assistantSpeech: '返答' },
+      expect.objectContaining({ deadlineMs: 30_000 })
+    )
+    expect(dispatched).toHaveLength(1)
+  })
+
+  it.each(['non_ok', 'throw', 'stream_error'])(
+    'normalizes actual presentation fetch failure %s without echo',
+    async (failureClass) => {
+      const present = jest.fn(async () => {})
+      if (failureClass === 'non_ok') {
+        ;(global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 500,
+          body: null,
+        })
+      } else if (failureClass === 'throw') {
+        ;(global.fetch as jest.Mock).mockRejectedValue(
+          new Error('SECRET_PROVIDER_PATH_C:\\private\\provider.json')
+        )
+      } else {
+        ;(global.fetch as jest.Mock).mockResolvedValue({
+          ok: true,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(new Error('SECRET_PRIVATE_STREAM'))
+            },
+          }),
+        })
+      }
+      await expect(
+        requestAcceptedPreparedSamplePresentation(envelope, present, {
+          signal: new AbortController().signal,
+          deadlineMs: 30_000,
+        })
+      ).rejects.toThrow('accepted_prepared_sample_request_failed')
+      expect(present).not.toHaveBeenCalled()
+    }
+  )
+
+  it('rejects a changed ref and normalizes the fixed client failure', async () => {
+    const present = jest.fn(async () => {})
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref:
+              'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210',
+            delta: 'SECRET_PRIVATE_MARKER',
+          },
+        },
+      ])
+    )
+    await expect(
+      requestAcceptedPreparedSamplePresentation(envelope, present, {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      })
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+    expect(present).not.toHaveBeenCalled()
+  })
+
+  it('rejects terminal-before-assistant ordering with no late presentation', async () => {
+    const present = jest.fn(async () => {})
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'accepted.presentation.completed',
+          data: { conversation_attempt_ref: conversationAttemptRef },
+        },
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            delta: 'late assistant',
+          },
+        },
+      ])
+    )
+    await expect(
+      requestAcceptedPreparedSamplePresentation(envelope, present, {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      })
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+    expect(present).not.toHaveBeenCalled()
+  })
+
+  it.each(['duplicate', 'mismatched_ref'])(
+    'rejects %s projected motion with no presentation or dispatch',
+    async (mutation) => {
+      const present = jest.fn(async () => {})
+      const dispatch = jest.spyOn(window, 'dispatchEvent')
+      const motion = {
+        type: 'accepted.presentation.motion',
+        data: {
+          conversation_attempt_ref:
+            mutation === 'mismatched_ref'
+              ? 'm4.prepared_sample_attempt:fedcba9876543210fedcba9876543210'
+              : conversationAttemptRef,
+          event: createMotionRequestedEvent(),
+        },
+      }
+      ;(global.fetch as jest.Mock).mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.assistant_delta',
+            data: {
+              conversation_attempt_ref: conversationAttemptRef,
+              delta: '返答',
+            },
+          },
+          motion,
+          ...(mutation === 'duplicate' ? [motion] : []),
+          {
+            type: 'accepted.presentation.completed',
+            data: { conversation_attempt_ref: conversationAttemptRef },
+          },
+        ])
+      )
+      await expect(
+        requestAcceptedPreparedSamplePresentation(envelope, present, {
+          signal: new AbortController().signal,
+          deadlineMs: 30_000,
+        })
+      ).rejects.toThrow('accepted_prepared_sample_request_failed')
+      expect(present).not.toHaveBeenCalled()
+      expect(dispatch).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: MOTION_STIMULUS_RECEIVER_EVENT })
+      )
+      dispatch.mockRestore()
+    }
+  )
+
+  it('cancels an abnormal reader exactly once and produces no late effects', async () => {
+    const cancel = jest.fn(async () => {})
+    const releaseLock = jest.fn()
+    ;(global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: jest.fn().mockRejectedValue(new Error('PRIVATE_READER_ERROR')),
+          cancel,
+          releaseLock,
+        }),
+      },
+    })
+    const present = jest.fn(async () => {})
+    await expect(
+      requestAcceptedPreparedSamplePresentation(envelope, present, {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      })
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+    expect(present).not.toHaveBeenCalled()
+  })
+
+  it('cancels malformed projected SSE once with no presentation or motion', async () => {
+    const encoder = new TextEncoder()
+    const cancel = jest.fn(async () => {})
+    const releaseLock = jest.fn()
+    const value = encoder.encode(
+      `data: ${JSON.stringify({
+        type: 'accepted.presentation.assistant_delta',
+        data: {
+          conversation_attempt_ref: conversationAttemptRef,
+          delta: '安全な返答',
+        },
+      })}\n\ndata: SECRET_MALFORMED_PRIVATE_{\n\n`
+    )
+    ;(global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: jest.fn().mockResolvedValueOnce({ done: false, value }),
+          cancel,
+          releaseLock,
+        }),
+      },
+    })
+    const present = jest.fn(async () => {})
+    const dispatch = jest.spyOn(window, 'dispatchEvent')
+    await expect(
+      requestAcceptedPreparedSamplePresentation(envelope, present, {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      })
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+    expect(present).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: MOTION_STIMULUS_RECEIVER_EVENT })
+    )
+    dispatch.mockRestore()
   })
 })
 
