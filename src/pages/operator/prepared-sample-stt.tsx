@@ -218,6 +218,19 @@ const PreparedSampleSttOperator = () => {
     () => {}
   )
   const integratedPresentationRef = useRef(false)
+  const handleOrdinaryChatProcessStart = useCallback((text: string) => {
+    if (!integratedPresentationRef.current) {
+      acceptedBrowserFinalHandlerRef.current(text)
+    }
+  }, [])
+  const handleExplicitAudioTrackCleanupFailed = useCallback(() => {
+    explicitAudioTrackCleanupFailedHandlerRef.current()
+  }, [])
+  const handleIntegratedBrowserFinal = useCallback((text: string) => {
+    if (integratedPresentationRef.current) {
+      acceptedBrowserFinalHandlerRef.current(text)
+    }
+  }, [])
   const {
     isListening,
     startListening,
@@ -225,17 +238,9 @@ const PreparedSampleSttOperator = () => {
     releaseExplicitAudioTrack,
     stopListening,
   } = useBrowserSpeechRecognition(
-    (text) => {
-      if (!integratedPresentationRef.current) {
-        acceptedBrowserFinalHandlerRef.current(text)
-      }
-    },
-    () => explicitAudioTrackCleanupFailedHandlerRef.current(),
-    (text) => {
-      if (integratedPresentationRef.current) {
-        acceptedBrowserFinalHandlerRef.current(text)
-      }
-    }
+    handleOrdinaryChatProcessStart,
+    handleExplicitAudioTrackCleanupFailed,
+    handleIntegratedBrowserFinal
   )
   const [parentPreflight, setParentPreflight] = useState<ParentPreflightState>({
     value: null,

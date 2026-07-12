@@ -1185,8 +1185,12 @@ describe('PreparedSampleSttOperator', () => {
     setParentPreflightQuery(
       `conversation_attempt_ref=${conversationAttemptRef}&selected_sample_id=voice.local_sample_001&sample_index_preflight_class=prepared_sample_index_verified&sample_index_preflight_ref=m4.sample_index_preflight_001&integrated_presentation=1`
     )
-    render(<PreparedSampleSttOperator />)
+    const { rerender } = render(<PreparedSampleSttOperator />)
     prepareRunInputs()
+
+    const hookMock = jest.requireMock('@/hooks/useBrowserSpeechRecognition')
+      .useBrowserSpeechRecognition as jest.Mock
+    const firstHookCallbacks = hookMock.mock.calls.at(-1).slice(0, 3)
 
     await act(async () => {
       fireEvent.click(
@@ -1201,6 +1205,9 @@ describe('PreparedSampleSttOperator', () => {
         detail: 'lang=ja-JP',
       })
     })
+    rerender(<PreparedSampleSttOperator />)
+    const rerenderedHookCallbacks = hookMock.mock.calls.at(-1).slice(0, 3)
+    expect(rerenderedHookCallbacks).toEqual(firstHookCallbacks)
 
     await act(async () => {
       mockOnBrowserFinalResult?.('private integrated prepared speech')
