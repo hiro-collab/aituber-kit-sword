@@ -410,7 +410,7 @@ export async function receiveMotionStimulusV0(
       stimulusInstanceId: stimulus.stimulusInstanceId,
       groupKey: DANCE_SEQUENCE_GROUP_KEY,
       requestedAtMs: issuedAtMs,
-      loop: true,
+      loop: stimulus.loop ?? !isContractDanceSequenceStimulus(stimulus),
       trace: stimulus.trace,
     })
 

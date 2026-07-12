@@ -102,7 +102,7 @@ describe('receiveMotionStimulusV0', () => {
         stimulusInstanceId: 'mot_inst_turn_123_1',
         groupKey: 'dance.sequence',
         requestedAtMs: Date.parse('2026-06-10T08:00:00.000Z'),
-        loop: true,
+        loop: false,
         trace: expect.objectContaining({
           event_id: 'thought-event-dance-sequence-1',
           request_id: 'motion-request-dance-sequence-1',
@@ -134,6 +134,24 @@ describe('receiveMotionStimulusV0', () => {
       'result',
     ])
   })
+
+  it.each([true, false])(
+    'preserves an explicit contract dance loop value %s',
+    async (loop) => {
+      const startDance = jest.fn().mockResolvedValue({
+        status: 'started',
+        reason_code: 'motion_runtime_vrma_started',
+        safe_visible_state: 'motion_started',
+      })
+
+      await receiveMotionStimulusV0(
+        { ...createThoughtCoreDanceSequenceStimulus(), loop },
+        { startDance }
+      )
+
+      expect(startDance).toHaveBeenCalledWith(expect.objectContaining({ loop }))
+    }
+  )
 
   it('returns unavailable and does not start dance when the dance motion asset path is not configured', async () => {
     delete process.env[DANCE_MOTION_ASSET_PATH_ENV]
