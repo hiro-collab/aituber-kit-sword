@@ -1,5 +1,9 @@
 import type { VRMHumanBoneName } from '@pixiv/three-vrm'
-import type { VRMAnimation } from '@/lib/VRMAnimation/VRMAnimation'
+import {
+  convertHumanoidRotationValuesForTarget,
+  type VRMAnimation,
+  type VRMAnimationTargetMetaVersion,
+} from '@/lib/VRMAnimation/VRMAnimation'
 import {
   createHumanoidRotationChannelId,
   createHumanoidTranslationChannelId,
@@ -19,6 +23,7 @@ export interface CompileVRMAnimationOptions {
   assetId?: string
   includeHipsTranslation?: boolean
   loop?: boolean
+  targetMetaVersion?: VRMAnimationTargetMetaVersion
 }
 
 export function compileVRMAnimationToMotionRuntimeAsset(
@@ -37,7 +42,12 @@ export function compileVRMAnimationToMotionRuntimeAsset(
         ),
         valueKind: 'quaternion',
         times: track.times,
-        values: track.values,
+        values: options.targetMetaVersion
+          ? convertHumanoidRotationValuesForTarget(
+              track.values,
+              options.targetMetaVersion
+            )
+          : track.values,
         loop: options.loop,
       })
     )

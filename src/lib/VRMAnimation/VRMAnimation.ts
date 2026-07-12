@@ -1,6 +1,17 @@
 import * as THREE from 'three'
 import { VRM, VRMExpressionManager, VRMHumanBoneName } from '@pixiv/three-vrm'
 
+export type VRMAnimationTargetMetaVersion = VRM['meta']['metaVersion']
+
+export function convertHumanoidRotationValuesForTarget(
+  values: ArrayLike<number>,
+  metaVersion: VRMAnimationTargetMetaVersion
+): number[] {
+  return Array.from(values, (value, index) =>
+    metaVersion === '0' && (index % 4 === 0 || index % 4 === 2) ? -value : value
+  )
+}
+
 export class VRMAnimation {
   public duration: number
   public restHipsPosition: THREE.Vector3
@@ -57,9 +68,7 @@ export class VRMAnimation {
         const track = new THREE.VectorKeyframeTrack(
           `${nodeName}.quaternion`,
           origTrack.times,
-          origTrack.values.map((v, i) =>
-            metaVersion === '0' && i % 2 === 0 ? -v : v
-          )
+          convertHumanoidRotationValuesForTarget(origTrack.values, metaVersion)
         )
         tracks.push(track)
       }

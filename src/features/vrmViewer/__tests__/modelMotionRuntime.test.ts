@@ -1,3 +1,5 @@
+import * as THREE from 'three'
+import type { VRM } from '@pixiv/three-vrm'
 import {
   Model,
   createEmptyMotionRuntimeExpressionValueSummary,
@@ -5,6 +7,8 @@ import {
   createMotionRuntimeExpressionValueSummary,
   shouldApplyQueuedMotionFrameInFrozenVisualTestMode,
 } from '../model'
+import { VRMAnimation } from '@/lib/VRMAnimation/VRMAnimation'
+import * as motionAsset from '@/features/motionRuntime/motionAsset'
 import { MotionRuntimeSession } from '@/features/motionRuntime/motionRuntimeSession'
 
 describe('Model Motion Runtime frozen visual-test routing', () => {
@@ -139,6 +143,45 @@ describe('Model dance lifecycle authority', () => {
         candidateState: 'idle',
       })
     ).toBe(true)
+  })
+})
+
+describe('Model Motion Runtime VRMA target format', () => {
+  it('passes the loaded target avatar metaVersion to the compiler', () => {
+    const compileSpy = jest.spyOn(
+      motionAsset,
+      'compileVRMAnimationToMotionRuntimeAsset'
+    )
+    const animation = new VRMAnimation()
+    animation.duration = 0.625
+    animation.humanoidTracks.rotation.set(
+      'leftLowerArm',
+      new THREE.VectorKeyframeTrack(
+        'leftLowerArm.quaternion',
+        [0.625],
+        [0.2, -0.3, 0.4, 0.8]
+      )
+    )
+    const model = Object.create(Model.prototype) as Model
+    model.vrm = { meta: { metaVersion: '0' } } as VRM
+    ;(model as any)._motionRuntimeSession = new MotionRuntimeSession()
+
+    try {
+      model.playMotionRuntimeVRMA(animation, {
+        stimulusId: 'target-format-forwarding',
+        requestedAtMs: 1000,
+      })
+
+      expect(compileSpy).toHaveBeenCalledWith(
+        animation,
+        expect.objectContaining({
+          assetId: 'target-format-forwarding',
+          targetMetaVersion: '0',
+        })
+      )
+    } finally {
+      compileSpy.mockRestore()
+    }
   })
 })
 

@@ -169,6 +169,7 @@ export class Model {
     const asset = compileVRMAnimationToMotionRuntimeAsset(vrmAnimation, {
       assetId: args.stimulusId ?? 'motion_runtime_vrma',
       loop: args.loop,
+      targetMetaVersion: this.vrm?.meta.metaVersion,
     })
     const channelIds = asset.tracks.map((track) => track.channel.id)
     if (channelIds.length === 0) return
