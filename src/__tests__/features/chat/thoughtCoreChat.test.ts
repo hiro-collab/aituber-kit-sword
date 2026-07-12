@@ -137,7 +137,7 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
     expect(owner).toHaveBeenCalledTimes(1)
     expect(owner).toHaveBeenCalledWith(
       envelope,
-      expect.objectContaining({ deadlineMs: 30_000 })
+      expect.objectContaining({ deadlineMs: 75_000 })
     )
     expect(global.fetch).not.toHaveBeenCalled()
     registration.dispose()
@@ -201,7 +201,7 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
     const pending = expect(
       submitAcceptedPreparedSampleBrowserSpeech(envelope)
     ).rejects.toThrow('accepted_prepared_sample_request_failed')
-    await jest.advanceTimersByTimeAsync(30_001)
+    await jest.advanceTimersByTimeAsync(75_001)
     await pending
     expect(global.fetch).not.toHaveBeenCalled()
     expect(cancellationCount).toBe(1)
@@ -286,10 +286,6 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
 
   it('presents one exact projected assistant response after terminal validation', async () => {
     const present = jest.fn(async () => {})
-    const dispatched: CustomEvent[] = []
-    window.addEventListener(MOTION_STIMULUS_RECEIVER_EVENT, (event) => {
-      dispatched.push(event as CustomEvent)
-    })
     ;(global.fetch as jest.Mock).mockResolvedValue(
       createSseResponse([
         {
@@ -297,13 +293,6 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
           data: {
             conversation_attempt_ref: conversationAttemptRef,
             delta: '返答',
-          },
-        },
-        {
-          type: 'accepted.presentation.motion',
-          data: {
-            conversation_attempt_ref: conversationAttemptRef,
-            event: createMotionRequestedEvent(),
           },
         },
         {
@@ -320,7 +309,308 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
       { conversationAttemptRef, assistantSpeech: '返答' },
       expect.objectContaining({ deadlineMs: 30_000 })
     )
-    expect(dispatched).toHaveLength(1)
+  })
+
+  it('waits for a rendered motion lifecycle and a 12-second no-late window', async () => {
+    jest.useFakeTimers()
+    let handleMotionStimulus: ((event: Event) => void) | undefined
+    try {
+      const present = jest.fn(async () => {})
+      ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
+        frameSeq: 10,
+        vrmReady: true,
+        sceneVisible: true,
+        session: { occupiedSlots: 0, queueLength: 0, instances: [] },
+        poseFrame: {
+          humanoidRotationBoneNames: [],
+          humanoidTranslationBoneNames: [],
+        },
+      }
+      handleMotionStimulus = (event: Event) => {
+        const stimulus = (event as CustomEvent).detail
+        ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
+          frameSeq: 12,
+          vrmReady: true,
+          sceneVisible: true,
+          session: {
+            occupiedSlots: 1,
+            queueLength: 0,
+            instances: [
+              {
+                instanceId: stimulus.stimulus_instance_id,
+                stimulusId: stimulus.stimulus_id,
+                phase: 'active',
+              },
+            ],
+          },
+          poseFrame: {
+            humanoidRotationBoneNames: ['leftLowerArm'],
+            humanoidTranslationBoneNames: [],
+          },
+        }
+        window.dispatchEvent(
+          new CustomEvent('projection-visual-motion-stimulus-result', {
+            detail: {
+              source_kind: 'thought_core_motion_stimulus_v0',
+              debug_playback: false,
+              accepted: true,
+              status: 'started',
+              reason_code: 'dance_started',
+              safe_visible_state: 'motion_started',
+              motion_event_id: stimulus.motion_event_id,
+              stimulus_id: stimulus.stimulus_id,
+              stimulus_instance_id: stimulus.stimulus_instance_id,
+              lifecycle_trace: [],
+            },
+          })
+        )
+        setTimeout(() => {
+          ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
+            frameSeq: 20,
+            vrmReady: true,
+            sceneVisible: true,
+            session: {
+              occupiedSlots: 0,
+              queueLength: 0,
+              instances: [
+                {
+                  instanceId: stimulus.stimulus_instance_id,
+                  stimulusId: stimulus.stimulus_id,
+                  phase: 'completed',
+                },
+              ],
+            },
+            poseFrame: {
+              humanoidRotationBoneNames: ['leftLowerArm'],
+              humanoidTranslationBoneNames: [],
+            },
+          }
+        }, 200)
+      }
+      window.addEventListener(
+        MOTION_STIMULUS_RECEIVER_EVENT,
+        handleMotionStimulus,
+        { once: true }
+      )
+      ;(global.fetch as jest.Mock).mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.assistant_delta',
+            data: {
+              conversation_attempt_ref: conversationAttemptRef,
+              delta: '返答',
+            },
+          },
+          {
+            type: 'accepted.presentation.motion',
+            data: {
+              conversation_attempt_ref: conversationAttemptRef,
+              event: createMotionRequestedEvent(),
+            },
+          },
+          {
+            type: 'accepted.presentation.completed',
+            data: { conversation_attempt_ref: conversationAttemptRef },
+          },
+        ])
+      )
+      const request = requestAcceptedPreparedSamplePresentation(
+        envelope,
+        present,
+        {
+          signal: new AbortController().signal,
+          deadlineMs: 75_000,
+        }
+      )
+      let settled = false
+      void request.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        }
+      )
+      await jest.advanceTimersByTimeAsync(12_000)
+      expect(settled).toBe(false)
+      await jest.advanceTimersByTimeAsync(500)
+      await expect(request).resolves.toBeUndefined()
+    } finally {
+      if (handleMotionStimulus) {
+        window.removeEventListener(
+          MOTION_STIMULUS_RECEIVER_EVENT,
+          handleMotionStimulus
+        )
+      }
+      delete (window as any).__projectionVisualMotionRuntimeDebugSnapshot
+      jest.useRealTimers()
+    }
+  })
+
+  it.each([
+    'missing_baseline',
+    'completed_only',
+    'mismatched_result',
+    'rejected_result',
+    'wrong_result_source',
+    'debug_playback_result',
+    'no_frame_progression',
+    'late_reactivation',
+  ])('rejects motion lifecycle mutation %s', async (mutation) => {
+    jest.useFakeTimers()
+    const controller = new AbortController()
+    let handleMotionStimulus: ((event: Event) => void) | undefined
+    try {
+      const present = jest.fn(async () => {})
+      const setSnapshot = (args: {
+        frameSeq: number
+        phase?: string
+        occupiedSlots?: number
+        withPose?: boolean
+        stimulus?: Record<string, string>
+      }) => {
+        ;(window as any).__projectionVisualMotionRuntimeDebugSnapshot = {
+          frameSeq: args.frameSeq,
+          vrmReady: true,
+          sceneVisible: true,
+          session: {
+            occupiedSlots: args.occupiedSlots ?? 0,
+            queueLength: 0,
+            instances:
+              args.phase && args.stimulus
+                ? [
+                    {
+                      instanceId: args.stimulus.stimulus_instance_id,
+                      stimulusId: args.stimulus.stimulus_id,
+                      phase: args.phase,
+                    },
+                  ]
+                : [],
+          },
+          poseFrame: {
+            humanoidRotationBoneNames:
+              args.withPose === true ? ['leftLowerArm'] : [],
+            humanoidTranslationBoneNames: [],
+          },
+        }
+      }
+      if (mutation !== 'missing_baseline') setSnapshot({ frameSeq: 10 })
+      handleMotionStimulus = (event: Event) => {
+        const stimulus = (event as CustomEvent).detail as Record<string, string>
+        if (mutation === 'completed_only') {
+          setSnapshot({
+            frameSeq: 12,
+            phase: 'completed',
+            stimulus,
+            withPose: true,
+          })
+        } else {
+          setSnapshot({
+            frameSeq: mutation === 'no_frame_progression' ? 10 : 12,
+            phase: 'active',
+            occupiedSlots: 1,
+            stimulus,
+            withPose: true,
+          })
+        }
+        window.dispatchEvent(
+          new CustomEvent('projection-visual-motion-stimulus-result', {
+            detail: {
+              source_kind:
+                mutation === 'wrong_result_source'
+                  ? 'untrusted_motion_result'
+                  : 'thought_core_motion_stimulus_v0',
+              debug_playback: mutation === 'debug_playback_result',
+              accepted: mutation !== 'rejected_result',
+              status:
+                mutation === 'rejected_result' ? 'failed_safe' : 'started',
+              reason_code: 'bounded_test_result',
+              safe_visible_state:
+                mutation === 'rejected_result'
+                  ? 'no_visible_change'
+                  : 'motion_started',
+              motion_event_id:
+                mutation === 'mismatched_result'
+                  ? `${stimulus.motion_event_id}-changed`
+                  : stimulus.motion_event_id,
+              stimulus_id: stimulus.stimulus_id,
+              stimulus_instance_id: stimulus.stimulus_instance_id,
+              lifecycle_trace: [],
+            },
+          })
+        )
+        if (
+          !['completed_only', 'mismatched_result', 'rejected_result'].includes(
+            mutation
+          )
+        ) {
+          setTimeout(() => {
+            setSnapshot({
+              frameSeq: 20,
+              phase: 'completed',
+              stimulus,
+              withPose: true,
+            })
+          }, 200)
+        }
+        if (mutation === 'late_reactivation') {
+          setTimeout(() => {
+            setSnapshot({
+              frameSeq: 30,
+              phase: 'active',
+              occupiedSlots: 1,
+              stimulus,
+              withPose: true,
+            })
+          }, 1_000)
+        }
+      }
+      window.addEventListener(
+        MOTION_STIMULUS_RECEIVER_EVENT,
+        handleMotionStimulus,
+        { once: true }
+      )
+      ;(global.fetch as jest.Mock).mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.assistant_delta',
+            data: {
+              conversation_attempt_ref: conversationAttemptRef,
+              delta: '返答',
+            },
+          },
+          {
+            type: 'accepted.presentation.motion',
+            data: {
+              conversation_attempt_ref: conversationAttemptRef,
+              event: createMotionRequestedEvent(),
+            },
+          },
+          {
+            type: 'accepted.presentation.completed',
+            data: { conversation_attempt_ref: conversationAttemptRef },
+          },
+        ])
+      )
+      setTimeout(() => controller.abort(), 2_000)
+      const request = expect(
+        requestAcceptedPreparedSamplePresentation(envelope, present, {
+          signal: controller.signal,
+          deadlineMs: 75_000,
+        })
+      ).rejects.toThrow('accepted_prepared_sample_request_failed')
+      await jest.advanceTimersByTimeAsync(3_000)
+      await request
+    } finally {
+      if (handleMotionStimulus) {
+        window.removeEventListener(
+          MOTION_STIMULUS_RECEIVER_EVENT,
+          handleMotionStimulus
+        )
+      }
+      delete (window as any).__projectionVisualMotionRuntimeDebugSnapshot
+      jest.useRealTimers()
+    }
   })
 
   it.each(['non_ok', 'throw', 'stream_error'])(
@@ -516,6 +806,70 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
     )
     dispatch.mockRestore()
   })
+
+  it.each(['incomplete_terminal', 'invalid_motion'])(
+    'cancels projected EOF mutation %s once with no late effects',
+    async (mutation) => {
+      const encoder = new TextEncoder()
+      const cancel = jest.fn(async () => {})
+      const releaseLock = jest.fn()
+      const events: unknown[] = [
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            delta: '安全な返答',
+          },
+        },
+        ...(mutation === 'invalid_motion'
+          ? [
+              {
+                type: 'accepted.presentation.motion',
+                data: {
+                  conversation_attempt_ref: conversationAttemptRef,
+                  event: {},
+                },
+              },
+              {
+                type: 'accepted.presentation.completed',
+                data: { conversation_attempt_ref: conversationAttemptRef },
+              },
+            ]
+          : []),
+      ]
+      const value = encoder.encode(
+        events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
+      )
+      ;(global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: jest
+              .fn()
+              .mockResolvedValueOnce({ done: false, value })
+              .mockResolvedValueOnce({ done: true, value: undefined }),
+            cancel,
+            releaseLock,
+          }),
+        },
+      })
+      const present = jest.fn(async () => {})
+      const dispatch = jest.spyOn(window, 'dispatchEvent')
+      await expect(
+        requestAcceptedPreparedSamplePresentation(envelope, present, {
+          signal: new AbortController().signal,
+          deadlineMs: 75_000,
+        })
+      ).rejects.toThrow('accepted_prepared_sample_request_failed')
+      expect(cancel).toHaveBeenCalledTimes(1)
+      expect(releaseLock).toHaveBeenCalledTimes(1)
+      expect(present).not.toHaveBeenCalled()
+      expect(dispatch).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: MOTION_STIMULUS_RECEIVER_EVENT })
+      )
+      dispatch.mockRestore()
+    }
+  )
 })
 
 describe('getThoughtCoreChatResponseStream motion bridge', () => {

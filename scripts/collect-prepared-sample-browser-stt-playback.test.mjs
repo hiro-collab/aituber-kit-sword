@@ -78,7 +78,7 @@ test('opens Projection Visual first and then its exact operator child', async ()
     'projection:open-child:http://127.0.0.1:3000/operator/prepared-sample-stt?opaque=1',
     'operator:domcontentloaded',
   ])
-  assert.equal(PRESENTATION_TIMEOUT_MS, 30_000)
+  assert.equal(PRESENTATION_TIMEOUT_MS, 75_000)
   assert.ok(PRESENTATION_TIMEOUT_MS < ROUTE_TIMEOUT_MS)
 })
 

@@ -2,7 +2,11 @@ import settingsStore from '@/features/stores/settings'
 import { Message } from '../messages/messages'
 import i18next from 'i18next'
 import toastStore from '@/features/stores/toast'
-import { MOTION_STIMULUS_RECEIVER_EVENT } from '@/features/motionRuntime/motionStimulusReceiver'
+import {
+  MOTION_STIMULUS_RECEIVER_EVENT,
+  MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
+  type MotionStimulusReceiverResult,
+} from '@/features/motionRuntime/motionStimulusReceiver'
 import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
 import type { AcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampleBrowserStt'
 
@@ -40,12 +44,14 @@ type PreparedSamplePresentationBridgeMessage = {
   envelope?: AcceptedPreparedSampleSpeechEnvelope
 }
 
-export const PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS = 30_000
+export const PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS = 75_000
 const ACCEPTED_PRESENTATION_FAILED = 'accepted_prepared_sample_request_failed'
 const ACCEPTED_PRESENTATION_ASSISTANT_EVENT =
   'accepted.presentation.assistant_delta'
 const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
 const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
+const ACCEPTED_PRESENTATION_MOTION_POLL_INTERVAL_MS = 100
+const ACCEPTED_PRESENTATION_NO_LATE_MOTION_MS = 12_000
 
 const THOUGHT_CORE_MOTION_REQUEST_EVENT = 'motion.requested'
 const MOTION_STIMULUS_SCHEMA_VERSION = 'motion_stimulus.v0'
@@ -459,6 +465,222 @@ export function dispatchThoughtCoreMotionStimulus(event: unknown): boolean {
   return true
 }
 
+type AcceptedPresentationMotionRuntimeSnapshot = {
+  frameSeq: number
+  vrmReady: boolean
+  sceneVisible: boolean
+  occupiedSlots: number
+  queueLength: number
+  instances: Array<{
+    instanceId: string
+    stimulusId: string
+    phase: string
+  }>
+  humanoidRotationBoneNames: string[]
+  humanoidTranslationBoneNames: string[]
+}
+
+function readAcceptedPresentationMotionRuntimeSnapshot(): AcceptedPresentationMotionRuntimeSnapshot | null {
+  if (typeof window === 'undefined') return null
+  const value = (
+    window as typeof window & {
+      __projectionVisualMotionRuntimeDebugSnapshot?: unknown
+    }
+  ).__projectionVisualMotionRuntimeDebugSnapshot
+  if (
+    !isRecord(value) ||
+    !isRecord(value.session) ||
+    !isRecord(value.poseFrame)
+  ) {
+    return null
+  }
+  const instances = value.session.instances
+  const rotationNames = value.poseFrame.humanoidRotationBoneNames
+  const translationNames = value.poseFrame.humanoidTranslationBoneNames
+  if (
+    typeof value.frameSeq !== 'number' ||
+    !Number.isFinite(value.frameSeq) ||
+    typeof value.vrmReady !== 'boolean' ||
+    typeof value.sceneVisible !== 'boolean' ||
+    typeof value.session.occupiedSlots !== 'number' ||
+    typeof value.session.queueLength !== 'number' ||
+    !Array.isArray(instances) ||
+    !Array.isArray(rotationNames) ||
+    !Array.isArray(translationNames)
+  ) {
+    return null
+  }
+  const safeInstances = instances.flatMap((instance) =>
+    isRecord(instance) &&
+    typeof instance.instanceId === 'string' &&
+    typeof instance.stimulusId === 'string' &&
+    typeof instance.phase === 'string'
+      ? [
+          {
+            instanceId: instance.instanceId,
+            stimulusId: instance.stimulusId,
+            phase: instance.phase,
+          },
+        ]
+      : []
+  )
+  if (safeInstances.length !== instances.length) return null
+  return {
+    frameSeq: value.frameSeq,
+    vrmReady: value.vrmReady,
+    sceneVisible: value.sceneVisible,
+    occupiedSlots: value.session.occupiedSlots,
+    queueLength: value.session.queueLength,
+    instances: safeInstances,
+    humanoidRotationBoneNames: rotationNames.filter(
+      (name): name is string => typeof name === 'string'
+    ),
+    humanoidTranslationBoneNames: translationNames.filter(
+      (name): name is string => typeof name === 'string'
+    ),
+  }
+}
+
+function waitForAcceptedPresentationMotionPoll(signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error(ACCEPTED_PRESENTATION_FAILED))
+      return
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const abort = () => {
+      if (timer) clearTimeout(timer)
+      reject(new Error(ACCEPTED_PRESENTATION_FAILED))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, ACCEPTED_PRESENTATION_MOTION_POLL_INTERVAL_MS)
+  })
+}
+
+async function dispatchAcceptedPresentationMotionAndAwaitLifecycle(
+  event: unknown,
+  signal: AbortSignal
+): Promise<void> {
+  const stimulus = extractThoughtCoreMotionStimulus(event)
+  if (!stimulus || typeof window === 'undefined' || signal.aborted) {
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+  }
+  const baselineSnapshot = readAcceptedPresentationMotionRuntimeSnapshot()
+  if (
+    !baselineSnapshot ||
+    !baselineSnapshot.vrmReady ||
+    !baselineSnapshot.sceneVisible
+  ) {
+    throw new Error(ACCEPTED_PRESENTATION_FAILED)
+  }
+  const baselineFrameSeq = baselineSnapshot.frameSeq
+  const result = await new Promise<MotionStimulusReceiverResult>(
+    (resolve, reject) => {
+      const cleanup = () => {
+        signal.removeEventListener('abort', abort)
+        window.removeEventListener(
+          MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
+          receiveResult
+        )
+      }
+      const abort = () => {
+        cleanup()
+        reject(new Error(ACCEPTED_PRESENTATION_FAILED))
+      }
+      const receiveResult = (resultEvent: Event) => {
+        if (!(resultEvent instanceof CustomEvent)) return
+        const detail = resultEvent.detail as MotionStimulusReceiverResult
+        if (
+          detail?.motion_event_id !== stimulus.motion_event_id ||
+          detail?.stimulus_id !== stimulus.stimulus_id ||
+          detail?.stimulus_instance_id !== stimulus.stimulus_instance_id
+        ) {
+          return
+        }
+        cleanup()
+        if (
+          detail.source_kind !== 'thought_core_motion_stimulus_v0' ||
+          detail.debug_playback !== false ||
+          !detail.accepted
+        ) {
+          reject(new Error(ACCEPTED_PRESENTATION_FAILED))
+          return
+        }
+        resolve(detail)
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      window.addEventListener(
+        MOTION_STIMULUS_RECEIVER_RESULT_EVENT,
+        receiveResult
+      )
+      window.dispatchEvent(
+        new CustomEvent(MOTION_STIMULUS_RECEIVER_EVENT, { detail: stimulus })
+      )
+    }
+  )
+
+  let renderedActiveFrameObserved = false
+  while (true) {
+    if (signal.aborted) throw new Error(ACCEPTED_PRESENTATION_FAILED)
+    const snapshot = readAcceptedPresentationMotionRuntimeSnapshot()
+    const instance = snapshot?.instances.find(
+      (candidate) =>
+        candidate.instanceId === result.stimulus_instance_id &&
+        candidate.stimulusId === result.stimulus_id
+    )
+    if (
+      snapshot?.vrmReady === true &&
+      snapshot.sceneVisible === true &&
+      snapshot.frameSeq > baselineFrameSeq &&
+      Boolean(instance) &&
+      ['active', 'releasing'].includes(instance?.phase ?? '') &&
+      snapshot.humanoidRotationBoneNames.length +
+        snapshot.humanoidTranslationBoneNames.length >
+        0
+    ) {
+      renderedActiveFrameObserved = true
+    }
+    if (
+      renderedActiveFrameObserved &&
+      instance?.phase === 'completed' &&
+      snapshot?.occupiedSlots === 0 &&
+      snapshot.queueLength === 0
+    ) {
+      break
+    }
+    await waitForAcceptedPresentationMotionPoll(signal)
+  }
+
+  const noLateMotionDeadline =
+    Date.now() + ACCEPTED_PRESENTATION_NO_LATE_MOTION_MS
+  while (Date.now() < noLateMotionDeadline) {
+    await waitForAcceptedPresentationMotionPoll(signal)
+    const snapshot = readAcceptedPresentationMotionRuntimeSnapshot()
+    const matchingInstance = snapshot?.instances.find(
+      (candidate) =>
+        candidate.instanceId === result.stimulus_instance_id &&
+        candidate.stimulusId === result.stimulus_id
+    )
+    const latePhase = snapshot?.instances.some((candidate) =>
+      ['loading', 'queued', 'ready', 'active', 'releasing'].includes(
+        candidate.phase
+      )
+    )
+    if (
+      !snapshot ||
+      matchingInstance?.phase !== 'completed' ||
+      snapshot.occupiedSlots !== 0 ||
+      snapshot.queueLength !== 0 ||
+      latePhase
+    ) {
+      throw new Error(ACCEPTED_PRESENTATION_FAILED)
+    }
+  }
+}
+
 function getSupportedMotionProfile(args: {
   schemaVersion: string
   kind: string
@@ -837,6 +1059,12 @@ export async function requestAcceptedPreparedSamplePresentation(
         }
       }
       normalCompletion = completed
+      if (!completed || !assistantSpeech.trim()) throw new Error()
+      if (
+        motionEvents.some((event) => !extractThoughtCoreMotionStimulus(event))
+      ) {
+        throw new Error()
+      }
     } catch (error) {
       if (!readerCancelled) {
         readerCancelled = true
@@ -846,12 +1074,6 @@ export async function requestAcceptedPreparedSamplePresentation(
     } finally {
       reader.releaseLock()
     }
-    if (!completed || !assistantSpeech.trim()) throw new Error()
-    if (
-      motionEvents.some((event) => !extractThoughtCoreMotionStimulus(event))
-    ) {
-      throw new Error()
-    }
     if (!normalCompletion || options.signal.aborted) throw new Error()
     await presentAssistant(
       { conversationAttemptRef: expectedRef, assistantSpeech },
@@ -859,7 +1081,10 @@ export async function requestAcceptedPreparedSamplePresentation(
     )
     if (options.signal.aborted) throw new Error()
     for (const motionEvent of motionEvents) {
-      if (!dispatchThoughtCoreMotionStimulus(motionEvent)) throw new Error()
+      await dispatchAcceptedPresentationMotionAndAwaitLifecycle(
+        motionEvent,
+        options.signal
+      )
     }
   } catch {
     throw new Error(ACCEPTED_PRESENTATION_FAILED)
