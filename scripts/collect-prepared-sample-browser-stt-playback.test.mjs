@@ -24,6 +24,7 @@ import {
   openCanonicalPresentationPages,
   releaseBrowserRoutedPlayback,
   requireBrowserAudioAvailability,
+  resolveBrowserLaunchArgs,
   resolveOperatorServerMode,
   runPreparedSampleController,
   selectBrowserAudioRoute,
@@ -1886,6 +1887,8 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
     'utf8'
   )
   assert.match(source, /--use-fake-ui-for-media-stream/)
+  assert.match(source, /--disable-features=ChromeWideEchoCancellation/)
+  assert.match(source, /args:\s*resolveBrowserLaunchArgs\(audioRouteClass\)/)
   assert.doesNotMatch(source, /--use-fake-device-for-media-stream/)
   assert.match(source, /stopTrackedServer/)
   assert.match(source, /serverMode !== 'start_owned'/)
@@ -1935,4 +1938,19 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
     /Set-AudioDevice|SetDefaultEndpoint|SoundVolumeView|global default/i
   )
   assert.doesNotMatch(source, /spawn\([\s\S]{0,300}audioPath/)
+})
+
+test('disables wide echo cancellation only for the fixed virtual-cable route', () => {
+  assert.deepEqual(resolveBrowserLaunchArgs(AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT), [
+    '--use-fake-ui-for-media-stream',
+    '--disable-popup-blocking',
+  ])
+  assert.deepEqual(
+    resolveBrowserLaunchArgs(AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR),
+    [
+      '--use-fake-ui-for-media-stream',
+      '--disable-popup-blocking',
+      '--disable-features=ChromeWideEchoCancellation',
+    ]
+  )
 })

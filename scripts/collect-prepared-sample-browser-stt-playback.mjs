@@ -23,6 +23,13 @@ export const AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR =
 export const BROWSER_PLAYBACK_GAIN_DB = 12
 export const BROWSER_PLAYBACK_GAIN_LINEAR = 10 ** (BROWSER_PLAYBACK_GAIN_DB / 20)
 export const MAX_PREPARED_SAMPLE_AUDIO_BYTES = 32 * 1024 * 1024
+export const resolveBrowserLaunchArgs = (audioRouteClass) => [
+  '--use-fake-ui-for-media-stream',
+  '--disable-popup-blocking',
+  ...(audioRouteClass === AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
+    ? ['--disable-features=ChromeWideEchoCancellation']
+    : []),
+]
 const MAX_OPERATOR_RESPONSE_BYTES = 256 * 1024
 const COMPLETE_CLEANUP_CLASS =
   'browser_closed_or_external_preserved_server_stopped_or_external_preserved_playback_processes_exited_temp_resources_deleted_volume_not_changed'
@@ -1204,10 +1211,7 @@ export const createRuntimeAdapter = ({
           channel: 'chrome',
           headless: false,
           timeout: 30_000,
-          args: [
-            '--use-fake-ui-for-media-stream',
-            '--disable-popup-blocking',
-          ],
+          args: resolveBrowserLaunchArgs(audioRouteClass),
           env: createPublicChildEnvironment(),
         })
         if (signal) throwIfRouteAborted(signal)
