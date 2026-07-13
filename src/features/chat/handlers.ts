@@ -24,7 +24,10 @@ import {
   safeConversationAttemptRef,
   writeWindowSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
-import type { AcceptedPreparedSamplePresentation } from './thoughtCoreChat'
+import {
+  PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS,
+  type AcceptedPreparedSamplePresentation,
+} from './thoughtCoreChat'
 
 // セッションIDを生成する関数
 const generateSessionId = () => generateMessageId()
@@ -336,7 +339,7 @@ export const presentAcceptedPreparedSampleAssistantResponse = async (
     assistantSpeech.length > 8_000 ||
     settingsStore.getState().selectVoice !== 'voicevox' ||
     options.signal.aborted ||
-    options.deadlineMs !== 30_000
+    options.deadlineMs !== PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS
   ) {
     throw new Error('accepted_prepared_sample_presentation_failed')
   }

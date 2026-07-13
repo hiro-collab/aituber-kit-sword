@@ -96,7 +96,7 @@ describe('handlers', () => {
       },
       {
         signal: new AbortController().signal,
-        deadlineMs: 30_000,
+        deadlineMs: 75_000,
       }
     )
 
@@ -120,6 +120,26 @@ describe('handlers', () => {
           'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
       })
     )
+  })
+
+  it('rejects the stale 30-second presentation deadline before publishing', async () => {
+    ;(settingsStore.getState as jest.Mock).mockReturnValue({
+      selectVoice: 'voicevox',
+    })
+
+    await expect(
+      presentAcceptedPreparedSampleAssistantResponse(
+        {
+          conversationAttemptRef:
+            'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
+          assistantSpeech: '公開されない返答です。',
+        },
+        { signal: new AbortController().signal, deadlineMs: 30_000 }
+      )
+    ).rejects.toThrow('accepted_prepared_sample_presentation_failed')
+
+    expect(homeStore.setState).not.toHaveBeenCalled()
+    expect(speakCharacter).not.toHaveBeenCalled()
   })
 
   it('aborts the route-owned presentation without late completion', async () => {
@@ -148,7 +168,7 @@ describe('handlers', () => {
           'm4.prepared_sample_attempt:0123456789abcdef0123456789abcdef',
         assistantSpeech: '中断される返答です。',
       },
-      { signal: controller.signal, deadlineMs: 30_000 }
+      { signal: controller.signal, deadlineMs: 75_000 }
     )
     controller.abort()
 
@@ -187,7 +207,7 @@ describe('handlers', () => {
           },
           {
             signal: new AbortController().signal,
-            deadlineMs: 30_000,
+            deadlineMs: 75_000,
           }
         )
       ).rejects.toThrow('accepted_prepared_sample_presentation_failed')
