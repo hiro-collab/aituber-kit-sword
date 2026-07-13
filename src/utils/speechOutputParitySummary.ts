@@ -202,6 +202,7 @@ export const createSystemSpeechLifecycleTransportPublisher = (
   let running = false
   let retainedCount = 0
   let requestTimeoutCount = 0
+  let requestFailureCount = 0
   let overflowCount = 0
   let transitionRejectedCount = 0
   let futureReservedCount = 0
@@ -285,22 +286,29 @@ export const createSystemSpeechLifecycleTransportPublisher = (
         let deadlineTimer: ReturnType<typeof setTimeout> | null = null
         let timedOut = false
         try {
-          const request = Promise.resolve()
-            .then(() =>
-              fetchImpl(SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_PATH, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'same-origin',
-                cache: 'no-store',
-                keepalive: true,
-                signal: abortController.signal,
-                body: JSON.stringify(envelope),
-              })
+          let request: Promise<void>
+          try {
+            const response = fetchImpl(SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_PATH, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              cache: 'no-store',
+              keepalive: true,
+              signal: abortController.signal,
+              body: JSON.stringify(envelope),
+            })
+            request = Promise.resolve(response).then(
+              (result) => {
+                if (result?.ok !== true) requestFailureCount += 1
+              },
+              () => {
+                requestFailureCount += 1
+              }
             )
-            .then(
-              () => undefined,
-              () => undefined
-            )
+          } catch {
+            requestFailureCount += 1
+            request = Promise.resolve()
+          }
           const deadline = new Promise<void>((resolve) => {
             deadlineTimer = setRequestTimer(() => {
               timedOut = true
@@ -368,6 +376,7 @@ export const createSystemSpeechLifecycleTransportPublisher = (
       queued_count: queue.length,
       reserved_future_count: futureReservedCount,
       request_timeout_count: requestTimeoutCount,
+      request_failure_count: requestFailureCount,
       overflow_count: overflowCount,
       transition_rejected_count: transitionRejectedCount,
     }),
@@ -389,10 +398,10 @@ export const writeWindowSystemSpeechLifecycleSummary = (value: unknown) => {
       __swordAgentSystemSpeechLifecycleV0?: SystemSpeechLifecycleSummary
     }
   ).__swordAgentSystemSpeechLifecycleV0 = summary
+  systemSpeechLifecycleTransportPublisher.publish(summary)
   window.dispatchEvent(
     new CustomEvent('swordAgentSystemSpeechLifecycleV0', { detail: summary })
   )
-  systemSpeechLifecycleTransportPublisher.publish(summary)
 }
 
 export const createSystemSpeechLifecycleController = (

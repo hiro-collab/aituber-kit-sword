@@ -12,6 +12,7 @@ import {
   resolveSpeechOutputDisplayConversationAttemptRef,
   safeConversationAttemptRef,
   sanitizeSpeechOutputSummary,
+  waitForSystemSpeechLifecycleTransportIdle,
   writeWindowSystemSpeechLifecycleSummary,
 } from '@/utils/speechOutputParitySummary'
 import { existsSync, readFileSync, statSync } from 'fs'
@@ -853,6 +854,60 @@ describe('speechOutputParitySummary', () => {
       expect(serialized).not.toContain('must-not-leak')
     })
 
+    it('invokes the real same-origin POST before dispatching the page event', async () => {
+      const originalFetch = globalThis.fetch
+      const fetchImpl = jest.fn().mockResolvedValue({ ok: true })
+      const observedAtDispatch: number[] = []
+      const listener = () =>
+        observedAtDispatch.push(fetchImpl.mock.calls.length)
+      Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: fetchImpl,
+      })
+      window.addEventListener('swordAgentSystemSpeechLifecycleV0', listener)
+
+      try {
+        writeWindowSystemSpeechLifecycleSummary({
+          schema_version: 'ait_system_speech_lifecycle.v0',
+          system_speech_session_id:
+            'system-speech-session:sss_cccccccccccccccccccccccccccccccc',
+          speech_session_generation: 8,
+          playback_event_ref:
+            'playback-event:pe_dddddddddddddddddddddddddddddddd',
+          lifecycle_state: 'handoff_accepted',
+          cooldown_ms: 500,
+        })
+
+        expect(fetchImpl).toHaveBeenCalledTimes(1)
+        expect(observedAtDispatch).toEqual([1])
+        const [path, init] = fetchImpl.mock.calls[0]
+        expect(path).toBe('/api/self-output-awareness-transport')
+        expect(init).toEqual(
+          expect.objectContaining({
+            method: 'POST',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            keepalive: true,
+          })
+        )
+        expect(JSON.parse(String(init.body)).lifecycle.lifecycle_state).toBe(
+          'handoff_accepted'
+        )
+        await waitForSystemSpeechLifecycleTransportIdle()
+      } finally {
+        window.removeEventListener(
+          'swordAgentSystemSpeechLifecycleV0',
+          listener
+        )
+        Object.defineProperty(globalThis, 'fetch', {
+          configurable: true,
+          writable: true,
+          value: originalFetch,
+        })
+      }
+    })
+
     it('serializes same-origin lifecycle transport without blocking page publication', async () => {
       let resolveFirst: ((value: Pick<Response, 'ok'>) => void) | null = null
       const fetchImpl = jest
@@ -880,8 +935,8 @@ describe('speechOutputParitySummary', () => {
       const lease = controller.prepareQueueHandoff()
 
       expect(controller.commitQueueHandoff(lease)).toBe(true)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
       expect(controller.completeQueueHandoff(lease)).toBe(true)
-      await Promise.resolve()
       expect(fetchImpl).toHaveBeenCalledTimes(1)
 
       if (!resolveFirst) throw new Error('first transport request was not held')
@@ -928,7 +983,7 @@ describe('speechOutputParitySummary', () => {
       const fetchImpl = jest
         .fn<Promise<Pick<Response, 'ok'>>, [string, RequestInit]>()
         .mockRejectedValueOnce(new Error('private transport failure'))
-        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValue({ ok: true })
       const publisher = createSystemSpeechLifecycleTransportPublisher({
         fetchImpl,
         nowWall: () => '2026-07-13T07:30:00.000Z',
@@ -968,6 +1023,44 @@ describe('speechOutputParitySummary', () => {
 
       await expect(publisher.drain()).resolves.toBeUndefined()
       expect(fetchImpl).toHaveBeenCalledTimes(3)
+      expect(publisher.getBoundedStatus().request_failure_count).toBe(1)
+    })
+
+    it('counts a non-ok lifecycle POST without exposing response content', async () => {
+      const fetchImpl = jest
+        .fn<Promise<Pick<Response, 'ok'>>, [string, RequestInit]>()
+        .mockResolvedValueOnce({ ok: false })
+      const publisher = createSystemSpeechLifecycleTransportPublisher({
+        fetchImpl,
+        nowWall: () => '2026-07-13T07:30:00.000Z',
+        nowMonotonic: () => 457,
+      })
+
+      publisher.publish({
+        schema_version: 'ait_system_speech_lifecycle.v0',
+        system_speech_session_id:
+          'system-speech-session:sss_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        speech_session_generation: 1,
+        playback_event_ref:
+          'playback-event:pe_ffffffffffffffffffffffffffffffff',
+        lifecycle_state: 'handoff_accepted',
+        cooldown_ms: 500,
+      })
+
+      await publisher.drain()
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(publisher.getBoundedStatus()).toEqual({
+        retained_count: 0,
+        queued_count: 0,
+        reserved_future_count: 2,
+        request_timeout_count: 0,
+        request_failure_count: 1,
+        overflow_count: 0,
+        transition_rejected_count: 0,
+      })
+      expect(JSON.stringify(publisher.getBoundedStatus())).not.toContain(
+        'private'
+      )
     })
 
     it('preserves accepted lifecycle convergence under bounded overload', async () => {
@@ -1038,6 +1131,7 @@ describe('speechOutputParitySummary', () => {
           queued_count: 7,
           reserved_future_count: 0,
           request_timeout_count: 0,
+          request_failure_count: 0,
           overflow_count: 1,
           transition_rejected_count: 2,
         })
@@ -1066,6 +1160,7 @@ describe('speechOutputParitySummary', () => {
           queued_count: 0,
           reserved_future_count: 0,
           request_timeout_count: 1,
+          request_failure_count: 1,
           overflow_count: 1,
           transition_rejected_count: 2,
         })
