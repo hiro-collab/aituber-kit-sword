@@ -4,6 +4,7 @@
 
 import * as THREE from 'three'
 import { createProjectionVisualInPageDiagnostics, Viewer } from '../viewer'
+import { calculateCameraFit } from '../cameraFit'
 import { loadVRMAnimation } from '@/lib/VRMAnimation/loadVRMAnimation'
 import {
   CONTEXT_NOD_DURATION_MS,
@@ -20,6 +21,75 @@ const mockedLoadVRMAnimation = loadVRMAnimation as jest.MockedFunction<
   typeof loadVRMAnimation
 >
 const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
+
+describe('VRM camera fit', () => {
+  it('fits tall and wide model bounds using the limiting field of view', () => {
+    const tall = calculateCameraFit(
+      { min: { x: -0.5, y: 0, z: -0.2 }, max: { x: 0.5, y: 2, z: 0.2 } },
+      20,
+      16 / 9
+    )
+    const wide = calculateCameraFit(
+      { min: { x: -2, y: 0, z: -0.2 }, max: { x: 2, y: 1, z: 0.2 } },
+      20,
+      16 / 9
+    )
+
+    expect(tall).toEqual(
+      expect.objectContaining({
+        target: { x: 0, y: 1, z: 0 },
+      })
+    )
+    expect(wide).toEqual(
+      expect.objectContaining({
+        target: { x: 0, y: 0.5, z: 0 },
+      })
+    )
+    expect(wide!.position.z).toBeGreaterThan(tall!.position.z)
+    expect(tall!.near).toBeGreaterThan(0)
+    expect(tall!.far).toBeGreaterThan(tall!.position.z)
+  })
+
+  it('fails closed for degenerate or invalid camera geometry', () => {
+    expect(
+      calculateCameraFit(
+        { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 1, z: 0 } },
+        20,
+        16 / 9
+      )
+    ).toBeNull()
+    expect(
+      calculateCameraFit(
+        { min: { x: -1, y: 0, z: 0 }, max: { x: 1, y: 2, z: 0 } },
+        20,
+        0
+      )
+    ).toBeNull()
+  })
+
+  it('fails closed when finite inputs overflow derived camera geometry', () => {
+    expect(
+      calculateCameraFit(
+        {
+          min: { x: -1e308, y: 0, z: 0 },
+          max: { x: 1e308, y: 2, z: 0 },
+        },
+        20,
+        16 / 9
+      )
+    ).toBeNull()
+  })
+
+  it('fails closed when a positive FOV underflows its tangent', () => {
+    expect(
+      calculateCameraFit(
+        { min: { x: -1, y: 0, z: 0 }, max: { x: 1, y: 2, z: 0 } },
+        Number.MIN_VALUE,
+        16 / 9
+      )
+    ).toBeNull()
+  })
+})
 
 describe('Viewer Motion Runtime asset lifecycle', () => {
   beforeEach(() => {

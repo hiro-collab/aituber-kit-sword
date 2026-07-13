@@ -115,12 +115,33 @@ describe('settingsStore persistence', () => {
     expect(settingsStore.getState().selectAIService).toBe('openai')
   })
 
-  it('can force only the selected VRM path while preserving persisted camera position', () => {
+  it('resets persisted camera calibration when a forced VRM path changes the model', () => {
     process.env.NEXT_PUBLIC_SELECTED_VRM_PATH = '/vrm/custom_model.vrm'
     process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_WITH_ENV_VARIABLES = 'false'
     process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH = 'true'
     setPersistedState({
       selectedVrmPath: '/vrm/nikechan_v1.vrm',
+      fixedCharacterPosition: true,
+      characterPosition: { x: 0.2, y: 1.45, z: 1.9, scale: 1 },
+      characterRotation: { x: 0, y: 1.42, z: 0 },
+    })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState()).toMatchObject({
+      selectedVrmPath: '/vrm/custom_model.vrm',
+      fixedCharacterPosition: false,
+      characterPosition: { x: 0, y: 0, z: 0, scale: 1 },
+      characterRotation: { x: 0, y: 0, z: 0 },
+    })
+  })
+
+  it('preserves camera calibration when a forced VRM path keeps the same model', () => {
+    process.env.NEXT_PUBLIC_SELECTED_VRM_PATH = '/vrm/custom_model.vrm'
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_WITH_ENV_VARIABLES = 'false'
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH = 'true'
+    setPersistedState({
+      selectedVrmPath: '/vrm/custom_model.vrm',
       fixedCharacterPosition: true,
       characterPosition: { x: 0.2, y: 1.45, z: 1.9, scale: 1 },
       characterRotation: { x: 0, y: 1.42, z: 0 },

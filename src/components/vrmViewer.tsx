@@ -267,6 +267,7 @@ export default function VrmViewer({
           if (file_type === 'vrm') {
             const blob = new Blob([file], { type: 'application/octet-stream' })
             const url = window.URL.createObjectURL(blob)
+            viewer.resetCameraPosition()
             loadVrmWithErrorState(url, {
               idleNeutralVisualTestMode: frozenVisualTestModeRef.current,
             })
@@ -309,6 +310,12 @@ export default function VrmViewer({
         loadedVisualTestModeRef.current === visualTestMode)
     ) {
       return
+    }
+    if (
+      loadedVrmPathRef.current &&
+      loadedVrmPathRef.current !== selectedVrmPath
+    ) {
+      viewer.resetCameraPosition()
     }
     loadedVrmPathRef.current = selectedVrmPath
     loadedVisualTestModeRef.current = visualTestMode

@@ -855,7 +855,10 @@ const getInitialValuesFromEnv = (): SettingsState => ({
   surprisedMotionGroup: process.env.NEXT_PUBLIC_SURPRISED_MOTION_GROUP || '',
 })
 
-type PersistedSettingsState = Omit<Partial<SettingsState>, 'selectAIService'> & {
+type PersistedSettingsState = Omit<
+  Partial<SettingsState>,
+  'selectAIService'
+> & {
   selectAIService?: AIService | 'dify'
   difyKey?: unknown
   difyUrl?: unknown
@@ -944,7 +947,13 @@ const mergePersistedSettings = (
     process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_SELECTED_VRM_PATH === 'true' &&
     process.env.NEXT_PUBLIC_SELECTED_VRM_PATH
   ) {
-    mergedState.selectedVrmPath = getInitialValuesFromEnv().selectedVrmPath
+    const selectedVrmPath = getInitialValuesFromEnv().selectedVrmPath
+    if (mergedState.selectedVrmPath !== selectedVrmPath) {
+      mergedState.fixedCharacterPosition = false
+      mergedState.characterPosition = { x: 0, y: 0, z: 0, scale: 1 }
+      mergedState.characterRotation = { x: 0, y: 0, z: 0 }
+    }
+    mergedState.selectedVrmPath = selectedVrmPath
   }
 
   return mergedState

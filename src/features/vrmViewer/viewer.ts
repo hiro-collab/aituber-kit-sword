@@ -5,6 +5,7 @@ import { loadVRMAnimation } from '@/lib/VRMAnimation/loadVRMAnimation'
 import { buildUrl } from '@/utils/buildUrl'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import settingsStore from '@/features/stores/settings'
+import { calculateCameraFit } from './cameraFit'
 import {
   DANCE_SEQUENCE_GROUP_KEY,
   receiveMotionStimulusV0,
@@ -533,6 +534,10 @@ export class Viewer {
       return
     }
 
+    if (this.fitCameraToModel()) {
+      return
+    }
+
     const headNode = this.model?.vrm?.humanoid.getNormalizedBoneNode('head')
 
     if (headNode) {
@@ -545,6 +550,32 @@ export class Viewer {
       this._cameraControls?.target.set(headWPos.x, headWPos.y, headWPos.z)
       this._cameraControls?.update()
     }
+  }
+
+  private fitCameraToModel(): boolean {
+    const scene = this.model?.vrm?.scene
+    const camera = this._camera
+    const controls = this._cameraControls
+    if (!scene || !camera || !controls) return false
+
+    scene.updateWorldMatrix(true, true)
+    const bounds = new THREE.Box3().setFromObject(scene)
+    if (bounds.isEmpty()) return false
+
+    const fit = calculateCameraFit(
+      { min: bounds.min, max: bounds.max },
+      camera.fov,
+      camera.aspect
+    )
+    if (!fit) return false
+
+    camera.position.set(fit.position.x, fit.position.y, fit.position.z)
+    camera.near = fit.near
+    camera.far = fit.far
+    camera.updateProjectionMatrix()
+    controls.target.set(fit.target.x, fit.target.y, fit.target.z)
+    controls.update()
+    return true
   }
 
   public update = () => {
