@@ -1,11 +1,15 @@
 import {
   CONVERSATION_ATTEMPT_REF_PATTERN,
+  PLAYBACK_EVENT_REF_PATTERN,
+  SYSTEM_SPEECH_SESSION_ID_PATTERN,
   buildSelfOutputSpeechObservationSummary,
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
+  createSystemSpeechLifecycleController,
   resolveSpeechOutputDisplayConversationAttemptRef,
   safeConversationAttemptRef,
   sanitizeSpeechOutputSummary,
+  writeWindowSystemSpeechLifecycleSummary,
 } from '@/utils/speechOutputParitySummary'
 import { existsSync, readFileSync, statSync } from 'fs'
 
@@ -429,5 +433,328 @@ describe('speechOutputParitySummary', () => {
     )
     expect(observation).not.toHaveProperty('transcript')
     expect(observation).not.toHaveProperty('text')
+  })
+
+  describe('system speech lifecycle', () => {
+    const exactLifecycleKeys = [
+      'schema_version',
+      'system_speech_session_id',
+      'speech_session_generation',
+      'playback_event_ref',
+      'lifecycle_state',
+      'queue_handoff_status',
+      'queue_completion_status',
+      'playback_observation_status',
+      'suppression_status',
+      'cooldown_status',
+      'cooldown_ms',
+      'compare_and_release_required',
+      'may_start_user_turn',
+      'turn_adoption_authority',
+      'raw_text_published',
+      'text_hash_published',
+      'provider_payload_published',
+      'path_published',
+      'url_published',
+      'raw_audio_published',
+      'device_identity_published',
+      'private_data_published',
+    ].sort()
+    const hexValues = [
+      '11111111111111111111111111111111',
+      '22222222222222222222222222222222',
+      '33333333333333333333333333333333',
+      '44444444444444444444444444444444',
+      '55555555555555555555555555555555',
+      '66666666666666666666666666666666',
+    ]
+
+    it('publishes only an allowlisted handoff fact after commit', () => {
+      const publish = jest.fn()
+      const createOpaqueHex = jest
+        .fn()
+        .mockReturnValueOnce(hexValues[0])
+        .mockReturnValueOnce(hexValues[1])
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex,
+      })
+
+      const lease = controller.prepareQueueHandoff()
+
+      expect(publish).not.toHaveBeenCalled()
+      expect(
+        SYSTEM_SPEECH_SESSION_ID_PATTERN.test(lease.system_speech_session_id)
+      ).toBe(true)
+      expect(PLAYBACK_EVENT_REF_PATTERN.test(lease.playback_event_ref)).toBe(
+        true
+      )
+      expect(controller.commitQueueHandoff(lease)).toBe(true)
+
+      const summary = publish.mock.calls[0][0]
+      expect(summary).toEqual({
+        schema_version: 'ait_system_speech_lifecycle.v0',
+        system_speech_session_id:
+          'system-speech-session:sss_11111111111111111111111111111111',
+        speech_session_generation: 1,
+        playback_event_ref:
+          'playback-event:pe_22222222222222222222222222222222',
+        lifecycle_state: 'handoff_accepted',
+        queue_handoff_status: 'accepted',
+        queue_completion_status: 'pending',
+        playback_observation_status: 'not_observed',
+        suppression_status: 'active',
+        cooldown_status: 'clear',
+        cooldown_ms: 500,
+        compare_and_release_required: true,
+        may_start_user_turn: false,
+        turn_adoption_authority: false,
+        raw_text_published: false,
+        text_hash_published: false,
+        provider_payload_published: false,
+        path_published: false,
+        url_published: false,
+        raw_audio_published: false,
+        device_identity_published: false,
+        private_data_published: false,
+      })
+      expect(summary).not.toHaveProperty('text')
+      expect(summary).not.toHaveProperty('text_hash')
+      expect(summary).not.toHaveProperty('provider')
+      expect(summary).not.toHaveProperty('path')
+      expect(summary).not.toHaveProperty('url')
+      expect(summary).not.toHaveProperty('audio')
+      expect(summary).not.toHaveProperty('device')
+      expect(Object.keys(summary).sort()).toEqual(exactLifecycleKeys)
+    })
+
+    it('keeps generations monotonic and completion/cooldown compare guarded', () => {
+      const publish = jest.fn()
+      const timerCallbacks: Array<() => void> = []
+      const clearTimer = jest.fn()
+      const createOpaqueHex = jest.fn()
+      hexValues.forEach((value) => createOpaqueHex.mockReturnValueOnce(value))
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex,
+        setTimer: (callback) => {
+          timerCallbacks.push(callback)
+          return timerCallbacks.length as unknown as ReturnType<
+            typeof setTimeout
+          >
+        },
+        clearTimer,
+      })
+      const first = controller.prepareQueueHandoff()
+      const adversarialFirst = {
+        ...first,
+        text: 'private text',
+        text_hash: 'private hash',
+        provider: { secret: true },
+        path: 'C:\\private\\speech.wav',
+        url: 'https://private.invalid/audio',
+        audio: new Uint8Array([1, 2, 3]),
+        device: 'private-device',
+        private: { marker: 'must-not-leak' },
+        may_start_user_turn: true,
+        turn_adoption_authority: true,
+      }
+      expect(controller.commitQueueHandoff(adversarialFirst)).toBe(true)
+      expect(controller.completeQueueHandoff(adversarialFirst)).toBe(true)
+      expect(controller.completeQueueHandoff(adversarialFirst)).toBe(false)
+      expect(
+        publish.mock.calls.map(([summary]) => summary.lifecycle_state)
+      ).toEqual(['handoff_accepted', 'cooldown'])
+
+      const second = controller.prepareQueueHandoff()
+      expect(second.speech_session_generation).toBe(2)
+      expect(controller.commitQueueHandoff(second)).toBe(true)
+      expect(clearTimer).toHaveBeenCalledTimes(1)
+
+      timerCallbacks[0]()
+      expect(publish.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          speech_session_generation: 2,
+          lifecycle_state: 'handoff_accepted',
+          suppression_status: 'active',
+        })
+      )
+      expect(controller.completeQueueHandoff(first)).toBe(false)
+      expect(controller.rollbackQueueHandoff(first)).toBe(false)
+      expect(controller.completeQueueHandoff(second)).toBe(true)
+
+      timerCallbacks[1]()
+      expect(publish.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          system_speech_session_id: second.system_speech_session_id,
+          speech_session_generation: 2,
+          playback_event_ref: second.playback_event_ref,
+          lifecycle_state: 'released',
+          queue_completion_status: 'callback_observed',
+          playback_observation_status: 'not_observed',
+          suppression_status: 'released',
+          cooldown_status: 'elapsed',
+        })
+      )
+      publish.mock.calls.forEach(([summary]) => {
+        expect(Object.keys(summary).sort()).toEqual(exactLifecycleKeys)
+        expect(summary).toEqual(
+          expect.objectContaining({
+            playback_observation_status: 'not_observed',
+            may_start_user_turn: false,
+            turn_adoption_authority: false,
+            raw_text_published: false,
+            text_hash_published: false,
+            provider_payload_published: false,
+            path_published: false,
+            url_published: false,
+            raw_audio_published: false,
+            device_identity_published: false,
+            private_data_published: false,
+          })
+        )
+        expect(summary).not.toHaveProperty('text')
+        expect(summary).not.toHaveProperty('text_hash')
+        expect(summary).not.toHaveProperty('provider')
+        expect(summary).not.toHaveProperty('path')
+        expect(summary).not.toHaveProperty('url')
+        expect(summary).not.toHaveProperty('audio')
+        expect(summary).not.toHaveProperty('device')
+        expect(summary).not.toHaveProperty('private')
+      })
+    })
+
+    it('releases an active adversarial cloned lease without leaking injected fields', () => {
+      const publish = jest.fn()
+      let cooldownCallback: (() => void) | null = null
+      const createOpaqueHex = jest
+        .fn()
+        .mockReturnValueOnce(hexValues[0])
+        .mockReturnValueOnce(hexValues[1])
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex,
+        setTimer: (callback) => {
+          cooldownCallback = callback
+          return 1 as unknown as ReturnType<typeof setTimeout>
+        },
+      })
+      const lease = controller.prepareQueueHandoff()
+      const adversarialLease = {
+        ...lease,
+        text: 'release-private-text',
+        text_hash: 'release-private-hash',
+        provider: { marker: 'release-provider-marker' },
+        path: 'C:\\release-private\\speech.wav',
+        url: 'https://release-private.invalid/audio',
+        audio: new Uint8Array([4, 5, 6]),
+        device: 'release-private-device',
+        private: { marker: 'release-private-marker' },
+        may_start_user_turn: true,
+        turn_adoption_authority: true,
+      }
+
+      expect(controller.commitQueueHandoff(adversarialLease)).toBe(true)
+      expect(controller.completeQueueHandoff(adversarialLease)).toBe(true)
+      expect(cooldownCallback).not.toBeNull()
+      if (cooldownCallback === null) {
+        throw new Error('adversarial_cooldown_callback_not_captured')
+      }
+      ;(cooldownCallback as () => void)()
+
+      expect(
+        publish.mock.calls.map(([summary]) => summary.lifecycle_state)
+      ).toEqual(['handoff_accepted', 'cooldown', 'released'])
+      const released = publish.mock.calls[2][0]
+      expect(Object.keys(released).sort()).toEqual(exactLifecycleKeys)
+      expect(released).toEqual(
+        expect.objectContaining({
+          system_speech_session_id: lease.system_speech_session_id,
+          speech_session_generation: lease.speech_session_generation,
+          playback_event_ref: lease.playback_event_ref,
+          lifecycle_state: 'released',
+          playback_observation_status: 'not_observed',
+          may_start_user_turn: false,
+          turn_adoption_authority: false,
+          suppression_status: 'released',
+          cooldown_status: 'elapsed',
+        })
+      )
+      const serialized = JSON.stringify(released)
+      expect(serialized).not.toContain('release-private')
+      expect(serialized).not.toContain('release-provider-marker')
+      expect(serialized).not.toContain('release-private-marker')
+    })
+
+    it('rolls back only an exact pending or active generation', () => {
+      const publish = jest.fn()
+      const createOpaqueHex = jest.fn()
+      hexValues.forEach((value) => createOpaqueHex.mockReturnValueOnce(value))
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex,
+      })
+      const first = controller.prepareQueueHandoff()
+      const mismatched = {
+        ...first,
+        playback_event_ref:
+          'playback-event:pe_ffffffffffffffffffffffffffffffff',
+      }
+
+      expect(controller.rollbackQueueHandoff(mismatched)).toBe(false)
+      expect(controller.rollbackQueueHandoff(first)).toBe(true)
+      expect(controller.commitQueueHandoff(first)).toBe(false)
+      expect(publish).not.toHaveBeenCalled()
+    })
+
+    it('sanitizes direct window publication to the exact lifecycle allowlist', () => {
+      delete (window as any).__swordAgentSystemSpeechLifecycleV0
+      writeWindowSystemSpeechLifecycleSummary({
+        schema_version: 'ait_system_speech_lifecycle.v0',
+        system_speech_session_id:
+          'system-speech-session:sss_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        speech_session_generation: 7,
+        playback_event_ref:
+          'playback-event:pe_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        lifecycle_state: 'cooldown',
+        cooldown_ms: 500,
+        text: 'private text',
+        text_hash: 'private hash',
+        provider: { secret: true },
+        path: 'C:\\private\\speech.wav',
+        url: 'https://private.invalid/audio',
+        audio: new Uint8Array([1, 2, 3]),
+        device: 'private-device',
+        private: { marker: 'must-not-leak' },
+        may_start_user_turn: true,
+        turn_adoption_authority: true,
+      })
+
+      const published = (window as any).__swordAgentSystemSpeechLifecycleV0
+      expect(Object.keys(published).sort()).toEqual(exactLifecycleKeys)
+      expect(published).toEqual(
+        expect.objectContaining({
+          lifecycle_state: 'cooldown',
+          queue_completion_status: 'callback_observed',
+          playback_observation_status: 'not_observed',
+          may_start_user_turn: false,
+          turn_adoption_authority: false,
+          raw_text_published: false,
+          text_hash_published: false,
+          provider_payload_published: false,
+          path_published: false,
+          url_published: false,
+          raw_audio_published: false,
+          device_identity_published: false,
+          private_data_published: false,
+        })
+      )
+      const serialized = JSON.stringify(published)
+      expect(serialized).not.toContain('private text')
+      expect(serialized).not.toContain('private hash')
+      expect(serialized).not.toContain('private.invalid')
+      expect(serialized).not.toContain('private-device')
+      expect(serialized).not.toContain('must-not-leak')
+    })
   })
 })

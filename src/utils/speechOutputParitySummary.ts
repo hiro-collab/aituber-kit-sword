@@ -3,6 +3,297 @@ import { classifyReviewProofMessage } from '@/utils/reviewProofMessage'
 export const SPEECH_OUTPUT_PARITY_SCHEMA_VERSION =
   'projection_visual_speech_output_parity.v0'
 
+export const SYSTEM_SPEECH_LIFECYCLE_SCHEMA_VERSION =
+  'ait_system_speech_lifecycle.v0'
+export const SYSTEM_SPEECH_SESSION_ID_PATTERN =
+  /^system-speech-session:sss_[a-f0-9]{32}$/
+export const PLAYBACK_EVENT_REF_PATTERN = /^playback-event:pe_[a-f0-9]{32}$/
+export const SYSTEM_SPEECH_COOLDOWN_MS = 500
+
+export type SystemSpeechLifecycleLease = {
+  system_speech_session_id: string
+  speech_session_generation: number
+  playback_event_ref: string
+}
+
+export type SystemSpeechLifecycleState =
+  | 'handoff_accepted'
+  | 'cooldown'
+  | 'released'
+
+export type SystemSpeechLifecycleSummary = SystemSpeechLifecycleLease & {
+  schema_version: typeof SYSTEM_SPEECH_LIFECYCLE_SCHEMA_VERSION
+  lifecycle_state: SystemSpeechLifecycleState
+  queue_handoff_status: 'accepted'
+  queue_completion_status: 'pending' | 'callback_observed'
+  playback_observation_status: 'not_observed'
+  suppression_status: 'active' | 'released'
+  cooldown_status: 'clear' | 'active' | 'elapsed'
+  cooldown_ms: number
+  compare_and_release_required: true
+  may_start_user_turn: false
+  turn_adoption_authority: false
+  raw_text_published: false
+  text_hash_published: false
+  provider_payload_published: false
+  path_published: false
+  url_published: false
+  raw_audio_published: false
+  device_identity_published: false
+  private_data_published: false
+}
+
+type SystemSpeechLifecycleControllerOptions = {
+  publish?: (summary: SystemSpeechLifecycleSummary) => void
+  createOpaqueHex?: () => string
+  cooldownMs?: number
+  setTimer?: (
+    callback: () => void,
+    delayMs: number
+  ) => ReturnType<typeof setTimeout>
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
+}
+
+type ActiveSystemSpeechLifecycle = {
+  lease: SystemSpeechLifecycleLease
+  state: 'handoff_accepted' | 'cooldown'
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+const createOpaqueHex = (): string => {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error('secure_random_unavailable')
+  }
+  const bytes = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+    ''
+  )
+}
+
+const sameSystemSpeechLease = (
+  left: SystemSpeechLifecycleLease,
+  right: SystemSpeechLifecycleLease
+): boolean =>
+  left.system_speech_session_id === right.system_speech_session_id &&
+  left.speech_session_generation === right.speech_session_generation &&
+  left.playback_event_ref === right.playback_event_ref
+
+const buildSystemSpeechLifecycleSummary = (
+  lease: SystemSpeechLifecycleLease,
+  lifecycleState: SystemSpeechLifecycleState,
+  cooldownMs: number
+): SystemSpeechLifecycleSummary => ({
+  schema_version: SYSTEM_SPEECH_LIFECYCLE_SCHEMA_VERSION,
+  system_speech_session_id: lease.system_speech_session_id,
+  speech_session_generation: lease.speech_session_generation,
+  playback_event_ref: lease.playback_event_ref,
+  lifecycle_state: lifecycleState,
+  queue_handoff_status: 'accepted',
+  queue_completion_status:
+    lifecycleState === 'handoff_accepted' ? 'pending' : 'callback_observed',
+  playback_observation_status: 'not_observed',
+  suppression_status: lifecycleState === 'released' ? 'released' : 'active',
+  cooldown_status:
+    lifecycleState === 'cooldown'
+      ? 'active'
+      : lifecycleState === 'released'
+        ? 'elapsed'
+        : 'clear',
+  cooldown_ms: cooldownMs,
+  compare_and_release_required: true,
+  may_start_user_turn: false,
+  turn_adoption_authority: false,
+  raw_text_published: false,
+  text_hash_published: false,
+  provider_payload_published: false,
+  path_published: false,
+  url_published: false,
+  raw_audio_published: false,
+  device_identity_published: false,
+  private_data_published: false,
+})
+
+const sanitizeSystemSpeechLifecycleSummary = (
+  value: unknown
+): SystemSpeechLifecycleSummary | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record.schema_version !== SYSTEM_SPEECH_LIFECYCLE_SCHEMA_VERSION) {
+    return null
+  }
+  if (
+    typeof record.system_speech_session_id !== 'string' ||
+    !SYSTEM_SPEECH_SESSION_ID_PATTERN.test(record.system_speech_session_id) ||
+    typeof record.playback_event_ref !== 'string' ||
+    !PLAYBACK_EVENT_REF_PATTERN.test(record.playback_event_ref) ||
+    !Number.isSafeInteger(record.speech_session_generation) ||
+    Number(record.speech_session_generation) < 1 ||
+    (record.lifecycle_state !== 'handoff_accepted' &&
+      record.lifecycle_state !== 'cooldown' &&
+      record.lifecycle_state !== 'released') ||
+    !Number.isSafeInteger(record.cooldown_ms) ||
+    Number(record.cooldown_ms) < 0 ||
+    Number(record.cooldown_ms) > 2000
+  ) {
+    return null
+  }
+  return buildSystemSpeechLifecycleSummary(
+    {
+      system_speech_session_id: record.system_speech_session_id,
+      speech_session_generation: Number(record.speech_session_generation),
+      playback_event_ref: record.playback_event_ref,
+    },
+    record.lifecycle_state,
+    Number(record.cooldown_ms)
+  )
+}
+
+export const writeWindowSystemSpeechLifecycleSummary = (value: unknown) => {
+  if (typeof window === 'undefined') return
+  const summary = sanitizeSystemSpeechLifecycleSummary(value)
+  if (!summary) return
+  ;(
+    window as unknown as {
+      __swordAgentSystemSpeechLifecycleV0?: SystemSpeechLifecycleSummary
+    }
+  ).__swordAgentSystemSpeechLifecycleV0 = summary
+  window.dispatchEvent(
+    new CustomEvent('swordAgentSystemSpeechLifecycleV0', { detail: summary })
+  )
+}
+
+export const createSystemSpeechLifecycleController = (
+  options: SystemSpeechLifecycleControllerOptions = {}
+) => {
+  const publish = options.publish ?? writeWindowSystemSpeechLifecycleSummary
+  const makeOpaqueHex = options.createOpaqueHex ?? createOpaqueHex
+  const cooldownMs = Math.max(
+    0,
+    Math.min(2000, Math.floor(options.cooldownMs ?? SYSTEM_SPEECH_COOLDOWN_MS))
+  )
+  const setTimer =
+    options.setTimer ??
+    ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs))
+  const clearTimer =
+    options.clearTimer ??
+    ((timer: ReturnType<typeof setTimeout>) => clearTimeout(timer))
+  let generation = 0
+  const pending = new Map<number, SystemSpeechLifecycleLease>()
+  let active: ActiveSystemSpeechLifecycle | null = null
+
+  const prepareQueueHandoff = (): SystemSpeechLifecycleLease => {
+    generation += 1
+    const sessionHex = makeOpaqueHex()
+    const playbackHex = makeOpaqueHex()
+    if (!/^[a-f0-9]{32}$/.test(sessionHex)) {
+      throw new Error('invalid_system_speech_session_entropy')
+    }
+    if (!/^[a-f0-9]{32}$/.test(playbackHex)) {
+      throw new Error('invalid_playback_event_entropy')
+    }
+    const controllerOwnedLease = {
+      system_speech_session_id: `system-speech-session:sss_${sessionHex}`,
+      speech_session_generation: generation,
+      playback_event_ref: `playback-event:pe_${playbackHex}`,
+    }
+    pending.set(generation, controllerOwnedLease)
+    return {
+      system_speech_session_id: controllerOwnedLease.system_speech_session_id,
+      speech_session_generation: controllerOwnedLease.speech_session_generation,
+      playback_event_ref: controllerOwnedLease.playback_event_ref,
+    }
+  }
+
+  const commitQueueHandoff = (lease: SystemSpeechLifecycleLease): boolean => {
+    const prepared = pending.get(lease.speech_session_generation)
+    if (!prepared || !sameSystemSpeechLease(prepared, lease)) return false
+    pending.delete(lease.speech_session_generation)
+    if (active?.timer) clearTimer(active.timer)
+    const controllerOwnedLease = {
+      system_speech_session_id: prepared.system_speech_session_id,
+      speech_session_generation: prepared.speech_session_generation,
+      playback_event_ref: prepared.playback_event_ref,
+    }
+    active = {
+      lease: controllerOwnedLease,
+      state: 'handoff_accepted',
+      timer: null,
+    }
+    publish(
+      buildSystemSpeechLifecycleSummary(
+        controllerOwnedLease,
+        'handoff_accepted',
+        cooldownMs
+      )
+    )
+    return true
+  }
+
+  const releaseAfterCooldown = (lease: SystemSpeechLifecycleLease): boolean => {
+    if (
+      !active ||
+      active.state !== 'cooldown' ||
+      !sameSystemSpeechLease(active.lease, lease)
+    ) {
+      return false
+    }
+    const controllerOwnedLease = active.lease
+    active = null
+    publish(
+      buildSystemSpeechLifecycleSummary(
+        controllerOwnedLease,
+        'released',
+        cooldownMs
+      )
+    )
+    return true
+  }
+
+  const completeQueueHandoff = (lease: SystemSpeechLifecycleLease): boolean => {
+    if (
+      !active ||
+      active.state !== 'handoff_accepted' ||
+      !sameSystemSpeechLease(active.lease, lease)
+    ) {
+      return false
+    }
+    const controllerOwnedLease = active.lease
+    active.state = 'cooldown'
+    publish(
+      buildSystemSpeechLifecycleSummary(
+        controllerOwnedLease,
+        'cooldown',
+        cooldownMs
+      )
+    )
+    active.timer = setTimer(() => {
+      releaseAfterCooldown(controllerOwnedLease)
+    }, cooldownMs)
+    return true
+  }
+
+  const rollbackQueueHandoff = (lease: SystemSpeechLifecycleLease): boolean => {
+    const prepared = pending.get(lease.speech_session_generation)
+    if (prepared && sameSystemSpeechLease(prepared, lease)) {
+      pending.delete(lease.speech_session_generation)
+      return true
+    }
+    if (!active || !sameSystemSpeechLease(active.lease, lease)) return false
+    if (active.timer) clearTimer(active.timer)
+    active = null
+    return true
+  }
+
+  return {
+    prepareQueueHandoff,
+    commitQueueHandoff,
+    completeQueueHandoff,
+    rollbackQueueHandoff,
+    releaseAfterCooldown,
+  }
+}
+
 export type SpeechOutputSurface =
   | 'projection_visual_intended_text'
   | 'projection_visual_assistant_bubble'

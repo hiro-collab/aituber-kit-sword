@@ -30,8 +30,10 @@ import {
   preprocessMessage,
   handleTTSError,
   resolveSpeechOutputMessage,
+  speakCharacter,
   writeSynthesizedSpeechOutputSummary,
 } from '../../../features/messages/speakCharacter'
+import { SpeakQueue } from '../../../features/messages/speakQueue'
 import {
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
@@ -310,6 +312,180 @@ describe('speakCharacter', () => {
         'tts_provider_input_text_present'
       )
       expect(parity.heard_text_class).toBe('not_collected_or_not_authorized')
+    })
+  })
+
+  describe('system speech queue handoff', () => {
+    let syntheticNow = Date.now() + 1_000_000
+
+    beforeEach(() => {
+      jest.clearAllMocks()
+      delete (window as any).__swordAgentSystemSpeechLifecycleV0
+      jest.spyOn(Date, 'now').mockImplementation(() => {
+        syntheticNow += 2000
+        return syntheticNow
+      })
+      ;(settingsStore.getState as jest.Mock).mockReturnValue({
+        audioMode: false,
+        changeEnglishToJapanese: false,
+        selectLanguage: 'ja',
+        selectVoice: 'voicevox',
+      })
+    })
+
+    afterEach(() => {
+      jest.restoreAllMocks()
+    })
+
+    it('creates no lifecycle for a pre-handoff empty input', () => {
+      const onComplete = jest.fn()
+
+      speakCharacter(
+        'no-handoff-session',
+        { emotion: 'neutral', message: '' },
+        undefined,
+        onComplete
+      )
+
+      expect(onComplete).toHaveBeenCalledTimes(1)
+      expect(
+        (window as any).__swordAgentSystemSpeechLifecycleV0
+      ).toBeUndefined()
+    })
+
+    it('publishes accepted handoff, guarded cooldown, and release for a successful nonempty buffer', async () => {
+      const queue = SpeakQueue.getInstance()
+      const originalAddTask = queue.addTask
+      const onComplete = jest.fn()
+      const summaries: Array<Record<string, unknown>> = []
+      const lifecycleListener = (event: Event) => {
+        summaries.push((event as CustomEvent<Record<string, unknown>>).detail)
+      }
+      let cooldownCallback: (() => void) | null = null
+      let cooldownDelay: number | undefined
+      const originalSetTimeout = global.setTimeout
+      jest.spyOn(global, 'setTimeout').mockImplementation(((
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 500) {
+          cooldownDelay = delay
+          cooldownCallback = () => callback(...args)
+          return 500 as unknown as ReturnType<typeof setTimeout>
+        }
+        return originalSetTimeout(callback, delay, ...args)
+      }) as typeof setTimeout)
+      queue.addTask = jest.fn((task) => {
+        task.onComplete?.()
+        task.onComplete?.()
+        return Promise.resolve()
+      }) as typeof queue.addTask
+      window.addEventListener(
+        'swordAgentSystemSpeechLifecycleV0',
+        lifecycleListener
+      )
+
+      try {
+        speakCharacter(
+          'successful-handoff-session',
+          {
+            emotion: 'neutral',
+            message: '',
+            buffer: new ArrayBuffer(8),
+          },
+          undefined,
+          onComplete
+        )
+        for (let index = 0; index < 10; index += 1) {
+          await Promise.resolve()
+        }
+
+        expect(queue.addTask).toHaveBeenCalledTimes(1)
+        expect(onComplete).toHaveBeenCalledTimes(1)
+        expect(cooldownDelay).toBe(500)
+        expect(summaries.map((summary) => summary.lifecycle_state)).toEqual([
+          'handoff_accepted',
+          'cooldown',
+        ])
+        expect(
+          summaries.every(
+            (summary) =>
+              summary.playback_observation_status === 'not_observed' &&
+              summary.may_start_user_turn === false &&
+              summary.turn_adoption_authority === false
+          )
+        ).toBe(true)
+        expect(summaries[1]).toEqual(
+          expect.objectContaining({
+            system_speech_session_id: summaries[0].system_speech_session_id,
+            speech_session_generation: summaries[0].speech_session_generation,
+            playback_event_ref: summaries[0].playback_event_ref,
+            queue_completion_status: 'callback_observed',
+            cooldown_status: 'active',
+          })
+        )
+
+        expect(cooldownCallback).not.toBeNull()
+        if (cooldownCallback === null) {
+          throw new Error('cooldown_callback_not_captured')
+        }
+        ;(cooldownCallback as () => void)()
+        expect(summaries.map((summary) => summary.lifecycle_state)).toEqual([
+          'handoff_accepted',
+          'cooldown',
+          'released',
+        ])
+        expect(summaries[2]).toEqual(
+          expect.objectContaining({
+            system_speech_session_id: summaries[0].system_speech_session_id,
+            speech_session_generation: summaries[0].speech_session_generation,
+            playback_event_ref: summaries[0].playback_event_ref,
+            playback_observation_status: 'not_observed',
+            suppression_status: 'released',
+            cooldown_status: 'elapsed',
+          })
+        )
+      } finally {
+        window.removeEventListener(
+          'swordAgentSystemSpeechLifecycleV0',
+          lifecycleListener
+        )
+        queue.addTask = originalAddTask
+      }
+    })
+
+    it('rolls back a synchronous addTask failure without publishing a session', async () => {
+      const queue = SpeakQueue.getInstance()
+      const originalAddTask = queue.addTask
+      const onComplete = jest.fn()
+      queue.addTask = jest.fn(() => {
+        throw new Error('fixed_test_failure')
+      }) as typeof queue.addTask
+
+      try {
+        speakCharacter(
+          'sync-failure-session',
+          {
+            emotion: 'neutral',
+            message: '',
+            buffer: new ArrayBuffer(8),
+          },
+          undefined,
+          onComplete
+        )
+        for (let index = 0; index < 10; index += 1) {
+          await Promise.resolve()
+        }
+
+        expect(queue.addTask).toHaveBeenCalledTimes(1)
+        expect(onComplete).toHaveBeenCalledTimes(1)
+        expect(
+          (window as any).__swordAgentSystemSpeechLifecycleV0
+        ).toBeUndefined()
+      } finally {
+        queue.addTask = originalAddTask
+      }
     })
   })
 })

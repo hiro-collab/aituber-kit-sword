@@ -26,11 +26,13 @@ import {
 import {
   buildSpeechOutputDisplayState,
   buildSpeechOutputSummary,
+  createSystemSpeechLifecycleController,
   writeWindowSpeechOutputDisplayState,
   writeWindowSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
 
 const speakQueue = SpeakQueue.getInstance()
+const systemSpeechLifecycle = createSystemSpeechLifecycleController()
 
 export function preprocessMessage(
   message: string,
@@ -335,7 +337,7 @@ const createSpeakCharacter = () => {
 
     processAndSynthesizePromise
       .then((result) => {
-        if (!result || !result.buffer) {
+        if (!result || !result.buffer || result.buffer.byteLength === 0) {
           if (onComplete && !called) {
             called = true
             onComplete()
@@ -353,21 +355,46 @@ const createSpeakCharacter = () => {
           return
         }
 
-        // Wrap the onComplete passed to speakQueue.addTask
-        const guardedOnComplete = () => {
+        const completeExternalOnce = () => {
           if (onComplete && !called) {
             called = true
             onComplete()
           }
         }
 
-        speakQueue.addTask({
-          sessionId,
-          audioBuffer: result.buffer,
-          talk,
-          isNeedDecode: result.isNeedDecode,
-          onComplete: guardedOnComplete, // Pass the guarded function
-        })
+        const lifecycleLease = systemSpeechLifecycle.prepareQueueHandoff()
+        let completionBeforeCommit = false
+
+        // Queue completion is observed separately from actual playback evidence.
+        const guardedOnComplete = () => {
+          if (!systemSpeechLifecycle.completeQueueHandoff(lifecycleLease)) {
+            completionBeforeCommit = true
+          }
+          completeExternalOnce()
+        }
+
+        try {
+          const queueResult = speakQueue.addTask({
+            sessionId,
+            audioBuffer: result.buffer,
+            talk,
+            isNeedDecode: result.isNeedDecode,
+            onComplete: guardedOnComplete,
+          })
+          if (!systemSpeechLifecycle.commitQueueHandoff(lifecycleLease)) {
+            throw new Error('system_speech_handoff_commit_failed')
+          }
+          if (completionBeforeCommit) {
+            systemSpeechLifecycle.completeQueueHandoff(lifecycleLease)
+          }
+          void Promise.resolve(queueResult).catch(() => {
+            systemSpeechLifecycle.rollbackQueueHandoff(lifecycleLease)
+            completeExternalOnce()
+          })
+        } catch (error) {
+          systemSpeechLifecycle.rollbackQueueHandoff(lifecycleLease)
+          throw error
+        }
       })
       .catch((error) => {
         console.error('Error in processAndSynthesizePromise chain:', error)
