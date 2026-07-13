@@ -17,10 +17,19 @@ import {
   type SpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
 
-const MAX_OPERATOR_VISIBLE_LINES = 6
+const MAX_OPERATOR_COMFORTABLE_VISIBLE_LINES = 6
+const MAX_OPERATOR_COMPACT_VISIBLE_LINES = 9
+const MAX_OPERATOR_DENSE_VISIBLE_LINES = 11
 const MAX_PASSIVE_VISIBLE_LINES = 3
-const PAGE_READ_MS = 12000
+const MIN_PAGE_READ_MS = 12000
+const MAX_PAGE_READ_MS = 36000
+const PAGE_READ_MS_PER_CHARACTER = 160
 const MEASURE_EPSILON_PX = 2
+
+export type ProjectionVisualBubbleTextDensity =
+  | 'comfortable'
+  | 'compact'
+  | 'dense'
 
 type BubblePage = {
   text: string
@@ -29,6 +38,33 @@ type BubblePage = {
 type ProjectionVisualAssistantBubbleProps = {
   variant?: 'operator' | 'passive' | 'stage-output'
 }
+
+export const resolveProjectionVisualBubbleTextDensity = (
+  text: string,
+  variant: ProjectionVisualAssistantBubbleProps['variant'] = 'operator'
+): ProjectionVisualBubbleTextDensity => {
+  if (variant !== 'operator') {
+    return 'comfortable'
+  }
+
+  const characterCount = Array.from(text).length
+  if (characterCount > 180) {
+    return 'dense'
+  }
+  if (characterCount > 80) {
+    return 'compact'
+  }
+  return 'comfortable'
+}
+
+export const resolveProjectionVisualBubblePageReadMs = (text: string) =>
+  Math.min(
+    MAX_PAGE_READ_MS,
+    Math.max(
+      MIN_PAGE_READ_MS,
+      Array.from(text).length * PAGE_READ_MS_PER_CHARACTER
+    )
+  )
 
 const useBrowserLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
@@ -183,6 +219,11 @@ export const ProjectionVisualAssistantBubble = ({
     [latestAssistantMessage, motionPattern]
   )
   const currentPage = pages[pageIndex]?.text ?? cleanedMessage
+  const bubbleTextDensity = resolveProjectionVisualBubbleTextDensity(
+    cleanedMessage,
+    variant
+  )
+  const currentPageReadMs = resolveProjectionVisualBubblePageReadMs(currentPage)
   const bubbleTextScopeClass =
     pages.length > 1 ? 'current_visible_page' : 'compacted_full_text'
   const bubbleSourceField = shouldUseProjectionDisplayMessage
@@ -259,7 +300,11 @@ export const ProjectionVisualAssistantBubble = ({
   )
   const maxVisibleLines =
     variant === 'operator'
-      ? MAX_OPERATOR_VISIBLE_LINES
+      ? bubbleTextDensity === 'dense'
+        ? MAX_OPERATOR_DENSE_VISIBLE_LINES
+        : bubbleTextDensity === 'compact'
+          ? MAX_OPERATOR_COMPACT_VISIBLE_LINES
+          : MAX_OPERATOR_COMFORTABLE_VISIBLE_LINES
       : MAX_PASSIVE_VISIBLE_LINES
 
   useEffect(() => {
@@ -325,12 +370,12 @@ export const ProjectionVisualAssistantBubble = ({
 
     const timer = window.setTimeout(() => {
       setPageIndex((current) => (current + 1) % pages.length)
-    }, PAGE_READ_MS)
+    }, currentPageReadMs)
 
     return () => {
       window.clearTimeout(timer)
     }
-  }, [pageIndex, pages.length])
+  }, [currentPageReadMs, pageIndex, pages.length])
 
   if (!cleanedMessage) {
     return null
@@ -340,9 +385,12 @@ export const ProjectionVisualAssistantBubble = ({
     <aside
       className="td-assistant-bubble"
       aria-live="polite"
+      aria-label="アシスタントの会話内容"
       data-variant={variant}
+      data-text-density={bubbleTextDensity}
       data-page-count={pages.length || 1}
       data-page-index={pageIndex}
+      data-page-read-ms={currentPageReadMs}
       data-assistant-message-id={
         latestAssistantMessageEntry.id ?? 'assistant-message-id-unavailable'
       }
@@ -378,7 +426,7 @@ export const ProjectionVisualAssistantBubble = ({
         ttsSpeechOutputSummary?.meaning_class ?? 'tts-summary-unavailable'
       }
     >
-      {showCharacterName && (
+      {showCharacterName && variant !== 'operator' && (
         <div className="td-assistant-bubble-name">{characterName}</div>
       )}
       <div className="td-assistant-bubble-text">{currentPage}</div>

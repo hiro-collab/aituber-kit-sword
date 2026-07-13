@@ -6,7 +6,11 @@ import fs from 'fs'
 import path from 'path'
 import { createElement } from 'react'
 import { render } from '@testing-library/react'
-import { ProjectionVisualAssistantBubble } from '@/components/projectionVisualAssistantBubble'
+import {
+  ProjectionVisualAssistantBubble,
+  resolveProjectionVisualBubblePageReadMs,
+  resolveProjectionVisualBubbleTextDensity,
+} from '@/components/projectionVisualAssistantBubble'
 import {
   buildSpeechOutputDisplayState,
   buildSpeechOutputSummary,
@@ -153,6 +157,11 @@ const mismatchedConversationAttemptRef =
 
 let mockHomeState: { chatLog: Array<Record<string, unknown>> } = { chatLog: [] }
 let mockProjectionDisplayState: Record<string, unknown> = {}
+let mockSettingsState = {
+  characterName: 'Assistant',
+  showCharacterName: false,
+  poseConfigs: [] as Array<{ id: string }>,
+}
 
 jest.mock('@/features/stores/home', () => ({
   __esModule: true,
@@ -166,13 +175,7 @@ jest.mock('@/features/stores/projectionDisplay', () => ({
 
 jest.mock('@/features/stores/settings', () => ({
   __esModule: true,
-  default: jest.fn((selector) =>
-    selector({
-      characterName: 'Assistant',
-      showCharacterName: false,
-      poseConfigs: [],
-    })
-  ),
+  default: jest.fn((selector) => selector(mockSettingsState)),
 }))
 
 const readSource = (relativePath: string) =>
@@ -203,6 +206,11 @@ describe('worker-2 projection visual organ contract', () => {
       speechOutputSummary: null,
       sequence: 0,
       updatedAt: null,
+    }
+    mockSettingsState = {
+      characterName: 'Assistant',
+      showCharacterName: false,
+      poseConfigs: [],
     }
     delete (window as unknown as Record<string, unknown>)
       .__projectionVisualSpeechOutputDisplayStateV0
@@ -1058,7 +1066,15 @@ describe('worker-2 projection visual organ contract', () => {
     )
     const cssSource = readSource('src/styles/globals.css')
 
-    expect(bubbleSource).toContain('const MAX_OPERATOR_VISIBLE_LINES = 6')
+    expect(bubbleSource).toContain(
+      'const MAX_OPERATOR_COMFORTABLE_VISIBLE_LINES = 6'
+    )
+    expect(bubbleSource).toContain(
+      'const MAX_OPERATOR_COMPACT_VISIBLE_LINES = 9'
+    )
+    expect(bubbleSource).toContain(
+      'const MAX_OPERATOR_DENSE_VISIBLE_LINES = 11'
+    )
     expect(bubbleSource).toContain('const MAX_PASSIVE_VISIBLE_LINES = 3')
     expect(bubbleSource).toContain(
       "import { compactReviewProofMessage } from '@/utils/reviewProofMessage'"
@@ -1099,6 +1115,9 @@ describe('worker-2 projection visual organ contract', () => {
     expect(synthesisIndex).toBeGreaterThanOrEqual(0)
     expect(summaryWriteIndex).toBeLessThan(synthesisIndex)
     expect(bubbleSource).toContain('(current + 1) % pages.length')
+    expect(bubbleSource).toContain('data-text-density={bubbleTextDensity}')
+    expect(bubbleSource).toContain('data-page-read-ms={currentPageReadMs}')
+    expect(bubbleSource).toContain("variant !== 'operator'")
     expect(bubbleSource).toContain(
       "variant?: 'operator' | 'passive' | 'stage-output'"
     )
@@ -1113,7 +1132,66 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(cssSource).toContain('width: min(66vw, 960px)')
     expect(cssSource).toContain('font-size: clamp(28px, 2.25vw, 40px)')
+    expect(cssSource).toContain(
+      ".td-assistant-bubble[data-text-density='compact']"
+    )
+    expect(cssSource).toContain(
+      ".td-assistant-bubble[data-text-density='dense']"
+    )
     expect(cssSource).toContain('overflow-wrap: anywhere')
+  })
+
+  it('adapts operator conversation-log density and page dwell without shrinking passive output', () => {
+    expect(
+      resolveProjectionVisualBubbleTextDensity('短い応答', 'operator')
+    ).toBe('comfortable')
+    expect(
+      resolveProjectionVisualBubbleTextDensity('短'.repeat(80), 'operator')
+    ).toBe('comfortable')
+    expect(
+      resolveProjectionVisualBubbleTextDensity('中'.repeat(81), 'operator')
+    ).toBe('compact')
+    expect(
+      resolveProjectionVisualBubbleTextDensity('中'.repeat(180), 'operator')
+    ).toBe('compact')
+    expect(
+      resolveProjectionVisualBubbleTextDensity('長'.repeat(181), 'operator')
+    ).toBe('dense')
+    expect(
+      resolveProjectionVisualBubbleTextDensity('長'.repeat(300), 'stage-output')
+    ).toBe('comfortable')
+
+    expect(resolveProjectionVisualBubblePageReadMs('短い応答')).toBe(12000)
+    expect(resolveProjectionVisualBubblePageReadMs('中'.repeat(100))).toBe(
+      16000
+    )
+    expect(resolveProjectionVisualBubblePageReadMs('長'.repeat(300))).toBe(
+      36000
+    )
+  })
+
+  it('keeps the operator conversation log content-only even when character names are enabled', () => {
+    mockSettingsState.showCharacterName = true
+    mockHomeState = {
+      chatLog: [
+        {
+          id: chatVector.assistantEventId,
+          role: 'assistant',
+          content: '会話内容だけを表示する',
+          conversationAttemptRef: chatConversationAttemptRef,
+        },
+      ],
+    }
+
+    const operator = render(
+      createElement(ProjectionVisualAssistantBubble, { variant: 'operator' })
+    )
+    expect(operator.queryByText('Assistant')).toBeNull()
+    expect(
+      operator.container.querySelector(
+        '.td-assistant-bubble-text:not(.td-assistant-bubble-text-measure)'
+      )?.textContent
+    ).toBe('会話内容だけを表示する')
   })
 
   it('keeps normal HUD focused on Thought Core and current provider grouping', () => {
