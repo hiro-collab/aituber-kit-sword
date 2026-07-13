@@ -41,11 +41,25 @@ const lifecycle = (
 
 const envelope = (
   lifecycleState: 'handoff_accepted' | 'cooldown' | 'released',
-  generation = 1
+  generation = 1,
+  overrides: {
+    systemSpeechSessionId?: string
+    playbackEventRef?: string
+    clientTimestampWall?: string
+  } = {}
 ) => ({
   schema_version: 'ait_system_speech_lifecycle_transport.v0',
-  lifecycle: lifecycle(lifecycleState, generation),
-  client_timestamp_wall: '2026-07-13T07:30:00.000Z',
+  lifecycle: {
+    ...lifecycle(lifecycleState, generation),
+    ...(overrides.systemSpeechSessionId
+      ? { system_speech_session_id: overrides.systemSpeechSessionId }
+      : {}),
+    ...(overrides.playbackEventRef
+      ? { playback_event_ref: overrides.playbackEventRef }
+      : {}),
+  },
+  client_timestamp_wall:
+    overrides.clientTimestampWall ?? '2026-07-13T07:30:00.000Z',
   client_timestamp_monotonic: 123.5,
   client_performance_now: 123.5,
   raw_private_publication_flags: false,
@@ -227,16 +241,27 @@ describe('/api/self-output-awareness-transport', () => {
     const handler =
       require('@/pages/api/self-output-awareness-transport').default
     const origin = 'http://127.0.0.1:3000'
+    const leaseForGeneration = (generation: number) => ({
+      systemSpeechSessionId: `system-speech-session:sss_${generation
+        .toString(16)
+        .padStart(32, '0')}`,
+      playbackEventRef: `playback-event:pe_${generation
+        .toString(16)
+        .padStart(32, 'f')}`,
+      clientTimestampWall: `2026-07-13T07:30:0${generation}.000Z`,
+    })
 
     for (let generation = 1; generation <= 6; generation += 1) {
+      const lease = leaseForGeneration(generation)
       expect(
-        post(handler, envelope('handoff_accepted', generation), origin)._status
+        post(handler, envelope('handoff_accepted', generation, lease), origin)
+          ._status
       ).toBe(202)
       expect(
-        post(handler, envelope('cooldown', generation), origin)._status
+        post(handler, envelope('cooldown', generation, lease), origin)._status
       ).toBe(202)
       expect(
-        post(handler, envelope('released', generation), origin)._status
+        post(handler, envelope('released', generation, lease), origin)._status
       ).toBe(202)
     }
 
@@ -246,7 +271,7 @@ describe('/api/self-output-awareness-transport', () => {
       ok: true,
       result_class: 'lifecycle_transport_current',
       transport: {
-        ...envelope('released', 1),
+        ...envelope('released', 1, leaseForGeneration(1)),
         transition_ordinal: 3,
       },
       raw_private_publication_flags: false,
@@ -349,6 +374,124 @@ describe('/api/self-output-awareness-transport', () => {
     mismatched.lifecycle.playback_event_ref =
       'playback-event:pe_ffffffffffffffffffffffffffffffff'
     expect(post(handler, mismatched, origin)._status).toBe(409)
+  })
+
+  it('accepts one fresh page-reload lease after release while rejecting stale replay', () => {
+    const handler =
+      require('@/pages/api/self-output-awareness-transport').default
+    const origin = 'http://127.0.0.1:3000'
+    const priorHandoff = envelope('handoff_accepted', 7)
+
+    expect(post(handler, priorHandoff, origin)._status).toBe(202)
+    expect(
+      post(
+        handler,
+        envelope('handoff_accepted', 8, {
+          systemSpeechSessionId:
+            'system-speech-session:sss_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          playbackEventRef:
+            'playback-event:pe_ffffffffffffffffffffffffffffffff',
+          clientTimestampWall: '2026-07-13T07:31:00.000Z',
+        }),
+        origin
+      )._status
+    ).toBe(409)
+    expect(post(handler, envelope('cooldown', 7), origin)._status).toBe(202)
+    expect(post(handler, envelope('released', 7), origin)._status).toBe(202)
+    expect(
+      post(
+        handler,
+        envelope('handoff_accepted', 1, {
+          systemSpeechSessionId:
+            priorHandoff.lifecycle.system_speech_session_id,
+          playbackEventRef:
+            'playback-event:pe_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          clientTimestampWall: '2026-07-13T07:31:00.000Z',
+        }),
+        origin
+      )._status
+    ).toBe(409)
+    expect(
+      post(
+        handler,
+        envelope('handoff_accepted', 1, {
+          systemSpeechSessionId:
+            'system-speech-session:sss_ffffffffffffffffffffffffffffffff',
+          playbackEventRef: priorHandoff.lifecycle.playback_event_ref,
+          clientTimestampWall: '2026-07-13T07:31:00.000Z',
+        }),
+        origin
+      )._status
+    ).toBe(409)
+    expect(
+      post(
+        handler,
+        envelope('handoff_accepted', 8, {
+          systemSpeechSessionId:
+            'system-speech-session:sss_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          playbackEventRef:
+            'playback-event:pe_ffffffffffffffffffffffffffffffff',
+        }),
+        origin
+      )._status
+    ).toBe(409)
+
+    const restartedLease = {
+      systemSpeechSessionId:
+        'system-speech-session:sss_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      playbackEventRef: 'playback-event:pe_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      clientTimestampWall: '2026-07-13T07:31:00.000Z',
+    }
+    const restartedHandoff = post(
+      handler,
+      envelope('handoff_accepted', 1, restartedLease),
+      origin
+    )
+    expect(restartedHandoff._status).toBe(202)
+    expect(restartedHandoff._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_accepted',
+      transition_ordinal: 4,
+      raw_private_publication_flags: false,
+    })
+    expect(
+      post(handler, envelope('cooldown', 1, restartedLease), origin)._status
+    ).toBe(202)
+    expect(
+      post(handler, envelope('released', 1, restartedLease), origin)._status
+    ).toBe(202)
+    expect(get(handler, { after_ordinal: '5' })._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_current',
+      transport: {
+        ...envelope('released', 1, restartedLease),
+        transition_ordinal: 6,
+      },
+      raw_private_publication_flags: false,
+    })
+
+    expect(
+      post(
+        handler,
+        envelope('handoff_accepted', 7, {
+          clientTimestampWall: '2026-07-13T07:32:00.000Z',
+        }),
+        origin
+      )._status
+    ).toBe(409)
+    expect(
+      post(
+        handler,
+        envelope('handoff_accepted', 1, {
+          systemSpeechSessionId:
+            'system-speech-session:sss_cccccccccccccccccccccccccccccccc',
+          playbackEventRef:
+            'playback-event:pe_dddddddddddddddddddddddddddddddd',
+          clientTimestampWall: '2026-07-13T07:30:30.000Z',
+        }),
+        origin
+      )._status
+    ).toBe(409)
   })
 
   it('rejects unsupported methods with a fixed non-echoing class', () => {

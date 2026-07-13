@@ -111,29 +111,59 @@ const readTiming = (
   }
 }
 
-const sameLease = (
+const sameOpaqueLease = (
   left: SystemSpeechLifecycleSummary,
   right: SystemSpeechLifecycleSummary
 ): boolean =>
   left.system_speech_session_id === right.system_speech_session_id &&
-  left.speech_session_generation === right.speech_session_generation &&
   left.playback_event_ref === right.playback_event_ref
+
+const sameLease = (
+  left: SystemSpeechLifecycleSummary,
+  right: SystemSpeechLifecycleSummary
+): boolean =>
+  sameOpaqueLease(left, right) &&
+  left.speech_session_generation === right.speech_session_generation
+
+const hasRetainedOpaqueComponent = (
+  next: SystemSpeechLifecycleSummary
+): boolean =>
+  lifecycleHistory.some(
+    (stored) =>
+      stored.lifecycle.system_speech_session_id ===
+        next.system_speech_session_id ||
+      stored.lifecycle.playback_event_ref === next.playback_event_ref
+  )
+
+const isFreshRestartedLease = (
+  previous: StoredLifecycleTransport,
+  next: SystemSpeechLifecycleSummary,
+  nextClientTimestampWall: string
+): boolean =>
+  previous.lifecycle.lifecycle_state === 'released' &&
+  next.lifecycle_state === 'handoff_accepted' &&
+  Date.parse(nextClientTimestampWall) >
+    Date.parse(previous.client_timestamp_wall) &&
+  !hasRetainedOpaqueComponent(next)
 
 const classifyTransition = (
   previous: StoredLifecycleTransport | null,
-  next: SystemSpeechLifecycleSummary
+  next: SystemSpeechLifecycleSummary,
+  nextClientTimestampWall: string
 ): 'accepted' | 'duplicate' | 'rejected' => {
   if (!previous) {
     return next.lifecycle_state === 'handoff_accepted' ? 'accepted' : 'rejected'
   }
   const current = previous.lifecycle
-  if (next.speech_session_generation < current.speech_session_generation) {
-    return 'rejected'
+  const currentLeaseMatches = sameLease(current, next)
+  if (!currentLeaseMatches) {
+    if (hasRetainedOpaqueComponent(next)) {
+      return 'rejected'
+    }
+    return isFreshRestartedLease(previous, next, nextClientTimestampWall)
+      ? 'accepted'
+      : 'rejected'
   }
-  if (next.speech_session_generation > current.speech_session_generation) {
-    return next.lifecycle_state === 'handoff_accepted' ? 'accepted' : 'rejected'
-  }
-  if (!sameLease(current, next)) return 'rejected'
   if (!TRANSITIONS[current.lifecycle_state].has(next.lifecycle_state)) {
     return 'rejected'
   }
@@ -223,7 +253,11 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
     })
   }
 
-  const transition = classifyTransition(latestLifecycle, lifecycle)
+  const transition = classifyTransition(
+    latestLifecycle,
+    lifecycle,
+    timing.client_timestamp_wall
+  )
   if (transition === 'rejected') {
     return res.status(409).json({
       ok: false,
