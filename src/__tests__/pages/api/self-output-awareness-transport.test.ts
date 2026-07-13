@@ -104,6 +104,12 @@ const post = (handler: Function, body: unknown, origin?: string) => {
   return res
 }
 
+const get = (handler: Function, query: NextApiRequest['query'] = {}) => {
+  const res = createMockRes()
+  handler(createMockReq({ query }), res)
+  return res
+}
+
 describe('/api/self-output-awareness-transport', () => {
   beforeEach(() => {
     jest.resetModules()
@@ -143,6 +149,120 @@ describe('/api/self-output-awareness-transport', () => {
     expect(JSON.stringify(getRes._json)).not.toContain('C:\\')
   })
 
+  it('reads each retained lifecycle in order even after the latest state is released', () => {
+    const handler =
+      require('@/pages/api/self-output-awareness-transport').default
+    const origin = 'http://127.0.0.1:3000'
+
+    expect(post(handler, envelope('handoff_accepted'), origin)._status).toBe(
+      202
+    )
+    expect(post(handler, envelope('cooldown'), origin)._status).toBe(202)
+    expect(post(handler, envelope('released'), origin)._status).toBe(202)
+
+    expect(get(handler, { after_ordinal: '0' })._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_current',
+      transport: { ...envelope('handoff_accepted'), transition_ordinal: 1 },
+      raw_private_publication_flags: false,
+    })
+    expect(get(handler, { after_ordinal: '1' })._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_current',
+      transport: { ...envelope('cooldown'), transition_ordinal: 2 },
+      raw_private_publication_flags: false,
+    })
+    expect(get(handler, { after_ordinal: '2' })._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_current',
+      transport: { ...envelope('released'), transition_ordinal: 3 },
+      raw_private_publication_flags: false,
+    })
+    expect(get(handler, { after_ordinal: '3' })._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_empty',
+      transport: null,
+      raw_private_publication_flags: false,
+    })
+  })
+
+  it('preserves the latest-state response when no cursor is supplied', () => {
+    const handler =
+      require('@/pages/api/self-output-awareness-transport').default
+    const origin = 'http://127.0.0.1:3000'
+    post(handler, envelope('handoff_accepted'), origin)
+    post(handler, envelope('cooldown'), origin)
+    post(handler, envelope('released'), origin)
+
+    expect(get(handler)._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_current',
+      transport: { ...envelope('released'), transition_ordinal: 3 },
+      raw_private_publication_flags: false,
+    })
+  })
+
+  it.each([
+    ['array', { after_ordinal: ['0'] }],
+    ['extra query', { after_ordinal: '0', extra: '1' }],
+    ['negative', { after_ordinal: '-1' }],
+    ['leading zero', { after_ordinal: '01' }],
+    ['fraction', { after_ordinal: '1.5' }],
+    ['unsafe integer', { after_ordinal: '9007199254740992' }],
+    ['private-like input', { after_ordinal: 'private transcript marker' }],
+  ])('rejects an invalid cursor without echo: %s', (_label, query) => {
+    const handler =
+      require('@/pages/api/self-output-awareness-transport').default
+    const res = get(handler, query)
+    expect(res._status).toBe(400)
+    expect(res._json).toEqual({
+      ok: false,
+      result_class: 'lifecycle_transport_cursor_invalid',
+      raw_private_publication_flags: false,
+    })
+    expect(JSON.stringify(res._json)).not.toContain('private transcript marker')
+  })
+
+  it('keeps only sixteen accepted transitions without exposing eviction inference', () => {
+    const handler =
+      require('@/pages/api/self-output-awareness-transport').default
+    const origin = 'http://127.0.0.1:3000'
+
+    for (let generation = 1; generation <= 6; generation += 1) {
+      expect(
+        post(handler, envelope('handoff_accepted', generation), origin)._status
+      ).toBe(202)
+      expect(
+        post(handler, envelope('cooldown', generation), origin)._status
+      ).toBe(202)
+      expect(
+        post(handler, envelope('released', generation), origin)._status
+      ).toBe(202)
+    }
+
+    const earliestRetained = get(handler, { after_ordinal: '0' })
+    expect(earliestRetained._status).toBe(200)
+    expect(earliestRetained._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_current',
+      transport: {
+        ...envelope('released', 1),
+        transition_ordinal: 3,
+      },
+      raw_private_publication_flags: false,
+    })
+    expect(Object.keys(earliestRetained._json as object).sort()).toEqual([
+      'ok',
+      'raw_private_publication_flags',
+      'result_class',
+      'transport',
+    ])
+    const serialized = JSON.stringify(earliestRetained._json)
+    expect(serialized).not.toContain('evict')
+    expect(serialized).not.toContain('history')
+    expect(serialized).not.toContain('gap')
+  })
+
   it('deduplicates an exact state without advancing the ordinal', () => {
     const handler =
       require('@/pages/api/self-output-awareness-transport').default
@@ -156,6 +276,12 @@ describe('/api/self-output-awareness-transport', () => {
       ok: true,
       result_class: 'lifecycle_transport_duplicate',
       transition_ordinal: 1,
+      raw_private_publication_flags: false,
+    })
+    expect(get(handler, { after_ordinal: '1' })._json).toEqual({
+      ok: true,
+      result_class: 'lifecycle_transport_empty',
+      transport: null,
       raw_private_publication_flags: false,
     })
   })

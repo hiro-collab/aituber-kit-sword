@@ -39,6 +39,8 @@ const TRANSITIONS: Record<
 }
 
 let latestLifecycle: StoredLifecycleTransport | null = null
+const lifecycleHistory: StoredLifecycleTransport[] = []
+const LIFECYCLE_HISTORY_LIMIT = 16
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -49,6 +51,29 @@ const exactKeys = (value: Record<string, unknown>, keys: string[]): boolean =>
 const hasExplicitOrigin = (req: NextApiRequest): boolean => {
   const value = req.headers.origin
   return typeof value === 'string' && value.length > 0
+}
+
+const readAfterOrdinal = (
+  query: NextApiRequest['query']
+): { valid: true; value: number | null } | { valid: false } => {
+  const keys = Object.keys(query)
+  if (keys.length === 0) return { valid: true, value: null }
+  if (keys.length !== 1 || keys[0] !== 'after_ordinal') {
+    return { valid: false }
+  }
+
+  const value = query.after_ordinal
+  if (
+    typeof value !== 'string' ||
+    !/^(?:0|[1-9]\d*)$/.test(value) ||
+    value.length > 16
+  ) {
+    return { valid: false }
+  }
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0
+    ? { valid: true, value: parsed }
+    : { valid: false }
 }
 
 const readTiming = (
@@ -127,12 +152,26 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
   }
 
   if (req.method === 'GET') {
+    const cursor = readAfterOrdinal(req.query)
+    if (!cursor.valid) {
+      return res.status(400).json({
+        ok: false,
+        result_class: 'lifecycle_transport_cursor_invalid',
+        raw_private_publication_flags: false,
+      })
+    }
+    const transport =
+      cursor.value === null
+        ? latestLifecycle
+        : (lifecycleHistory.find(
+            (candidate) => candidate.transition_ordinal > cursor.value
+          ) ?? null)
     return res.status(200).json({
       ok: true,
-      result_class: latestLifecycle
+      result_class: transport
         ? 'lifecycle_transport_current'
         : 'lifecycle_transport_empty',
-      transport: latestLifecycle,
+      transport,
       raw_private_publication_flags: false,
     })
   }
@@ -201,12 +240,20 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
     })
   }
 
-  latestLifecycle = {
+  const storedLifecycle: StoredLifecycleTransport = {
     schema_version: SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_SCHEMA_VERSION,
     lifecycle,
     ...timing,
     raw_private_publication_flags: false,
     transition_ordinal: (latestLifecycle?.transition_ordinal ?? 0) + 1,
+  }
+  latestLifecycle = storedLifecycle
+  lifecycleHistory.push(storedLifecycle)
+  if (lifecycleHistory.length > LIFECYCLE_HISTORY_LIMIT) {
+    lifecycleHistory.splice(
+      0,
+      lifecycleHistory.length - LIFECYCLE_HISTORY_LIMIT
+    )
   }
   return res.status(202).json({
     ok: true,
