@@ -135,12 +135,11 @@ const hasRetainedOpaqueComponent = (
       stored.lifecycle.playback_event_ref === next.playback_event_ref
   )
 
-const isFreshRestartedLease = (
+const isFreshDifferentLease = (
   previous: StoredLifecycleTransport,
   next: SystemSpeechLifecycleSummary,
   nextClientTimestampWall: string
 ): boolean =>
-  previous.lifecycle.lifecycle_state === 'released' &&
   next.lifecycle_state === 'handoff_accepted' &&
   Date.parse(nextClientTimestampWall) >
     Date.parse(previous.client_timestamp_wall) &&
@@ -160,7 +159,11 @@ const classifyTransition = (
     if (hasRetainedOpaqueComponent(next)) {
       return 'rejected'
     }
-    return isFreshRestartedLease(previous, next, nextClientTimestampWall)
+    if (!isFreshDifferentLease(previous, next, nextClientTimestampWall)) {
+      return 'rejected'
+    }
+    return next.speech_session_generation > current.speech_session_generation ||
+      current.lifecycle_state === 'released'
       ? 'accepted'
       : 'rejected'
   }

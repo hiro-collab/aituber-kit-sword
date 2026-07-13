@@ -376,6 +376,33 @@ describe('/api/self-output-awareness-transport', () => {
     expect(post(handler, mismatched, origin)._status).toBe(409)
   })
 
+  it('accepts a fresh higher-generation handoff that supersedes an active lease', () => {
+    const handler =
+      require('@/pages/api/self-output-awareness-transport').default
+    const origin = 'http://127.0.0.1:3000'
+    const supersedingLease = {
+      systemSpeechSessionId:
+        'system-speech-session:sss_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      playbackEventRef: 'playback-event:pe_ffffffffffffffffffffffffffffffff',
+      clientTimestampWall: '2026-07-13T07:31:00.000Z',
+    }
+
+    expect(post(handler, envelope('handoff_accepted', 7), origin)._status).toBe(
+      202
+    )
+    expect(post(handler, envelope('cooldown', 7), origin)._status).toBe(202)
+    expect(
+      post(handler, envelope('handoff_accepted', 8, supersedingLease), origin)
+        ._status
+    ).toBe(202)
+    expect(
+      post(handler, envelope('cooldown', 8, supersedingLease), origin)._status
+    ).toBe(202)
+    expect(
+      post(handler, envelope('released', 8, supersedingLease), origin)._status
+    ).toBe(202)
+  })
+
   it('accepts one fresh page-reload lease after release while rejecting stale replay', () => {
     const handler =
       require('@/pages/api/self-output-awareness-transport').default
@@ -383,19 +410,6 @@ describe('/api/self-output-awareness-transport', () => {
     const priorHandoff = envelope('handoff_accepted', 7)
 
     expect(post(handler, priorHandoff, origin)._status).toBe(202)
-    expect(
-      post(
-        handler,
-        envelope('handoff_accepted', 8, {
-          systemSpeechSessionId:
-            'system-speech-session:sss_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-          playbackEventRef:
-            'playback-event:pe_ffffffffffffffffffffffffffffffff',
-          clientTimestampWall: '2026-07-13T07:31:00.000Z',
-        }),
-        origin
-      )._status
-    ).toBe(409)
     expect(post(handler, envelope('cooldown', 7), origin)._status).toBe(202)
     expect(post(handler, envelope('released', 7), origin)._status).toBe(202)
     expect(
