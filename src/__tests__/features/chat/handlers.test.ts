@@ -3,6 +3,7 @@ import {
   handleReceiveTextFromWsFn,
   presentAcceptedPreparedSampleAssistantResponse,
   processAIResponse,
+  resolveDirectSendAssistantSpeechLink,
   speakMessageHandler,
 } from '../../../features/chat/handlers'
 import { getAIChatResponseStream } from '../../../features/chat/aiChatFactory'
@@ -538,6 +539,79 @@ describe('handlers', () => {
   })
 
   describe('speakMessageHandler', () => {
+    it('preserves validated Thought Core response identity for bubble and TTS', async () => {
+      const mockUpsertMessage = jest.fn()
+      ;(settingsStore.getState as jest.Mock).mockReturnValue({
+        poseConfigs: [],
+      })
+      ;(homeStore.getState as jest.Mock).mockReturnValue({
+        upsertMessage: mockUpsertMessage,
+      })
+
+      await speakMessageHandler('一文目です。二文目です。', {
+        turnId: 'turn-live-1',
+        messageId: 'evt-live-1',
+        responseSource: 'thought_core_assistant_message',
+      })
+
+      expect(mockUpsertMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          id: 'evt-live-1',
+          role: 'assistant',
+          content: '一文目です。 二文目です。',
+          turnId: 'turn-live-1',
+        })
+      )
+      expect(speakCharacter).toHaveBeenCalledTimes(2)
+      for (const expectedText of ['一文目です。', '二文目です。']) {
+        expect(speakCharacter).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            sourceMessageId: 'evt-live-1',
+            sourceTurnId: 'turn-live-1',
+            displayMessage: expectedText,
+          }),
+          expect.any(Function),
+          expect.any(Function)
+        )
+      }
+      const assistantUpserts = mockUpsertMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.role === 'assistant')
+      expect(assistantUpserts.length).toBeGreaterThan(1)
+      expect(
+        assistantUpserts.every(
+          (message) =>
+            message.id === 'evt-live-1' && message.turnId === 'turn-live-1'
+        )
+      ).toBe(true)
+      expect((window as any).__projectionVisualSpeechOutputSummaryV0).toEqual(
+        expect.objectContaining({
+          message_id: 'evt-live-1',
+          turn_id: 'turn-live-1',
+          raw_text_published: false,
+          private_data_published: false,
+        })
+      )
+    })
+
+    it('does not accept caller-shaped direct-send correlation authority', () => {
+      expect(
+        resolveDirectSendAssistantSpeechLink({
+          turnId: 'turn-live-1',
+          messageId: 'evt-live-1',
+          responseSource: 'caller_claim',
+        })
+      ).toEqual({})
+      expect(
+        resolveDirectSendAssistantSpeechLink({
+          turnId: 'private/raw',
+          messageId: 'evt-live-1',
+          responseSource: 'thought_core_assistant_message',
+        })
+      ).toEqual({})
+    })
+
     it('裸のモーションタグを感情ではなくモーションとして扱う', async () => {
       const mockUpsertMessage = jest.fn()
       ;(settingsStore.getState as jest.Mock).mockReturnValue({

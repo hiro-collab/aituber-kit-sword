@@ -16,6 +16,9 @@ class ReceivedMessage {
   systemPrompt?: string
   useCurrentSystemPrompt?: boolean
   image?: string
+  turnId?: string
+  messageId?: string
+  responseSource?: 'thought_core_assistant_message'
 
   constructor(
     timestamp: number,
@@ -23,7 +26,10 @@ class ReceivedMessage {
     type: 'direct_send' | 'ai_generate' | 'user_input',
     systemPrompt?: string,
     useCurrentSystemPrompt?: boolean,
-    image?: string
+    image?: string,
+    turnId?: string,
+    messageId?: string,
+    responseSource?: 'thought_core_assistant_message'
   ) {
     this.timestamp = timestamp
     this.message = message
@@ -31,6 +37,9 @@ class ReceivedMessage {
     this.systemPrompt = systemPrompt
     this.useCurrentSystemPrompt = useCurrentSystemPrompt
     this.image = image
+    this.turnId = turnId
+    this.messageId = messageId
+    this.responseSource = responseSource
   }
 }
 
@@ -48,7 +57,11 @@ const MessageReceiver = () => {
       for (const message of messages) {
         switch (message.type) {
           case 'direct_send':
-            await speakMessageHandler(message.message)
+            await speakMessageHandler(message.message, {
+              turnId: message.turnId,
+              messageId: message.messageId,
+              responseSource: message.responseSource,
+            })
             break
           case 'ai_generate': {
             // 外部画像が提供された場合はそれを使用、なければカメラキャプチャ

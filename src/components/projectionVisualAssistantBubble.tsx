@@ -251,6 +251,11 @@ export const ProjectionVisualAssistantBubble = ({
           conversationAttemptRef:
             latestChatAssistantMessage?.conversationAttemptRef,
         })
+  const bubbleTurnId = shouldUseProjectionDisplayMessage
+    ? passiveSpeechOutputSummary?.turn_id
+    : shouldUseOperatorSpeechDisplayMessage
+      ? operatorSpeechOutputDisplayState?.turn_id
+      : latestChatAssistantMessage?.turnId
   const intendedTextSummary = useMemo(
     () =>
       buildSpeechOutputSummary({
@@ -258,6 +263,7 @@ export const ProjectionVisualAssistantBubble = ({
         sourceField: bubbleSourceField,
         message: cleanedMessage,
         messageId: latestAssistantMessageEntry.id,
+        turnId: bubbleTurnId,
         conversationAttemptRef: bubbleConversationAttemptRef,
         textRoleClass: 'intended_text',
         textScopeClass: 'compacted_full_text',
@@ -266,6 +272,7 @@ export const ProjectionVisualAssistantBubble = ({
       bubbleSourceField,
       cleanedMessage,
       latestAssistantMessageEntry.id,
+      bubbleTurnId,
       bubbleConversationAttemptRef,
     ]
   )
@@ -276,6 +283,7 @@ export const ProjectionVisualAssistantBubble = ({
         sourceField: bubbleSourceField,
         message: currentPage,
         messageId: latestAssistantMessageEntry.id,
+        turnId: bubbleTurnId,
         conversationAttemptRef: bubbleConversationAttemptRef,
         textRoleClass: 'bubble_text',
         textScopeClass: bubbleTextScopeClass,
@@ -285,6 +293,7 @@ export const ProjectionVisualAssistantBubble = ({
       bubbleTextScopeClass,
       currentPage,
       latestAssistantMessageEntry.id,
+      bubbleTurnId,
       bubbleConversationAttemptRef,
     ]
   )

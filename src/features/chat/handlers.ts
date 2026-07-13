@@ -22,6 +22,7 @@ import { compactReviewProofMessage } from '@/utils/reviewProofMessage'
 import {
   buildSpeechOutputSummary,
   safeConversationAttemptRef,
+  safeSpeechOutputIdentifier,
   writeWindowSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
 import {
@@ -227,11 +228,33 @@ type AssistantSpeechLink = {
   onComplete?: () => void
 }
 
+export type DirectSendAssistantContext = {
+  turnId?: string
+  messageId?: string
+  responseSource?: string
+}
+
+export const resolveDirectSendAssistantSpeechLink = (
+  context: DirectSendAssistantContext = {}
+): AssistantSpeechLink => {
+  const assistantTurnId = safeSpeechOutputIdentifier(context.turnId)
+  const assistantMessageId = safeSpeechOutputIdentifier(context.messageId)
+  if (
+    context.responseSource !== 'thought_core_assistant_message' ||
+    !assistantTurnId ||
+    !assistantMessageId
+  ) {
+    return {}
+  }
+  return { assistantTurnId, assistantMessageId }
+}
+
 const publishAssistantDisplayMessage = (
   messageId: string,
   content: string,
   thinking?: string,
-  conversationAttemptRef?: string
+  conversationAttemptRef?: string,
+  turnId?: string
 ) => {
   const trimmedContent = content.trim()
   if (!trimmedContent) return
@@ -242,6 +265,7 @@ const publishAssistantDisplayMessage = (
     content: trimmedContent,
     ...(thinking && { thinking }),
     ...(conversationAttemptRef && { conversationAttemptRef }),
+    ...(turnId && { turnId }),
   })
 }
 
@@ -416,7 +440,12 @@ export const presentAcceptedPreparedSampleAssistantResponse = async (
  * 受け取ったメッセージを処理し、AIの応答を生成して発話させる (Refactored)
  * @param receivedMessage 処理する文字列
  */
-export const speakMessageHandler = async (receivedMessage: string) => {
+export const speakMessageHandler = async (
+  receivedMessage: string,
+  directSendContext: DirectSendAssistantContext = {}
+) => {
+  const directSpeechLink =
+    resolveDirectSendAssistantSpeechLink(directSendContext)
   const sessionId = generateSessionId()
   const currentSlideMessagesRef = { current: [] as string[] }
   const assistantMessageListRef = { current: [] as string[] }
@@ -425,7 +454,8 @@ export const speakMessageHandler = async (receivedMessage: string) => {
   let codeBlockContent: string = ''
   let accumulatedAssistantText: string = ''
   let remainingMessage = receivedMessage
-  let currentMessageId: string = generateMessageId()
+  let currentMessageId: string =
+    directSpeechLink.assistantMessageId ?? generateMessageId()
 
   while (remainingMessage.length > 0 || isCodeBlock) {
     let processableText = ''
@@ -444,6 +474,9 @@ export const speakMessageHandler = async (receivedMessage: string) => {
             id: currentMessageId,
             role: 'assistant',
             content: accumulatedAssistantText.trim(),
+            ...(directSpeechLink.assistantTurnId && {
+              turnId: directSpeechLink.assistantTurnId,
+            }),
           })
           accumulatedAssistantText = ''
         }
@@ -489,7 +522,10 @@ export const speakMessageHandler = async (receivedMessage: string) => {
           accumulatedAssistantText += aiText + ' '
           publishAssistantDisplayMessage(
             currentMessageId,
-            accumulatedAssistantText
+            accumulatedAssistantText,
+            undefined,
+            undefined,
+            directSpeechLink.assistantTurnId
           )
           handleSpeakAndStateUpdate(
             sessionId,
@@ -500,7 +536,7 @@ export const speakMessageHandler = async (receivedMessage: string) => {
             motionTag || undefined,
             {
               assistantMessageId: currentMessageId,
-              assistantTurnId: sessionId,
+              assistantTurnId: directSpeechLink.assistantTurnId ?? sessionId,
               displayMessage: sentence,
             }
           )
@@ -515,7 +551,10 @@ export const speakMessageHandler = async (receivedMessage: string) => {
             accumulatedAssistantText += aiText + ' '
             publishAssistantDisplayMessage(
               currentMessageId,
-              accumulatedAssistantText
+              accumulatedAssistantText,
+              undefined,
+              undefined,
+              directSpeechLink.assistantTurnId
             )
             handleSpeakAndStateUpdate(
               sessionId,
@@ -526,7 +565,7 @@ export const speakMessageHandler = async (receivedMessage: string) => {
               motionTag || undefined,
               {
                 assistantMessageId: currentMessageId,
-                assistantTurnId: sessionId,
+                assistantTurnId: directSpeechLink.assistantTurnId ?? sessionId,
                 displayMessage: finalSentence,
               }
             )
@@ -549,7 +588,10 @@ export const speakMessageHandler = async (receivedMessage: string) => {
           accumulatedAssistantText += finalSentence + ' '
           publishAssistantDisplayMessage(
             currentMessageId,
-            accumulatedAssistantText
+            accumulatedAssistantText,
+            undefined,
+            undefined,
+            directSpeechLink.assistantTurnId
           )
           handleSpeakAndStateUpdate(
             sessionId,
@@ -560,7 +602,7 @@ export const speakMessageHandler = async (receivedMessage: string) => {
             undefined,
             {
               assistantMessageId: currentMessageId,
-              assistantTurnId: sessionId,
+              assistantTurnId: directSpeechLink.assistantTurnId ?? sessionId,
               displayMessage: finalSentence,
             }
           )
@@ -575,6 +617,9 @@ export const speakMessageHandler = async (receivedMessage: string) => {
           id: currentMessageId,
           role: 'assistant',
           content: accumulatedAssistantText.trim(),
+          ...(directSpeechLink.assistantTurnId && {
+            turnId: directSpeechLink.assistantTurnId,
+          }),
         })
         accumulatedAssistantText = ''
       }
@@ -588,6 +633,9 @@ export const speakMessageHandler = async (receivedMessage: string) => {
       id: currentMessageId,
       role: 'assistant',
       content: accumulatedAssistantText.trim(),
+      ...(directSpeechLink.assistantTurnId && {
+        turnId: directSpeechLink.assistantTurnId,
+      }),
     })
   }
   if (isCodeBlock && codeBlockContent.trim()) {

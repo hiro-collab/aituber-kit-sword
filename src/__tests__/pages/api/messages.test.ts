@@ -222,6 +222,156 @@ describe('/api/messages', () => {
       expect(res._json).toEqual({ message: 'Successfully sent' })
     })
 
+    it('preserves one validated Thought Core response identity through GET', () => {
+      const body = {
+        messages: ['公開応答です。'],
+        turn_id: 'turn_live_speech_0123456789abcdef0123456789abcdef',
+        message_id: 'evt-live-1',
+        response_source: 'thought_core_assistant_message',
+      }
+      const postRes = createMockRes()
+
+      handler(
+        createMockReq({
+          method: 'POST',
+          query: { clientId: 'client1', type: 'direct_send' },
+          body,
+        }),
+        postRes
+      )
+
+      expect(postRes._status).toBe(201)
+      const getRes = createMockRes()
+      handler(
+        createMockReq({ method: 'GET', query: { clientId: 'client1' } }),
+        getRes
+      )
+      expect(getRes._json).toEqual({
+        messages: [
+          expect.objectContaining({
+            message: '公開応答です。',
+            type: 'direct_send',
+            turnId: body.turn_id,
+            messageId: body.message_id,
+            responseSource: body.response_source,
+          }),
+        ],
+      })
+    })
+
+    it('deduplicates the same Thought Core response identity per client', () => {
+      const request = createMockReq({
+        method: 'POST',
+        query: { clientId: 'client1', type: 'direct_send' },
+        body: {
+          messages: ['公開応答です。'],
+          turn_id: 'turn_live_speech_0123456789abcdef0123456789abcdef',
+          message_id: 'evt-live-1',
+          response_source: 'thought_core_assistant_message',
+        },
+      })
+      const first = createMockRes()
+      const duplicate = createMockRes()
+
+      handler(request, first)
+      handler(request, duplicate)
+
+      expect(first._status).toBe(201)
+      expect(duplicate._status).toBe(200)
+      expect(duplicate._json).toEqual({ message: 'Already received' })
+      const getRes = createMockRes()
+      handler(
+        createMockReq({ method: 'GET', query: { clientId: 'client1' } }),
+        getRes
+      )
+      expect((getRes._json as { messages: unknown[] }).messages).toHaveLength(1)
+    })
+
+    it('does not conflate distinct colon-bearing response identities', () => {
+      for (const [turn_id, message_id] of [
+        ['turn:a', 'message-b'],
+        ['turn', 'a:message-b'],
+      ]) {
+        const res = createMockRes()
+        handler(
+          createMockReq({
+            method: 'POST',
+            query: { clientId: 'client1', type: 'direct_send' },
+            body: {
+              messages: ['公開応答です。'],
+              turn_id,
+              message_id,
+              response_source: 'thought_core_assistant_message',
+            },
+          }),
+          res
+        )
+        expect(res._status).toBe(201)
+      }
+
+      const getRes = createMockRes()
+      handler(
+        createMockReq({ method: 'GET', query: { clientId: 'client1' } }),
+        getRes
+      )
+      expect((getRes._json as { messages: unknown[] }).messages).toHaveLength(2)
+    })
+
+    it.each([
+      ['partial', { turn_id: 'turn-safe' }, 'direct_send'],
+      [
+        'wrong source',
+        {
+          turn_id: 'turn-safe',
+          message_id: 'message-safe',
+          response_source: 'caller_claim',
+        },
+        'direct_send',
+      ],
+      [
+        'unsafe id',
+        {
+          turn_id: 'private/raw',
+          message_id: 'message-safe',
+          response_source: 'thought_core_assistant_message',
+        },
+        'direct_send',
+      ],
+      [
+        'wrong message type',
+        {
+          turn_id: 'turn-safe',
+          message_id: 'message-safe',
+          response_source: 'thought_core_assistant_message',
+        },
+        'ai_generate',
+      ],
+      [
+        'private field',
+        {
+          turn_id: 'turn-safe',
+          message_id: 'message-safe',
+          response_source: 'thought_core_assistant_message',
+          private_turn: { text: 'private-do-not-echo' },
+        },
+        'direct_send',
+      ],
+    ])('rejects malformed correlated response: %s', (_label, extra, type) => {
+      const res = createMockRes()
+      handler(
+        createMockReq({
+          method: 'POST',
+          query: { clientId: 'client1', type },
+          body: { messages: ['公開応答です。'], ...extra },
+        }),
+        res
+      )
+
+      expect(res._status).toBe(400)
+      expect(res._json).toEqual({ error: 'Invalid response correlation' })
+      expect(JSON.stringify(res._json)).not.toContain('private-do-not-echo')
+    })
+
     it('should use default type direct_send when no type query', () => {
       const req = createMockReq({
         method: 'POST',

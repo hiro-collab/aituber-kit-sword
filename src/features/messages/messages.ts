@@ -10,6 +10,7 @@ export type Message = {
   userName?: string // YouTubeコメント主名
   thinking?: string // 推論/思考内容（UI表示・永続化用、LLMには送信しない）
   conversationAttemptRef?: string
+  turnId?: string
 }
 
 export const EMOTIONS = [

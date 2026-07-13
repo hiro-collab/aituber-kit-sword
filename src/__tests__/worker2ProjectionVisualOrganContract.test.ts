@@ -191,7 +191,11 @@ const readParitySummary = () =>
   (
     window as unknown as {
       __projectionVisualSpeechOutputParityV0?: {
-        bubble: { conversation_attempt_ref: string | null }
+        intended: { turn_id: string | null } | null
+        bubble: {
+          conversation_attempt_ref: string | null
+          turn_id: string | null
+        }
         conversation_attempt_ref_class: string
       }
     }
@@ -228,6 +232,7 @@ describe('worker-2 projection visual organ contract', () => {
           role: 'assistant',
           content: 'chat display',
           conversationAttemptRef: chatConversationAttemptRef,
+          turnId: 'turn-chat-1',
         },
       ],
     }
@@ -237,6 +242,8 @@ describe('worker-2 projection visual organ contract', () => {
     expect(readParitySummary()?.bubble.conversation_attempt_ref).toBe(
       chatConversationAttemptRef
     )
+    expect(readParitySummary()?.intended?.turn_id).toBe('turn-chat-1')
+    expect(readParitySummary()?.bubble.turn_id).toBe('turn-chat-1')
   })
 
   it('switches the stage bubble to its matching passive summary instead of borrowing chat', () => {
@@ -450,6 +457,9 @@ describe('worker-2 projection visual organ contract', () => {
     const bubbleSource = readSource(
       'src/components/projectionVisualAssistantBubble.tsx'
     )
+    const messageReceiverSource = readSource(
+      'src/components/messageReceiver.tsx'
+    )
     const paritySource = readSource('src/utils/speechOutputParitySummary.ts')
 
     expect(bubbleSource).toContain('bubbleConversationAttemptRef')
@@ -461,6 +471,18 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(bubbleSource).toContain(
       'operatorSpeechOutputDisplayState?.conversation_attempt_ref'
+    )
+    expect(bubbleSource).toContain('const bubbleTurnId')
+    expect(bubbleSource).toContain('operatorSpeechOutputDisplayState?.turn_id')
+    expect(bubbleSource).toContain('latestChatAssistantMessage?.turnId')
+    expect(bubbleSource).toContain('turnId: bubbleTurnId')
+    expect(messageReceiverSource).toContain(
+      'await speakMessageHandler(message.message, {'
+    )
+    expect(messageReceiverSource).toContain('turnId: message.turnId')
+    expect(messageReceiverSource).toContain('messageId: message.messageId')
+    expect(messageReceiverSource).toContain(
+      'responseSource: message.responseSource'
     )
     expect(bubbleSource).not.toContain(
       'latestCanonicalAssistantConversationAttemptRef'

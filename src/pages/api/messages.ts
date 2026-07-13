@@ -14,11 +14,15 @@ interface ReceivedMessage {
   systemPrompt?: string
   useCurrentSystemPrompt?: boolean
   image?: string
+  turnId?: string
+  messageId?: string
+  responseSource?: 'thought_core_assistant_message'
 }
 
 interface MessageQueue {
   messages: ReceivedMessage[]
   lastAccessed: number
+  recentResponseKeys: Map<string, number>
 }
 
 let messagesPerClient = new Map<string, MessageQueue>()
@@ -28,6 +32,14 @@ const MAX_MESSAGES_PER_REQUEST = 20
 const MAX_MESSAGE_CHARS = 4000
 const MAX_CLIENT_ID_CHARS = 128
 const MAX_IMAGE_CHARS = 10_000_000 // 約7.5MBのbase64画像に相当
+const MAX_RECENT_RESPONSE_KEYS = 512
+const THOUGHT_CORE_RESPONSE_SOURCE = 'thought_core_assistant_message' as const
+const CORRELATED_DIRECT_SEND_BODY_KEYS = new Set([
+  'messages',
+  'turn_id',
+  'message_id',
+  'response_source',
+])
 const ALLOW_EXTERNAL_SYSTEM_PROMPT =
   process.env.ALLOW_EXTERNAL_SYSTEM_PROMPT === 'true'
 const MESSAGE_TYPES: MessageType[] = [
@@ -65,7 +77,15 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
   }
 
   if (req.method === 'POST') {
-    const { messages, systemPrompt, useCurrentSystemPrompt, image } = req.body
+    const {
+      messages,
+      systemPrompt,
+      useCurrentSystemPrompt,
+      image,
+      turn_id: turnId,
+      message_id: messageId,
+      response_source: responseSource,
+    } = req.body
 
     if (!Array.isArray(messages) || messages.length === 0) {
       res.status(400).json({ error: 'Messages array is required' })
@@ -84,6 +104,18 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
       )
     ) {
       res.status(400).json({ error: 'Messages must be non-empty strings' })
+      return
+    }
+    const correlation = resolveThoughtCoreResponseCorrelation({
+      body: req.body,
+      type,
+      messages,
+      turnId,
+      messageId,
+      responseSource,
+    })
+    if (correlation === false) {
+      res.status(400).json({ error: 'Invalid response correlation' })
       return
     }
     if (systemPrompt && typeof systemPrompt !== 'string') {
@@ -124,12 +156,22 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
       messagesPerClient.set(clientId, {
         messages: [],
         lastAccessed: Date.now(),
+        recentResponseKeys: new Map(),
       })
     }
     const clientQueue = messagesPerClient.get(clientId)!
 
     // メッセージをクライアントのキューに追加
     const timestamp = Date.now()
+    pruneRecentResponseKeys(clientQueue, timestamp)
+    if (
+      correlation &&
+      clientQueue.recentResponseKeys.has(correlation.dedupeKey)
+    ) {
+      clientQueue.lastAccessed = timestamp
+      res.status(200).json({ message: 'Already received' })
+      return
+    }
     messages.forEach((message) => {
       clientQueue.messages.push({
         timestamp,
@@ -142,8 +184,17 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
             ? true
             : undefined,
         image: sanitizedImage,
+        ...(correlation && {
+          turnId: correlation.turnId,
+          messageId: correlation.messageId,
+          responseSource: THOUGHT_CORE_RESPONSE_SOURCE,
+        }),
       })
     })
+    if (correlation) {
+      clientQueue.recentResponseKeys.set(correlation.dedupeKey, timestamp)
+      pruneRecentResponseKeys(clientQueue, timestamp)
+    }
     clientQueue.lastAccessed = timestamp
 
     res.status(201).json({ message: 'Successfully sent' })
@@ -153,6 +204,7 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
       messagesPerClient.set(clientId, {
         messages: [],
         lastAccessed: Date.now(),
+        recentResponseKeys: new Map(),
       })
     }
 
@@ -178,6 +230,58 @@ function cleanupClientQueues() {
       messagesPerClient.delete(clientId)
     }
   }
+}
+
+function resolveThoughtCoreResponseCorrelation(args: {
+  body: unknown
+  type: MessageType
+  messages: unknown[]
+  turnId: unknown
+  messageId: unknown
+  responseSource: unknown
+}): { turnId: string; messageId: string; dedupeKey: string } | null | false {
+  const values = [args.turnId, args.messageId, args.responseSource]
+  const anyPresent = values.some((value) => value !== undefined)
+  if (!anyPresent) return null
+  if (
+    args.type !== 'direct_send' ||
+    args.messages.length !== 1 ||
+    !isSafeResponseIdentifier(args.turnId) ||
+    !isSafeResponseIdentifier(args.messageId) ||
+    args.responseSource !== THOUGHT_CORE_RESPONSE_SOURCE ||
+    !isRecord(args.body) ||
+    Object.keys(args.body).some(
+      (key) => !CORRELATED_DIRECT_SEND_BODY_KEYS.has(key)
+    )
+  ) {
+    return false
+  }
+  return {
+    turnId: args.turnId,
+    messageId: args.messageId,
+    dedupeKey: JSON.stringify([args.turnId, args.messageId]),
+  }
+}
+
+function pruneRecentResponseKeys(queue: MessageQueue, now: number) {
+  for (const [key, timestamp] of queue.recentResponseKeys) {
+    if (now - timestamp > CLIENT_TIMEOUT) {
+      queue.recentResponseKeys.delete(key)
+    }
+  }
+  while (queue.recentResponseKeys.size > MAX_RECENT_RESPONSE_KEYS) {
+    const oldestKey = queue.recentResponseKeys.keys().next().value
+    if (typeof oldestKey !== 'string') break
+    queue.recentResponseKeys.delete(oldestKey)
+  }
+}
+
+function isSafeResponseIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isValidClientId(clientId: unknown): clientId is string {
