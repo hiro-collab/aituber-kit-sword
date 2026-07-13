@@ -349,7 +349,7 @@ describe('PreparedSampleSttOperator', () => {
     expect(document.body).not.toHaveTextContent(privateDeviceId)
   })
 
-  it('uses exact virtual verification for integrated presentation and waits for onstart', async () => {
+  it('uses the exact virtual track for integrated presentation and waits for onstart', async () => {
     setParentPreflightQuery(
       `conversation_attempt_ref=${conversationAttemptRef}&selected_sample_id=voice.local_sample_001&sample_index_preflight_class=prepared_sample_index_verified&sample_index_preflight_ref=m4.sample_index_preflight_001&integrated_presentation=1`
     )
@@ -370,9 +370,10 @@ describe('PreparedSampleSttOperator', () => {
         autoGainControl: { exact: false },
       },
     })
-    expect(mockAudioTrack.stop).toHaveBeenCalledTimes(1)
-    expect(startDefaultListening).toHaveBeenCalledTimes(1)
-    expect(startListening).not.toHaveBeenCalled()
+    expect(mockAudioTrack.stop).not.toHaveBeenCalled()
+    expect(startDefaultListening).not.toHaveBeenCalled()
+    expect(startListening).toHaveBeenCalledTimes(1)
+    expect(startListening).toHaveBeenCalledWith(mockAudioTrack)
     expect(screen.getByTestId('prepared-sample-stt-status')).toHaveTextContent(
       'attempt_starting'
     )

@@ -497,30 +497,16 @@ const PreparedSampleSttOperator = () => {
       const integratedPresentation =
         parentPreflight.value.integratedPresentation
       let startResult: boolean | ExplicitAudioTrackCleanupClass
-      if (integratedPresentation) {
-        const verificationTrack = await acquireExplicitAudioTrack()
-        ownedAudioTrackRef.current = verificationTrack
-        const verificationCleanup = stopAcquiredTracks([verificationTrack])
-        ownedAudioTrackRef.current = null
-        if (verificationCleanup === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
-          attemptActiveRef.current = false
-          cleanupFailureRef.current = true
-          setStatus(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
-          return
-        }
-        startResult = await startListening()
-      } else {
-        const track = await acquireExplicitAudioTrack()
-        ownedAudioTrackRef.current = track
-        const startPromise = startListeningWithAudioTrack(track)
-        ownedAudioTrackRef.current = null
-        startResult = await startPromise
-        if (startResult === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
-          attemptActiveRef.current = false
-          cleanupFailureRef.current = true
-          setStatus(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
-          return
-        }
+      const track = await acquireExplicitAudioTrack()
+      ownedAudioTrackRef.current = track
+      const startPromise = startListeningWithAudioTrack(track)
+      ownedAudioTrackRef.current = null
+      startResult = await startPromise
+      if (startResult === EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED) {
+        attemptActiveRef.current = false
+        cleanupFailureRef.current = true
+        setStatus(EXPLICIT_AUDIO_TRACK_CLEANUP_FAILED)
+        return
       }
       if (!startResult) {
         attemptActiveRef.current = false
