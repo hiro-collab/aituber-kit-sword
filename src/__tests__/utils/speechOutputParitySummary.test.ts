@@ -1,11 +1,14 @@
 import {
   CONVERSATION_ATTEMPT_REF_PATTERN,
   PLAYBACK_EVENT_REF_PATTERN,
+  SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_MAX_RETAINED,
+  SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_REQUEST_DEADLINE_MS,
   SYSTEM_SPEECH_SESSION_ID_PATTERN,
   buildSelfOutputSpeechObservationSummary,
   buildSpeechOutputSummary,
   compareSpeechOutputSummaries,
   createSystemSpeechLifecycleController,
+  createSystemSpeechLifecycleTransportPublisher,
   resolveSpeechOutputDisplayConversationAttemptRef,
   safeConversationAttemptRef,
   sanitizeSpeechOutputSummary,
@@ -707,6 +710,99 @@ describe('speechOutputParitySummary', () => {
       expect(publish).not.toHaveBeenCalled()
     })
 
+    it('converges an active-handoff rollback through cooldown and release', () => {
+      const publish = jest.fn()
+      const timers: Array<() => void> = []
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex: jest
+          .fn()
+          .mockReturnValueOnce(hexValues[0])
+          .mockReturnValueOnce(hexValues[1]),
+        setTimer: (callback) => {
+          timers.push(callback)
+          return timers.length as unknown as ReturnType<typeof setTimeout>
+        },
+      })
+      const lease = controller.prepareQueueHandoff()
+
+      expect(controller.commitQueueHandoff(lease)).toBe(true)
+      expect(controller.rollbackQueueHandoff(lease)).toBe(true)
+      expect(
+        publish.mock.calls.map(([summary]) => summary.lifecycle_state)
+      ).toEqual(['handoff_accepted', 'cooldown'])
+      expect(timers).toHaveLength(1)
+      timers[0]()
+      expect(
+        publish.mock.calls.map(([summary]) => summary.lifecycle_state)
+      ).toEqual(['handoff_accepted', 'cooldown', 'released'])
+    })
+
+    it('retains one release after a cooldown rollback', () => {
+      const publish = jest.fn()
+      const timers: Array<() => void> = []
+      const clearTimer = jest.fn()
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex: jest
+          .fn()
+          .mockReturnValueOnce(hexValues[0])
+          .mockReturnValueOnce(hexValues[1]),
+        setTimer: (callback) => {
+          timers.push(callback)
+          return timers.length as unknown as ReturnType<typeof setTimeout>
+        },
+        clearTimer,
+      })
+      const lease = controller.prepareQueueHandoff()
+
+      expect(controller.commitQueueHandoff(lease)).toBe(true)
+      expect(controller.completeQueueHandoff(lease)).toBe(true)
+      expect(controller.rollbackQueueHandoff(lease)).toBe(true)
+      expect(clearTimer).not.toHaveBeenCalled()
+      timers[0]()
+      timers[0]()
+      expect(
+        publish.mock.calls.map(([summary]) => summary.lifecycle_state)
+      ).toEqual(['handoff_accepted', 'cooldown', 'released'])
+    })
+
+    it('prevents a stale rollback timer from releasing a newer generation', () => {
+      const publish = jest.fn()
+      const timers: Array<() => void> = []
+      const createOpaqueHex = jest.fn()
+      hexValues.forEach((value) => createOpaqueHex.mockReturnValueOnce(value))
+      const controller = createSystemSpeechLifecycleController({
+        publish,
+        createOpaqueHex,
+        setTimer: (callback) => {
+          timers.push(callback)
+          return timers.length as unknown as ReturnType<typeof setTimeout>
+        },
+      })
+      const first = controller.prepareQueueHandoff()
+      expect(controller.commitQueueHandoff(first)).toBe(true)
+      expect(controller.rollbackQueueHandoff(first)).toBe(true)
+      const second = controller.prepareQueueHandoff()
+      expect(controller.commitQueueHandoff(second)).toBe(true)
+
+      timers[0]()
+      expect(controller.completeQueueHandoff(second)).toBe(true)
+      timers[1]()
+      expect(
+        publish.mock.calls.map(([summary]) => [
+          summary.speech_session_generation,
+          summary.lifecycle_state,
+        ])
+      ).toEqual([
+        [1, 'handoff_accepted'],
+        [1, 'cooldown'],
+        [2, 'handoff_accepted'],
+        [2, 'cooldown'],
+        [2, 'released'],
+      ])
+    })
+
     it('sanitizes direct window publication to the exact lifecycle allowlist', () => {
       delete (window as any).__swordAgentSystemSpeechLifecycleV0
       writeWindowSystemSpeechLifecycleSummary({
@@ -755,6 +851,238 @@ describe('speechOutputParitySummary', () => {
       expect(serialized).not.toContain('private.invalid')
       expect(serialized).not.toContain('private-device')
       expect(serialized).not.toContain('must-not-leak')
+    })
+
+    it('serializes same-origin lifecycle transport without blocking page publication', async () => {
+      let resolveFirst: ((value: Pick<Response, 'ok'>) => void) | null = null
+      const fetchImpl = jest
+        .fn<Promise<Pick<Response, 'ok'>>, [string, RequestInit]>()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = resolve
+            })
+        )
+        .mockResolvedValue({ ok: true })
+      const publisher = createSystemSpeechLifecycleTransportPublisher({
+        fetchImpl,
+        nowWall: () => '2026-07-13T07:30:00.000Z',
+        nowMonotonic: () => 123.5,
+      })
+      const controller = createSystemSpeechLifecycleController({
+        publish: publisher.publish,
+        createOpaqueHex: jest
+          .fn()
+          .mockReturnValueOnce(hexValues[0])
+          .mockReturnValueOnce(hexValues[1]),
+        setTimer: () => 1 as unknown as ReturnType<typeof setTimeout>,
+      })
+      const lease = controller.prepareQueueHandoff()
+
+      expect(controller.commitQueueHandoff(lease)).toBe(true)
+      expect(controller.completeQueueHandoff(lease)).toBe(true)
+      await Promise.resolve()
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+      if (!resolveFirst) throw new Error('first transport request was not held')
+      ;(resolveFirst as (value: Pick<Response, 'ok'>) => void)({ ok: true })
+      await publisher.drain()
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+
+      const [path, init] = fetchImpl.mock.calls[0]
+      expect(path).toBe('/api/self-output-awareness-transport')
+      expect(init).toEqual(
+        expect.objectContaining({
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          keepalive: true,
+        })
+      )
+      const body = JSON.parse(String(init.body))
+      expect(body).toEqual(
+        expect.objectContaining({
+          schema_version: 'ait_system_speech_lifecycle_transport.v0',
+          client_timestamp_wall: '2026-07-13T07:30:00.000Z',
+          client_timestamp_monotonic: 123.5,
+          client_performance_now: 123.5,
+          raw_private_publication_flags: false,
+          lifecycle: expect.objectContaining({
+            lifecycle_state: 'handoff_accepted',
+            may_start_user_turn: false,
+            turn_adoption_authority: false,
+          }),
+        })
+      )
+      const serializedBody = JSON.stringify(body)
+      expect(serializedBody).not.toContain('private transcript marker')
+      expect(serializedBody).not.toContain('audio.wav')
+      expect(serializedBody).not.toContain('must-not-leak')
+      expect(
+        JSON.parse(String(fetchImpl.mock.calls[1][1].body)).lifecycle
+          .lifecycle_state
+      ).toBe('cooldown')
+    })
+
+    it('continues the serialized transport after one fixed request failure', async () => {
+      const fetchImpl = jest
+        .fn<Promise<Pick<Response, 'ok'>>, [string, RequestInit]>()
+        .mockRejectedValueOnce(new Error('private transport failure'))
+        .mockResolvedValueOnce({ ok: true })
+      const publisher = createSystemSpeechLifecycleTransportPublisher({
+        fetchImpl,
+        nowWall: () => '2026-07-13T07:30:00.000Z',
+        nowMonotonic: () => 456,
+      })
+
+      publisher.publish({
+        schema_version: 'ait_system_speech_lifecycle.v0',
+        system_speech_session_id:
+          'system-speech-session:sss_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        speech_session_generation: 1,
+        playback_event_ref:
+          'playback-event:pe_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        lifecycle_state: 'handoff_accepted',
+        cooldown_ms: 500,
+      })
+      publisher.publish({
+        schema_version: 'ait_system_speech_lifecycle.v0',
+        system_speech_session_id:
+          'system-speech-session:sss_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        speech_session_generation: 1,
+        playback_event_ref:
+          'playback-event:pe_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        lifecycle_state: 'cooldown',
+        cooldown_ms: 500,
+      })
+      publisher.publish({
+        schema_version: 'ait_system_speech_lifecycle.v0',
+        system_speech_session_id:
+          'system-speech-session:sss_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        speech_session_generation: 1,
+        playback_event_ref:
+          'playback-event:pe_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        lifecycle_state: 'released',
+        cooldown_ms: 500,
+      })
+
+      await expect(publisher.drain()).resolves.toBeUndefined()
+      expect(fetchImpl).toHaveBeenCalledTimes(3)
+    })
+
+    it('preserves accepted lifecycle convergence under bounded overload', async () => {
+      jest.useFakeTimers()
+      try {
+        const observedStates: Array<[number, string]> = []
+        const fetchImpl = jest.fn(
+          (_path: string, init: RequestInit): Promise<Pick<Response, 'ok'>> => {
+            const body = JSON.parse(String(init.body))
+            observedStates.push([
+              body.lifecycle.speech_session_generation,
+              body.lifecycle.lifecycle_state,
+            ])
+            if (observedStates.length === 1) {
+              return new Promise((_resolve, reject) => {
+                init.signal?.addEventListener('abort', () =>
+                  reject(new Error('private timeout marker'))
+                )
+              })
+            }
+            return Promise.resolve({ ok: true })
+          }
+        )
+        const publisher = createSystemSpeechLifecycleTransportPublisher({
+          fetchImpl,
+          nowWall: () => '2026-07-13T07:30:00.000Z',
+          nowMonotonic: () => 789,
+        })
+        const publishState = (
+          generation: number,
+          lifecycleState: 'handoff_accepted' | 'cooldown' | 'released'
+        ) =>
+          publisher.publish({
+            schema_version: 'ait_system_speech_lifecycle.v0',
+            system_speech_session_id: `system-speech-session:sss_${generation
+              .toString(16)
+              .padStart(32, '0')}`,
+            speech_session_generation: generation,
+            playback_event_ref: `playback-event:pe_${generation
+              .toString(16)
+              .padStart(32, 'f')}`,
+            lifecycle_state: lifecycleState,
+            cooldown_ms: 500,
+          })
+        const publishGeneration = (generation: number) => {
+          publishState(generation, 'handoff_accepted')
+          publishState(generation, 'cooldown')
+          publishState(generation, 'released')
+        }
+
+        for (let generation = 1; generation <= 6; generation += 1) {
+          publishState(generation, 'handoff_accepted')
+        }
+        publishState(7, 'handoff_accepted')
+        publishState(6, 'cooldown')
+        publishState(6, 'released')
+        publishState(7, 'cooldown')
+        publishState(7, 'released')
+        await Promise.resolve()
+        expect(fetchImpl).toHaveBeenCalledTimes(1)
+        const overloadedStatus = publisher.getBoundedStatus()
+        expect(
+          overloadedStatus.retained_count +
+            overloadedStatus.reserved_future_count
+        ).toBeLessThanOrEqual(SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_MAX_RETAINED)
+        expect(overloadedStatus).toEqual({
+          retained_count: 8,
+          queued_count: 7,
+          reserved_future_count: 0,
+          request_timeout_count: 0,
+          overflow_count: 1,
+          transition_rejected_count: 2,
+        })
+
+        jest.advanceTimersByTime(
+          SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_REQUEST_DEADLINE_MS
+        )
+        await publisher.drain()
+        expect(observedStates).toEqual([
+          [1, 'handoff_accepted'],
+          [2, 'handoff_accepted'],
+          [3, 'handoff_accepted'],
+          [4, 'handoff_accepted'],
+          [5, 'handoff_accepted'],
+          [6, 'handoff_accepted'],
+          [6, 'cooldown'],
+          [6, 'released'],
+        ])
+        expect(
+          observedStates.filter(
+            ([generation, state]) => generation === 6 && state === 'released'
+          )
+        ).toHaveLength(1)
+        expect(publisher.getBoundedStatus()).toEqual({
+          retained_count: 0,
+          queued_count: 0,
+          reserved_future_count: 0,
+          request_timeout_count: 1,
+          overflow_count: 1,
+          transition_rejected_count: 2,
+        })
+
+        publishGeneration(99)
+        await publisher.drain()
+        expect(observedStates.slice(-3)).toEqual([
+          [99, 'handoff_accepted'],
+          [99, 'cooldown'],
+          [99, 'released'],
+        ])
+        expect(JSON.stringify(publisher.getBoundedStatus())).not.toContain(
+          'private timeout marker'
+        )
+      } finally {
+        jest.useRealTimers()
+      }
     })
   })
 })

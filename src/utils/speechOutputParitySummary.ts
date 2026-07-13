@@ -9,6 +9,12 @@ export const SYSTEM_SPEECH_SESSION_ID_PATTERN =
   /^system-speech-session:sss_[a-f0-9]{32}$/
 export const PLAYBACK_EVENT_REF_PATTERN = /^playback-event:pe_[a-f0-9]{32}$/
 export const SYSTEM_SPEECH_COOLDOWN_MS = 500
+export const SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_SCHEMA_VERSION =
+  'ait_system_speech_lifecycle_transport.v0'
+export const SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_PATH =
+  '/api/self-output-awareness-transport'
+export const SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_REQUEST_DEADLINE_MS = 2000
+export const SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_MAX_RETAINED = 8
 
 export type SystemSpeechLifecycleLease = {
   system_speech_session_id: string
@@ -41,6 +47,31 @@ export type SystemSpeechLifecycleSummary = SystemSpeechLifecycleLease & {
   raw_audio_published: false
   device_identity_published: false
   private_data_published: false
+}
+
+export type SystemSpeechLifecycleTransportEnvelope = {
+  schema_version: typeof SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_SCHEMA_VERSION
+  lifecycle: SystemSpeechLifecycleSummary
+  client_timestamp_wall: string
+  client_timestamp_monotonic: number
+  client_performance_now: number
+  raw_private_publication_flags: false
+}
+
+type SystemSpeechLifecycleTransportFetch = (
+  input: string,
+  init: RequestInit
+) => Promise<Pick<Response, 'ok'>>
+
+type SystemSpeechLifecycleTransportPublisherOptions = {
+  fetchImpl?: SystemSpeechLifecycleTransportFetch
+  nowWall?: () => string
+  nowMonotonic?: () => number
+  setRequestTimer?: (
+    callback: () => void,
+    delayMs: number
+  ) => ReturnType<typeof setTimeout>
+  clearRequestTimer?: (timer: ReturnType<typeof setTimeout>) => void
 }
 
 type SystemSpeechLifecycleControllerOptions = {
@@ -114,7 +145,7 @@ const buildSystemSpeechLifecycleSummary = (
   private_data_published: false,
 })
 
-const sanitizeSystemSpeechLifecycleSummary = (
+export const sanitizeSystemSpeechLifecycleSummary = (
   value: unknown
 ): SystemSpeechLifecycleSummary | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -149,6 +180,206 @@ const sanitizeSystemSpeechLifecycleSummary = (
   )
 }
 
+export const createSystemSpeechLifecycleTransportPublisher = (
+  options: SystemSpeechLifecycleTransportPublisherOptions = {}
+) => {
+  const queue: SystemSpeechLifecycleTransportEnvelope[] = []
+  const drainWaiters = new Set<() => void>()
+  const admissions = new Map<
+    number,
+    {
+      lease: SystemSpeechLifecycleLease
+      expected_state: 'cooldown' | 'released'
+      future_reserved_count: number
+    }
+  >()
+  const setRequestTimer =
+    options.setRequestTimer ??
+    ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs))
+  const clearRequestTimer =
+    options.clearRequestTimer ??
+    ((timer: ReturnType<typeof setTimeout>) => clearTimeout(timer))
+  let running = false
+  let retainedCount = 0
+  let requestTimeoutCount = 0
+  let overflowCount = 0
+  let transitionRejectedCount = 0
+  let futureReservedCount = 0
+  let highestHandoffGeneration = 0
+
+  const admitLifecycle = (lifecycle: SystemSpeechLifecycleSummary): boolean => {
+    const generation = lifecycle.speech_session_generation
+    if (lifecycle.lifecycle_state === 'handoff_accepted') {
+      if (generation <= highestHandoffGeneration) {
+        transitionRejectedCount += 1
+        return false
+      }
+      let reclaimableFutureCount = 0
+      admissions.forEach((admission, admittedGeneration) => {
+        if (admittedGeneration < generation) {
+          reclaimableFutureCount += admission.future_reserved_count
+        }
+      })
+      if (
+        retainedCount + futureReservedCount - reclaimableFutureCount + 3 >
+        SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_MAX_RETAINED
+      ) {
+        overflowCount += 1
+        return false
+      }
+      highestHandoffGeneration = generation
+      admissions.forEach((admission, admittedGeneration) => {
+        if (admittedGeneration < generation) {
+          futureReservedCount -= admission.future_reserved_count
+          admissions.delete(admittedGeneration)
+        }
+      })
+      admissions.set(generation, {
+        lease: {
+          system_speech_session_id: lifecycle.system_speech_session_id,
+          speech_session_generation: generation,
+          playback_event_ref: lifecycle.playback_event_ref,
+        },
+        expected_state: 'cooldown',
+        future_reserved_count: 2,
+      })
+      futureReservedCount += 2
+      return true
+    }
+
+    const admission = admissions.get(generation)
+    if (
+      !admission ||
+      !sameSystemSpeechLease(admission.lease, lifecycle) ||
+      lifecycle.lifecycle_state !== admission.expected_state
+    ) {
+      transitionRejectedCount += 1
+      return false
+    }
+    admission.future_reserved_count -= 1
+    futureReservedCount -= 1
+    if (lifecycle.lifecycle_state === 'cooldown') {
+      admission.expected_state = 'released'
+    } else {
+      admissions.delete(generation)
+    }
+    return true
+  }
+
+  const settleDrainWaiters = () => {
+    if (retainedCount !== 0 || running) return
+    drainWaiters.forEach((resolve) => resolve())
+    drainWaiters.clear()
+  }
+
+  const processQueue = async (
+    fetchImpl: SystemSpeechLifecycleTransportFetch
+  ): Promise<void> => {
+    if (running) return
+    running = true
+    try {
+      while (queue.length > 0) {
+        const envelope = queue.shift()
+        if (!envelope) continue
+        const abortController = new AbortController()
+        let deadlineTimer: ReturnType<typeof setTimeout> | null = null
+        let timedOut = false
+        try {
+          const request = Promise.resolve()
+            .then(() =>
+              fetchImpl(SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_PATH, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                cache: 'no-store',
+                keepalive: true,
+                signal: abortController.signal,
+                body: JSON.stringify(envelope),
+              })
+            )
+            .then(
+              () => undefined,
+              () => undefined
+            )
+          const deadline = new Promise<void>((resolve) => {
+            deadlineTimer = setRequestTimer(() => {
+              timedOut = true
+              abortController.abort()
+              resolve()
+            }, SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_REQUEST_DEADLINE_MS)
+          })
+          await Promise.race([request, deadline])
+          if (timedOut) requestTimeoutCount += 1
+        } finally {
+          if (deadlineTimer !== null) clearRequestTimer(deadlineTimer)
+          retainedCount -= 1
+        }
+      }
+    } finally {
+      running = false
+      settleDrainWaiters()
+      if (queue.length > 0) void processQueue(fetchImpl)
+    }
+  }
+
+  const publish = (value: unknown): void => {
+    const lifecycle = sanitizeSystemSpeechLifecycleSummary(value)
+    if (!lifecycle || typeof window === 'undefined') return
+
+    const fetchImpl =
+      options.fetchImpl ??
+      (typeof globalThis.fetch === 'function'
+        ? globalThis.fetch.bind(globalThis)
+        : null)
+    if (!fetchImpl) return
+
+    if (!admitLifecycle(lifecycle)) return
+
+    const nowMonotonic =
+      options.nowMonotonic ??
+      (() =>
+        typeof performance !== 'undefined' &&
+        typeof performance.now === 'function'
+          ? performance.now()
+          : 0)
+    const monotonic = nowMonotonic()
+    const envelope: SystemSpeechLifecycleTransportEnvelope = {
+      schema_version: SYSTEM_SPEECH_LIFECYCLE_TRANSPORT_SCHEMA_VERSION,
+      lifecycle,
+      client_timestamp_wall: options.nowWall?.() ?? new Date().toISOString(),
+      client_timestamp_monotonic: monotonic,
+      client_performance_now: monotonic,
+      raw_private_publication_flags: false,
+    }
+
+    retainedCount += 1
+    queue.push(envelope)
+    void processQueue(fetchImpl)
+  }
+
+  return {
+    publish,
+    drain: () =>
+      retainedCount === 0 && !running
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => drainWaiters.add(resolve)),
+    getBoundedStatus: () => ({
+      retained_count: retainedCount,
+      queued_count: queue.length,
+      reserved_future_count: futureReservedCount,
+      request_timeout_count: requestTimeoutCount,
+      overflow_count: overflowCount,
+      transition_rejected_count: transitionRejectedCount,
+    }),
+  }
+}
+
+const systemSpeechLifecycleTransportPublisher =
+  createSystemSpeechLifecycleTransportPublisher()
+
+export const waitForSystemSpeechLifecycleTransportIdle = () =>
+  systemSpeechLifecycleTransportPublisher.drain()
+
 export const writeWindowSystemSpeechLifecycleSummary = (value: unknown) => {
   if (typeof window === 'undefined') return
   const summary = sanitizeSystemSpeechLifecycleSummary(value)
@@ -161,6 +392,7 @@ export const writeWindowSystemSpeechLifecycleSummary = (value: unknown) => {
   window.dispatchEvent(
     new CustomEvent('swordAgentSystemSpeechLifecycleV0', { detail: summary })
   )
+  systemSpeechLifecycleTransportPublisher.publish(summary)
 }
 
 export const createSystemSpeechLifecycleController = (
@@ -280,9 +512,10 @@ export const createSystemSpeechLifecycleController = (
       return true
     }
     if (!active || !sameSystemSpeechLease(active.lease, lease)) return false
-    if (active.timer) clearTimer(active.timer)
-    active = null
-    return true
+    if (active.state === 'handoff_accepted') {
+      return completeQueueHandoff(active.lease)
+    }
+    return active.state === 'cooldown'
   }
 
   return {
