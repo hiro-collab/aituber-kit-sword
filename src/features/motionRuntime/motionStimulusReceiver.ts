@@ -1,4 +1,7 @@
-import { resolveSemanticMotionAssetPath } from './motionAssetSemanticRegistry'
+import {
+  resolveSemanticMotionAssetPath,
+  type MotionAssetSemantic,
+} from './motionAssetSemanticRegistry'
 
 export const MOTION_STIMULUS_RECEIVER_EVENT =
   'projection-visual-motion-stimulus'
@@ -14,6 +17,12 @@ const SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN =
 export const CONTEXT_NOD_GROUP_KEY = 'context.nod'
 export const CONTEXT_NOD_DURATION_MS = 900
 export const DANCE_SEQUENCE_GROUP_KEY = 'dance.sequence'
+export const SEMANTIC_MOTION_GROUP_KEY = 'semantic.motion'
+
+export type EvidenceBackedMotionAssetSemantic = Exclude<
+  MotionAssetSemantic,
+  'dance'
+>
 
 export type MotionStimulusReceiverStatus =
   | 'accepted'
@@ -51,6 +60,10 @@ export interface MotionStimulusRuntimeStartRequest {
   requestedAtMs: number
   loop: boolean
   trace: MotionStimulusTraceIds
+}
+
+export interface MotionStimulusRuntimeSemanticStartRequest extends MotionStimulusRuntimeStartRequest {
+  semantic: EvidenceBackedMotionAssetSemantic
 }
 
 export interface MotionStimulusRuntimeContextNodRequest {
@@ -97,6 +110,11 @@ export interface MotionStimulusReceiverAdapter {
     | Promise<MotionStimulusRuntimeStartResult>
   startContextNod?: (
     request: MotionStimulusRuntimeContextNodRequest
+  ) =>
+    | MotionStimulusRuntimeStartResult
+    | Promise<MotionStimulusRuntimeStartResult>
+  startSemanticMotion?: (
+    request: MotionStimulusRuntimeSemanticStartRequest
   ) =>
     | MotionStimulusRuntimeStartResult
     | Promise<MotionStimulusRuntimeStartResult>
@@ -229,6 +247,39 @@ const ALLOWED_DANCE_STIMULUS_IDS = new Set([
 
 const DANCE_SEQUENCE_PAYLOAD_REFS = new Set([
   'motion.thought_core.dance_sequence.v0',
+])
+const SEMANTIC_MOTION_CONTRACTS = new Map<
+  string,
+  { semantic: EvidenceBackedMotionAssetSemantic; kind: 'gesture' | 'posture' }
+>([
+  [
+    'motion.thought_core.semantic_motion.show_full_body.v0',
+    { semantic: 'show_full_body', kind: 'posture' },
+  ],
+  [
+    'motion.thought_core.semantic_motion.greeting.v0',
+    { semantic: 'greeting', kind: 'gesture' },
+  ],
+  [
+    'motion.thought_core.semantic_motion.peace_sign.v0',
+    { semantic: 'peace_sign', kind: 'gesture' },
+  ],
+  [
+    'motion.thought_core.semantic_motion.shoot_pose.v0',
+    { semantic: 'shoot_pose', kind: 'gesture' },
+  ],
+  [
+    'motion.thought_core.semantic_motion.spin.v0',
+    { semantic: 'spin', kind: 'gesture' },
+  ],
+  [
+    'motion.thought_core.semantic_motion.model_pose.v0',
+    { semantic: 'model_pose', kind: 'posture' },
+  ],
+  [
+    'motion.thought_core.semantic_motion.squat.v0',
+    { semantic: 'squat', kind: 'gesture' },
+  ],
 ])
 const MOTION_STOP_PAYLOAD_REFS = new Set(['motion.thought_core.stop.v0'])
 const MOTION_STOP_INTERRUPT_POLICY = 'stop'
@@ -390,6 +441,38 @@ export async function receiveMotionStimulusV0(
     return createRuntimeResult(stimulus, contextNodResult, nowMs())
   }
 
+  const semanticMotion = resolveSemanticMotionContract(stimulus)
+  if (semanticMotion) {
+    if (!adapter.startSemanticMotion) {
+      return createUnavailableResult(
+        stimulus,
+        'semantic_motion_adapter_unavailable',
+        issuedAtMs
+      )
+    }
+    const assetPath = resolveSemanticMotionAssetPath(semanticMotion.semantic)
+    if (!assetPath) {
+      return createUnavailableResult(
+        stimulus,
+        'semantic_motion_asset_not_semantically_available',
+        issuedAtMs
+      )
+    }
+
+    const startResult = await adapter.startSemanticMotion({
+      semantic: semanticMotion.semantic,
+      assetPath,
+      stimulusId: stimulus.stimulusId,
+      stimulusInstanceId: stimulus.stimulusInstanceId,
+      groupKey: SEMANTIC_MOTION_GROUP_KEY,
+      requestedAtMs: issuedAtMs,
+      loop: false,
+      trace: stimulus.trace,
+    })
+
+    return createRuntimeResult(stimulus, startResult, nowMs())
+  }
+
   if (isDanceStimulus(stimulus)) {
     if (!isSupportedDanceRequestMode(stimulus)) {
       return createUnavailableResult(
@@ -403,7 +486,7 @@ export async function receiveMotionStimulusV0(
     if (!assetPath) {
       return createUnavailableResult(
         stimulus,
-        process.env.NEXT_PUBLIC_MOTION_ASSET_SEMANTIC_REGISTRY_JSON?.trim()
+        resolveSafeConfiguredDanceMotionAssetPath()
           ? 'dance_motion_asset_not_semantically_available'
           : 'dance_motion_asset_not_configured',
         issuedAtMs
@@ -690,6 +773,26 @@ function isContractDanceSequenceStimulus(
   )
 }
 
+function resolveSemanticMotionContract(
+  stimulus: NormalizedMotionStimulus
+):
+  | { semantic: EvidenceBackedMotionAssetSemantic; kind: 'gesture' | 'posture' }
+  | undefined {
+  if (
+    stimulus.requestMode !== 'play' ||
+    stimulus.loop !== false ||
+    stimulus.interruptPolicy !== 'replace_same_track' ||
+    stimulus.fallbackState !== 'neutral_idle' ||
+    !stimulus.payloadRef
+  ) {
+    return undefined
+  }
+  const contract = SEMANTIC_MOTION_CONTRACTS.get(stimulus.payloadRef)
+  return contract && stimulus.kind.toLowerCase() === contract.kind
+    ? contract
+    : undefined
+}
+
 function isMotionStopStimulus(stimulus: NormalizedMotionStimulus): boolean {
   const kind = stimulus.kind.toLowerCase()
   return (
@@ -822,13 +925,21 @@ export function resolveDanceMotionAssetPath(
   value = process.env.NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH,
   registryValue = process.env.NEXT_PUBLIC_MOTION_ASSET_SEMANTIC_REGISTRY_JSON
 ): string | undefined {
-  const text = safeString(value)
+  const text = resolveSafeConfiguredDanceMotionAssetPath(value)
   if (!text) return undefined
-  if (!SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN.test(text)) return undefined
 
   const registryText = safeString(registryValue)
-  if (!registryText) return text
+  if (!registryText) return undefined
   return resolveSemanticMotionAssetPath('dance', registryText) === text
+    ? text
+    : undefined
+}
+
+function resolveSafeConfiguredDanceMotionAssetPath(
+  value = process.env.NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH
+): string | undefined {
+  const text = safeString(value)
+  return text && SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN.test(text)
     ? text
     : undefined
 }

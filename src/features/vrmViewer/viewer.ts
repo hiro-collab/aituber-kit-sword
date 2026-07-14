@@ -8,6 +8,7 @@ import settingsStore from '@/features/stores/settings'
 import { calculateCameraFit } from './cameraFit'
 import {
   DANCE_SEQUENCE_GROUP_KEY,
+  SEMANTIC_MOTION_GROUP_KEY,
   receiveMotionStimulusV0,
   type MotionStimulusRuntimeExpressionVisibleRequest,
   type MotionStimulusReceiverResult,
@@ -207,6 +208,8 @@ export class Viewer {
     return receiveMotionStimulusV0(stimulus, {
       startDance: (request) =>
         this.startMotionRuntimeDanceFromStimulus(request),
+      startSemanticMotion: (request) =>
+        this.startMotionRuntimeSemanticAssetFromStimulus(request),
       startContextNod: (request) =>
         this.startMotionRuntimeContextNodFromStimulus(request),
       startExpressionVisible: (request) =>
@@ -266,6 +269,18 @@ export class Viewer {
   private async startMotionRuntimeDanceFromStimulus(
     request: MotionStimulusRuntimeStartRequest
   ): Promise<MotionStimulusRuntimeStartResult> {
+    return this.startMotionRuntimeAssetFromStimulus(request)
+  }
+
+  private async startMotionRuntimeSemanticAssetFromStimulus(
+    request: MotionStimulusRuntimeStartRequest
+  ): Promise<MotionStimulusRuntimeStartResult> {
+    return this.startMotionRuntimeAssetFromStimulus(request)
+  }
+
+  private async startMotionRuntimeAssetFromStimulus(
+    request: MotionStimulusRuntimeStartRequest
+  ): Promise<MotionStimulusRuntimeStartResult> {
     const model = this.model
     if (!model?.vrm) {
       return {
@@ -314,7 +329,7 @@ export class Viewer {
         safe_visible_state: 'motion_started',
       }
     } catch {
-      console.warn('Motion Runtime dance asset unavailable', {
+      console.warn('Motion Runtime VRMA asset unavailable', {
         reason_code: 'motion_asset_load_failed',
       })
       return {
@@ -341,7 +356,12 @@ export class Viewer {
     this._loadedMotionRuntimeAssetPath = undefined
     this._loadedMotionRuntimeModel = undefined
     this._motionRuntimeAssetLoadToken += 1
-    const releasedInstanceIds = model.stopMotionRuntimeGroup(
+    const releasedSemanticInstanceIds = model.stopMotionRuntimeGroup(
+      SEMANTIC_MOTION_GROUP_KEY,
+      request.requestedAtMs,
+      'motion_runtime_stop_requested'
+    )
+    const releasedDanceInstanceIds = model.stopMotionRuntimeGroup(
       request.groupKey || DANCE_SEQUENCE_GROUP_KEY,
       request.requestedAtMs,
       'motion_runtime_stop_requested',
@@ -351,6 +371,10 @@ export class Viewer {
           request.trace.runtime_result_id ?? request.trace.driver_result_id,
       }
     )
+    const releasedInstanceIds = [
+      ...releasedSemanticInstanceIds,
+      ...releasedDanceInstanceIds,
+    ]
     model.queueMotionRuntimeFrame({
       stimulusInstanceId: request.stimulusInstanceId,
       frameCount: 1,
@@ -438,6 +462,7 @@ export class Viewer {
 
   public unloadVRM(): void {
     if (this.model?.vrm) {
+      this.model.stopMotionRuntimeGroup(SEMANTIC_MOTION_GROUP_KEY)
       this.model.stopMotionRuntimeGroup('dance.sequence')
       this._scene.remove(this.model.vrm.scene)
       this.model?.unLoadVrm()

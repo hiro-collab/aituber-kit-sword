@@ -11,6 +11,8 @@ import {
   CONTEXT_NOD_GROUP_KEY,
   DANCE_SEQUENCE_GROUP_KEY,
   DANCE_MOTION_ASSET_PATH_ENV,
+  MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
+  SEMANTIC_MOTION_GROUP_KEY,
 } from '@/features/motionRuntime/motionStimulusReceiver'
 
 jest.mock('@/lib/VRMAnimation/loadVRMAnimation', () => ({
@@ -21,6 +23,8 @@ const mockedLoadVRMAnimation = loadVRMAnimation as jest.MockedFunction<
   typeof loadVRMAnimation
 >
 const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
+const originalSemanticMotionRegistry =
+  process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
 
 describe('VRM camera fit', () => {
   it('fits tall and wide model bounds using the limiting field of view', () => {
@@ -95,12 +99,19 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
   beforeEach(() => {
     mockedLoadVRMAnimation.mockReset()
     process.env[DANCE_MOTION_ASSET_PATH_ENV] = '/local-vrma/test-dance.vrma'
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      dance: '/local-vrma/test-dance.vrma',
+    })
     jest.spyOn(console, 'error').mockImplementation(() => {})
     jest.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   afterEach(() => {
     restoreEnv(DANCE_MOTION_ASSET_PATH_ENV, originalDanceMotionAssetPath)
+    restoreEnv(
+      MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
+      originalSemanticMotionRegistry
+    )
     jest.restoreAllMocks()
   })
 
@@ -194,14 +205,21 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     )
   })
 
-  it('unloadVRM stops the Motion Runtime dance sequence before disposing the model', () => {
+  it('unloadVRM stops semantic and dance Motion Runtime groups before disposing the model', () => {
     const viewer = new Viewer()
     const model = createReadyModel()
     viewer.model = model
 
     viewer.unloadVRM()
 
-    expect(model.stopMotionRuntimeGroup).toHaveBeenCalledWith('dance.sequence')
+    expect(model.stopMotionRuntimeGroup).toHaveBeenNthCalledWith(
+      1,
+      SEMANTIC_MOTION_GROUP_KEY
+    )
+    expect(model.stopMotionRuntimeGroup).toHaveBeenNthCalledWith(
+      2,
+      'dance.sequence'
+    )
     expect(model.unLoadVrm).toHaveBeenCalledTimes(1)
   })
 
@@ -233,6 +251,43 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
         loop: true,
       })
     )
+  })
+
+  it('loads an exact semantic registry asset as a one-shot generic VRMA lifecycle', async () => {
+    const viewer = new Viewer()
+    const model = createReadyModel()
+    viewer.model = model
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      greeting: '/local-vrma/greeting.vrma',
+    })
+    mockedLoadVRMAnimation.mockResolvedValue(createVRMAnimation())
+
+    const result = await viewer.receiveMotionStimulus(
+      createSemanticMotionStimulus('greeting', 'gesture')
+    )
+
+    expect(mockedLoadVRMAnimation).toHaveBeenCalledWith(
+      '/local-vrma/greeting.vrma'
+    )
+    expect(model.playMotionRuntimeVRMA).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        stimulusId: 'mot_stim_semantic_greeting',
+        groupKey: SEMANTIC_MOTION_GROUP_KEY,
+        requestedAtMs: Date.parse('2026-07-14T04:00:00.000Z'),
+        loop: false,
+        stimulusInstanceId: 'mot_inst_semantic_greeting',
+        runtimeResultId: 'mot_res_semantic_greeting',
+      })
+    )
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        status: 'started',
+        reason_code: 'motion_runtime_vrma_started',
+      })
+    )
+    expect(JSON.stringify(result)).not.toContain('/local-vrma/')
   })
 
   it('exposes the exact model-owned dance lifecycle predicate without a viewer shadow state', () => {
@@ -271,7 +326,7 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     expect(model.playMotionRuntimeVRMA).not.toHaveBeenCalled()
     expect(console.error).not.toHaveBeenCalled()
     expect(console.warn).toHaveBeenCalledWith(
-      'Motion Runtime dance asset unavailable',
+      'Motion Runtime VRMA asset unavailable',
       {
         reason_code: 'motion_asset_load_failed',
       }
@@ -301,6 +356,11 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
       })
     )
     expect(model.playMotionRuntimeVRMA).not.toHaveBeenCalled()
+    expect(model.stopMotionRuntimeGroup).toHaveBeenCalledWith(
+      SEMANTIC_MOTION_GROUP_KEY,
+      Date.parse('2026-06-15T02:15:00.000Z'),
+      'motion_runtime_stop_requested'
+    )
     expect(model.stopMotionRuntimeGroup).toHaveBeenCalledWith(
       DANCE_SEQUENCE_GROUP_KEY,
       Date.parse('2026-06-15T02:15:00.000Z'),
@@ -332,7 +392,7 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
         safe_visible_state: 'neutral_idle_requested',
       })
     )
-    expect(model.stopMotionRuntimeGroup).toHaveBeenCalledTimes(1)
+    expect(model.stopMotionRuntimeGroup).toHaveBeenCalledTimes(2)
     expect(model.queueMotionRuntimeFrame).toHaveBeenCalledWith(
       expect.objectContaining({
         resetToIdle: true,
@@ -663,6 +723,38 @@ function createStopStimulus() {
     redaction: {
       shared_summary_only: true,
     },
+  }
+}
+
+function createSemanticMotionStimulus(semantic: 'greeting', kind: 'gesture') {
+  return {
+    schema_version: 'motion_stimulus.v0',
+    motion_event_id: `mot_evt_semantic_${semantic}`,
+    stimulus_id: `mot_stim_semantic_${semantic}`,
+    stimulus_instance_id: `mot_inst_semantic_${semantic}`,
+    source_class: 'user_command',
+    source_origin: 'thought_core',
+    requested_at: '2026-07-14T04:00:00.000Z',
+    kind,
+    payload_ref: `motion.thought_core.semantic_motion.${semantic}.v0`,
+    request_mode: 'play',
+    duration_ms: 12000,
+    loop: false,
+    interrupt_policy: 'replace_same_track',
+    fallback_state: 'neutral_idle',
+    stop_reason: 'none',
+    phase: 'queued',
+    lifecycle_state: 'queued',
+    safe_visible_state: 'requested',
+    target_model_type: 'vrm',
+    track_mask: { scope: 'full_body' },
+    requirements: { visible_motion: true },
+    trace: {
+      event_id: `evt_semantic_${semantic}`,
+      turn_id: `turn_semantic_${semantic}`,
+      runtime_result_id: `mot_res_semantic_${semantic}`,
+    },
+    redaction: { shared_summary_only: true },
   }
 }
 

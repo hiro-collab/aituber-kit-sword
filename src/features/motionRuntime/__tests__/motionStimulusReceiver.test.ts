@@ -4,6 +4,7 @@ import {
   DANCE_SEQUENCE_GROUP_KEY,
   DANCE_MOTION_ASSET_PATH_ENV,
   MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
+  SEMANTIC_MOTION_GROUP_KEY,
   receiveMotionStimulusV0,
   resolveDanceMotionAssetPath,
   type MotionStimulusReceiverAdapter,
@@ -16,9 +17,11 @@ const originalMotionAssetRegistry =
 
 describe('receiveMotionStimulusV0', () => {
   beforeEach(() => {
-    delete process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
     process.env[DANCE_MOTION_ASSET_PATH_ENV] =
       CONFIGURED_DANCE_MOTION_ASSET_PATH
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      dance: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+    })
   })
 
   afterEach(() => {
@@ -143,6 +146,130 @@ describe('receiveMotionStimulusV0', () => {
     ])
   })
 
+  it.each([
+    ['show_full_body', 'posture', '/local-vrma/show-full-body.vrma'],
+    ['greeting', 'gesture', '/local-vrma/greeting.vrma'],
+    ['peace_sign', 'gesture', '/local-vrma/peace-sign.vrma'],
+    ['shoot_pose', 'gesture', '/local-vrma/shoot-pose.vrma'],
+    ['spin', 'gesture', '/local-vrma/spin.vrma'],
+    ['model_pose', 'posture', '/local-vrma/model-pose.vrma'],
+    ['squat', 'gesture', '/local-vrma/squat.vrma'],
+  ] as const)(
+    'routes evidence-backed semantic %s through only its exact registry path',
+    async (semantic, kind, assetPath) => {
+      process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+        [semantic]: assetPath,
+      })
+      const startDance = jest.fn()
+      const startSemanticMotion = jest.fn().mockResolvedValue({
+        status: 'started',
+        reason_code: 'motion_runtime_vrma_started',
+        runtime_result_id: `runtime-result-${semantic}`,
+        safe_visible_state: 'motion_started',
+      })
+
+      const result = await receiveMotionStimulusV0(
+        createSemanticMotionStimulus(semantic, kind),
+        { startDance, startSemanticMotion },
+        { nowMs: () => 1_720_000_004_000 }
+      )
+
+      expect(startDance).not.toHaveBeenCalled()
+      expect(startSemanticMotion).toHaveBeenCalledTimes(1)
+      expect(startSemanticMotion).toHaveBeenCalledWith({
+        semantic,
+        assetPath,
+        stimulusId: `mot_stim_semantic_${semantic}`,
+        stimulusInstanceId: `mot_inst_semantic_${semantic}`,
+        groupKey: SEMANTIC_MOTION_GROUP_KEY,
+        requestedAtMs: Date.parse('2026-07-14T04:00:00.000Z'),
+        loop: false,
+        trace: expect.objectContaining({
+          event_id: `evt_semantic_${semantic}`,
+          runtime_result_id: `mot_res_semantic_${semantic}`,
+        }),
+      })
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          status: 'started',
+          reason_code: 'motion_runtime_vrma_started',
+          runtime_result_id: `runtime-result-${semantic}`,
+        })
+      )
+      expect(JSON.stringify(result)).not.toContain('/local-vrma/')
+    }
+  )
+
+  it('fails closed when a semantic payload has no matching registry entry', async () => {
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      greeting: '/local-vrma/greeting.vrma',
+    })
+    const startSemanticMotion = jest.fn()
+
+    const result = await receiveMotionStimulusV0(
+      createSemanticMotionStimulus('spin', 'gesture'),
+      { startDance: jest.fn(), startSemanticMotion }
+    )
+
+    expect(startSemanticMotion).not.toHaveBeenCalled()
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        status: 'unavailable',
+        reason_code: 'semantic_motion_asset_not_semantically_available',
+      })
+    )
+  })
+
+  it('fails closed when the semantic motion adapter is unavailable', async () => {
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      greeting: '/local-vrma/greeting.vrma',
+    })
+
+    const result = await receiveMotionStimulusV0(
+      createSemanticMotionStimulus('greeting', 'gesture'),
+      { startDance: jest.fn() }
+    )
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        status: 'unavailable',
+        reason_code: 'semantic_motion_adapter_unavailable',
+      })
+    )
+  })
+
+  it.each([
+    { kind: 'posture', loop: false },
+    { kind: 'gesture', loop: true },
+    { kind: 'gesture', loop: false, interrupt_policy: 'queue' },
+    { kind: 'gesture', loop: false, fallback_state: 'gesture_only' },
+  ])('rejects mutated semantic motion authority shape %#', async (mutation) => {
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      greeting: '/local-vrma/greeting.vrma',
+    })
+    const startSemanticMotion = jest.fn()
+    const stimulus = {
+      ...createSemanticMotionStimulus('greeting', 'gesture'),
+      ...mutation,
+    }
+
+    const result = await receiveMotionStimulusV0(stimulus, {
+      startDance: jest.fn(),
+      startSemanticMotion,
+    })
+
+    expect(startSemanticMotion).not.toHaveBeenCalled()
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        reason_code: 'stimulus_not_supported_by_receiver_v0',
+      })
+    )
+  })
+
   it.each([true, false])(
     'preserves an explicit contract dance loop value %s',
     async (loop) => {
@@ -211,6 +338,53 @@ describe('receiveMotionStimulusV0', () => {
   })
 
   it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['malformed', '{'],
+    [
+      'greeting-only',
+      JSON.stringify({ greeting: CONFIGURED_DANCE_MOTION_ASSET_PATH }),
+    ],
+    [
+      'dance-path-mismatch',
+      JSON.stringify({ dance: '/local-vrma/different-dance.vrma' }),
+    ],
+    [
+      'duplicate-path',
+      JSON.stringify({
+        dance: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+        greeting: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+      }),
+    ],
+  ])(
+    'fails closed when the dance semantic registry is %s',
+    async (_classification, registryValue) => {
+      if (registryValue === undefined) {
+        delete process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
+      } else {
+        process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = registryValue
+      }
+      const startDance = jest.fn()
+
+      const result = await receiveMotionStimulusV0(
+        createDanceStimulus(),
+        { startDance },
+        { nowMs: () => 1_720_000_000_500 }
+      )
+
+      expect(startDance).not.toHaveBeenCalled()
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          status: 'unavailable',
+          reason_code: 'dance_motion_asset_not_semantically_available',
+          safe_visible_state: 'no_visible_change',
+        })
+      )
+    }
+  )
+
+  it.each([
     ['/local-vrma/custom-dance.vrma', '/local-vrma/custom-dance.vrma'],
     [' /local-vrma/trimmed-dance.vrma ', '/local-vrma/trimmed-dance.vrma'],
     ['', undefined],
@@ -223,7 +397,8 @@ describe('receiveMotionStimulusV0', () => {
   ])(
     'resolves only safe local dance motion asset paths: %s',
     (value, expected) => {
-      expect(resolveDanceMotionAssetPath(value)).toBe(expected)
+      const registry = JSON.stringify({ dance: value.trim() })
+      expect(resolveDanceMotionAssetPath(value, registry)).toBe(expected)
     }
   )
 
@@ -243,9 +418,12 @@ describe('receiveMotionStimulusV0', () => {
     ).toBeUndefined()
   })
 
-  it('uses the statically analyzable public dance motion env key by default', () => {
+  it('uses the dance env path only when the default semantic registry agrees', () => {
     process.env[DANCE_MOTION_ASSET_PATH_ENV] =
       CONFIGURED_DANCE_MOTION_ASSET_PATH
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      dance: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+    })
 
     expect(resolveDanceMotionAssetPath()).toBe(
       CONFIGURED_DANCE_MOTION_ASSET_PATH
@@ -1124,6 +1302,48 @@ function createThoughtCoreDanceSequenceStimulus() {
     redaction: {
       shared_summary_only: true,
     },
+  }
+}
+
+function createSemanticMotionStimulus(
+  semantic:
+    | 'show_full_body'
+    | 'greeting'
+    | 'peace_sign'
+    | 'shoot_pose'
+    | 'spin'
+    | 'model_pose'
+    | 'squat',
+  kind: 'gesture' | 'posture'
+) {
+  return {
+    schema_version: 'motion_stimulus.v0',
+    motion_event_id: `mot_evt_semantic_${semantic}`,
+    stimulus_id: `mot_stim_semantic_${semantic}`,
+    stimulus_instance_id: `mot_inst_semantic_${semantic}`,
+    source_class: 'user_command',
+    source_origin: 'thought_core',
+    requested_at: '2026-07-14T04:00:00.000Z',
+    kind,
+    payload_ref: `motion.thought_core.semantic_motion.${semantic}.v0`,
+    request_mode: 'play',
+    duration_ms: 12000,
+    loop: false,
+    interrupt_policy: 'replace_same_track',
+    fallback_state: 'neutral_idle',
+    stop_reason: 'none',
+    phase: 'queued',
+    lifecycle_state: 'queued',
+    safe_visible_state: 'requested',
+    target_model_type: 'vrm',
+    track_mask: { scope: 'full_body' },
+    requirements: { visible_motion: true },
+    trace: {
+      event_id: `evt_semantic_${semantic}`,
+      turn_id: `turn_semantic_${semantic}`,
+      runtime_result_id: `mot_res_semantic_${semantic}`,
+    },
+    redaction: { shared_summary_only: true },
   }
 }
 
