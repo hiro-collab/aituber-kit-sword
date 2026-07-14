@@ -3,6 +3,7 @@ import {
   CONTEXT_NOD_GROUP_KEY,
   DANCE_SEQUENCE_GROUP_KEY,
   DANCE_MOTION_ASSET_PATH_ENV,
+  MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
   receiveMotionStimulusV0,
   resolveDanceMotionAssetPath,
   type MotionStimulusReceiverAdapter,
@@ -10,15 +11,22 @@ import {
 
 const CONFIGURED_DANCE_MOTION_ASSET_PATH = '/local-vrma/configured-dance.vrma'
 const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
+const originalMotionAssetRegistry =
+  process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
 
 describe('receiveMotionStimulusV0', () => {
   beforeEach(() => {
+    delete process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
     process.env[DANCE_MOTION_ASSET_PATH_ENV] =
       CONFIGURED_DANCE_MOTION_ASSET_PATH
   })
 
   afterEach(() => {
     restoreEnv(DANCE_MOTION_ASSET_PATH_ENV, originalDanceMotionAssetPath)
+    restoreEnv(
+      MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
+      originalMotionAssetRegistry
+    )
   })
 
   it('validates a safe motion_stimulus.v0 subset and starts the dance adapter', async () => {
@@ -179,6 +187,29 @@ describe('receiveMotionStimulusV0', () => {
     ])
   })
 
+  it('returns semantic unavailable and does not substitute a non-dance asset', async () => {
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      greeting: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+    })
+    const startDance = jest.fn()
+
+    const result = await receiveMotionStimulusV0(
+      createDanceStimulus(),
+      { startDance },
+      { nowMs: () => 1_720_000_000_500 }
+    )
+
+    expect(startDance).not.toHaveBeenCalled()
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        status: 'unavailable',
+        reason_code: 'dance_motion_asset_not_semantically_available',
+        safe_visible_state: 'no_visible_change',
+      })
+    )
+  })
+
   it.each([
     ['/local-vrma/custom-dance.vrma', '/local-vrma/custom-dance.vrma'],
     [' /local-vrma/trimmed-dance.vrma ', '/local-vrma/trimmed-dance.vrma'],
@@ -195,6 +226,22 @@ describe('receiveMotionStimulusV0', () => {
       expect(resolveDanceMotionAssetPath(value)).toBe(expected)
     }
   )
+
+  it('accepts a dance path only when an explicit registry agrees with the semantic', () => {
+    const registry = JSON.stringify({
+      dance: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+    })
+    expect(
+      resolveDanceMotionAssetPath(CONFIGURED_DANCE_MOTION_ASSET_PATH, registry)
+    ).toBe(CONFIGURED_DANCE_MOTION_ASSET_PATH)
+
+    expect(
+      resolveDanceMotionAssetPath(
+        CONFIGURED_DANCE_MOTION_ASSET_PATH,
+        JSON.stringify({ greeting: CONFIGURED_DANCE_MOTION_ASSET_PATH })
+      )
+    ).toBeUndefined()
+  })
 
   it('uses the statically analyzable public dance motion env key by default', () => {
     process.env[DANCE_MOTION_ASSET_PATH_ENV] =

@@ -395,6 +395,7 @@ describe('Viewer Motion Runtime asset lifecycle', () => {
     expect(model.playMotionRuntimeVRMA).not.toHaveBeenCalled()
     expect(model.playMotionRuntimeContextNod).not.toHaveBeenCalled()
     expect(model.queueMotionRuntimeFrame).toHaveBeenCalledWith({
+      driverResultId: 'driver-result-expression-planned-1',
       stimulusInstanceId: 'stimulus-instance-expression-visible',
       frameCount: 30,
       expressionProfileRef: 'motion.runtime.vrm_expression_weights.v0',

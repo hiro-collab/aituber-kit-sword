@@ -418,6 +418,7 @@ export class Viewer {
     }
 
     model.queueMotionRuntimeFrame({
+      driverResultId: request.trace.driver_result_id,
       stimulusInstanceId: request.stimulusInstanceId,
       frameCount: request.frameCount,
       expressionProfileRef: request.expressionProfileRef,

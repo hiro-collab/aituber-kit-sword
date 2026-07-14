@@ -58,6 +58,7 @@ export interface MotionDriverResult {
 }
 
 let nextDriverResultId = 1
+const SAFE_DRIVER_RESULT_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,128}$/
 
 export function bucketFrameCount(frameCount?: number): FrameCountBucket {
   if (typeof frameCount !== 'number' || !Number.isFinite(frameCount)) {
@@ -70,6 +71,7 @@ export function bucketFrameCount(frameCount?: number): FrameCountBucket {
 }
 
 export function createMotionDriverResult(args: {
+  driverResultId?: string
   stimulusInstanceId?: string
   perPartResults: MotionDriverPartResult[]
   frameCount?: number
@@ -78,7 +80,11 @@ export function createMotionDriverResult(args: {
   const result = summarizePartResults(args.perPartResults)
 
   return {
-    driver_result_id: `driver-result-${nextDriverResultId++}`,
+    driver_result_id:
+      typeof args.driverResultId === 'string' &&
+      SAFE_DRIVER_RESULT_ID_PATTERN.test(args.driverResultId)
+        ? args.driverResultId
+        : `driver-result-${nextDriverResultId++}`,
     stimulus_instance_id: args.stimulusInstanceId,
     result,
     safe_visible_state: summarizeSafeVisibleState(args.perPartResults),

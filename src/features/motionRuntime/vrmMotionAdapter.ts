@@ -18,6 +18,7 @@ export interface MotionRuntimeLookAtTarget {
 }
 
 export interface MotionRuntimeFrameRequest {
+  driverResultId?: string
   stimulusInstanceId?: string
   frameCount?: number
   expressionProfileRef?: string
@@ -77,6 +78,7 @@ export class VRMMotionAdapter {
     }
 
     return createMotionDriverResult({
+      driverResultId: request.driverResultId,
       stimulusInstanceId: request.stimulusInstanceId,
       perPartResults: partResults,
       frameCount: request.frameCount,

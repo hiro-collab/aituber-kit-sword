@@ -1,9 +1,13 @@
+import { resolveSemanticMotionAssetPath } from './motionAssetSemanticRegistry'
+
 export const MOTION_STIMULUS_RECEIVER_EVENT =
   'projection-visual-motion-stimulus'
 export const MOTION_STIMULUS_RECEIVER_RESULT_EVENT =
   'projection-visual-motion-stimulus-result'
 
 export const DANCE_MOTION_ASSET_PATH_ENV = 'NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH'
+export const MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV =
+  'NEXT_PUBLIC_MOTION_ASSET_SEMANTIC_REGISTRY_JSON'
 const SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN =
   /^\/local-vrma\/[a-z0-9_-][a-z0-9._-]*\.vrma$/i
 
@@ -399,7 +403,9 @@ export async function receiveMotionStimulusV0(
     if (!assetPath) {
       return createUnavailableResult(
         stimulus,
-        'dance_motion_asset_not_configured',
+        process.env.NEXT_PUBLIC_MOTION_ASSET_SEMANTIC_REGISTRY_JSON?.trim()
+          ? 'dance_motion_asset_not_semantically_available'
+          : 'dance_motion_asset_not_configured',
         issuedAtMs
       )
     }
@@ -813,11 +819,16 @@ function safeString(value: unknown): string {
 }
 
 export function resolveDanceMotionAssetPath(
-  value = process.env.NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH
+  value = process.env.NEXT_PUBLIC_DANCE_MOTION_ASSET_PATH,
+  registryValue = process.env.NEXT_PUBLIC_MOTION_ASSET_SEMANTIC_REGISTRY_JSON
 ): string | undefined {
   const text = safeString(value)
   if (!text) return undefined
-  return SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN.test(text)
+  if (!SAFE_PUBLIC_DANCE_MOTION_ASSET_PATH_PATTERN.test(text)) return undefined
+
+  const registryText = safeString(registryValue)
+  if (!registryText) return text
+  return resolveSemanticMotionAssetPath('dance', registryText) === text
     ? text
     : undefined
 }

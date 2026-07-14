@@ -41,6 +41,38 @@ describe('VRMMotionAdapter', () => {
     expect(finalized?.observed_at).toBe('post_vrm_update_pre_render')
   })
 
+  it('preserves one safe planned driver result id across the frame boundary', () => {
+    const adapter = new VRMMotionAdapter()
+
+    const result = adapter.applyFrame(
+      { expressionManager: { setValue: jest.fn() } },
+      {
+        driverResultId: 'driver-result-expression-planned-1',
+        stimulusInstanceId: 'stimulus-expression-planned-1',
+        frameCount: 30,
+        expressionWeights: { happy: 1 },
+      }
+    )
+
+    expect(result?.driver_result_id).toBe('driver-result-expression-planned-1')
+    expect(result?.stimulus_instance_id).toBe('stimulus-expression-planned-1')
+  })
+
+  it('does not publish an unsafe caller supplied driver result id', () => {
+    const adapter = new VRMMotionAdapter()
+
+    const result = adapter.applyFrame(
+      { expressionManager: { setValue: jest.fn() } },
+      {
+        driverResultId: 'C:\\private\\driver-result',
+        expressionWeights: { happy: 1 },
+      }
+    )
+
+    expect(result?.driver_result_id).toMatch(/^driver-result-\d+$/)
+    expect(result?.driver_result_id).not.toContain('private')
+  })
+
   it('skips unsupported expression weights when the expression manager can report available channels', () => {
     const adapter = new VRMMotionAdapter()
     const setValue = jest.fn()
