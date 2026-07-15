@@ -1,6 +1,6 @@
 import dynamic from 'next/dynamic'
 import { useRouter } from 'next/router'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Form } from '@/components/form'
 import MessageReceiver from '@/components/messageReceiver'
@@ -45,6 +45,7 @@ import {
   resolveProjectionEffectSelection,
 } from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
 import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
+import { registerProjectionStageCaptureHandle } from '@/features/projectionDisplay/captureSourceHandle'
 import '@/lib/i18n'
 
 const projectionVisualAIService = ((): 'thought-core' | null => {
@@ -95,6 +96,12 @@ const ProjectionVisual = () => {
     shouldReceiveDisplayState,
     shouldRenderHud,
   } = resolveProjectionVisualQueryState(routeQuery)
+  const captureOwnerOrigin = useMemo(() => {
+    const value = router.query.captureOwnerOrigin
+    return Array.isArray(value) ? value[0] : value
+  }, [router.query.captureOwnerOrigin])
+  const projectionVisualRootRef = useRef<HTMLDivElement>(null)
+  const captureHandleClearFailedRef = useRef(false)
   const messageReceiverEnabled = settingsStore((s) => s.messageReceiverEnabled)
   const modelType = settingsStore((s) => s.modelType)
   const projectionEffects = resolveProjectionEffectsSettings(
@@ -158,6 +165,38 @@ const ProjectionVisual = () => {
         : {}),
     })
   }, [isDisplayOnlyMode])
+
+  useEffect(() => {
+    const root = projectionVisualRootRef.current
+    if (captureHandleClearFailedRef.current) {
+      if (root) {
+        root.dataset.projectionCaptureHandleStatus = 'clear_failed'
+      }
+      return
+    }
+    const registration = registerProjectionStageCaptureHandle({
+      enabled: isStageOutputMode,
+      ownerOrigin: captureOwnerOrigin,
+      isTopLevel:
+        typeof window === 'object' ? window.top === window.self : false,
+      isSecureContext:
+        typeof window === 'object' ? window.isSecureContext : false,
+      referrer: typeof document === 'object' ? document.referrer : undefined,
+    })
+    if (root) {
+      root.dataset.projectionCaptureHandleStatus = registration.status
+    }
+    return () => {
+      const cleanup = registration.dispose()
+      if (cleanup === 'clear_failed') {
+        captureHandleClearFailedRef.current = true
+      }
+      if (root) {
+        root.dataset.projectionCaptureHandleStatus =
+          cleanup === 'clear_failed' ? 'clear_failed' : 'inactive'
+      }
+    }
+  }, [captureOwnerOrigin, isStageOutputMode])
 
   useEffect(() => {
     if (isDisplayOnlyMode) return
@@ -224,6 +263,7 @@ const ProjectionVisual = () => {
 
   return (
     <div
+      ref={projectionVisualRootRef}
       className="projection-visual relative h-[100svh] overflow-hidden bg-[#00ff00]"
       data-projection-visual-mode={projectionVisualMode}
       data-projection-visual-test-mode={projectionVisualTestMode ?? 'none'}
@@ -231,6 +271,7 @@ const ProjectionVisual = () => {
         projectionVisualStimulusRef ?? 'none'
       }
       data-projection-effect-id={projectionEffectId ?? 'none'}
+      data-projection-capture-handle-status="inactive"
     >
       <Meta />
       <ProjectionVisualDisplayStateBridge mode={displayStateBridgeMode} />
