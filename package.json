@@ -136,6 +136,9 @@
     "wrangler": "4.93.0"
   },
   "overrides": {
+    "@tensorflow/tfjs-core": {
+      "node-fetch": "2.7.0"
+    },
     "wrangler": {
       "esbuild": "0.28.1",
       "miniflare": "4.20260617.0",
