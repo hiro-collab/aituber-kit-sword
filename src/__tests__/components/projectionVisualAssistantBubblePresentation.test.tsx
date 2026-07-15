@@ -192,6 +192,31 @@ describe('ProjectionVisualAssistantBubble presentation', () => {
     )
   })
 
+  it('allows one-line pages when a fixed bubble height cannot fit two lines', () => {
+    setAssistantMessage('狭い高さでも内容を隠さず分割する文章です。'.repeat(4))
+    usePresentation({
+      heightMode: 'fixed',
+      heightPercent: 18,
+      fontSizePx: 36,
+      lineHeight: 2,
+    })
+    jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return Array.from(this.textContent ?? '').length <= 4 ? 70 : 140
+      })
+
+    render(<ProjectionVisualAssistantBubble />)
+
+    const bubble = screen.getByLabelText('アシスタントの会話内容')
+    const visibleText =
+      bubble.querySelector(
+        ':scope > .td-assistant-bubble-text:not(.td-assistant-bubble-text-measure)'
+      )?.textContent ?? ''
+    expect(Array.from(visibleText).length).toBeLessThanOrEqual(4)
+    expect(Number(bubble.getAttribute('data-page-count'))).toBeGreaterThan(1)
+  })
+
   it('disconnects pagination and geometry observers when the bubble hides', () => {
     const removeEventListener = jest.spyOn(window, 'removeEventListener')
     usePresentation({

@@ -180,8 +180,6 @@ export const ProjectionVisualAssistantBubble = ({
   )
   const [operatorSpeechOutputSummary, setOperatorSpeechOutputSummary] =
     useState<SpeechOutputSummary | null>(() => readWindowSpeechOutputSummary())
-  const characterName = settingsStore((s) => s.characterName)
-  const showCharacterName = settingsStore((s) => s.showCharacterName)
   const poseConfigs = settingsStore((s) => s.poseConfigs)
   const storedBubblePresentation = settingsStore(
     (s) => s.speechBubblePresentation
@@ -389,7 +387,7 @@ export const ProjectionVisualAssistantBubble = ({
     viewportHeight - protectedInsetPx * 2 - reservedBottomPx
   )
   const heightLineCeiling = Math.max(
-    2,
+    1,
     Math.floor(
       (Math.min(
         viewportHeight * (bubblePresentation.heightPercent / 100),
@@ -699,9 +697,6 @@ export const ProjectionVisualAssistantBubble = ({
         ttsSpeechOutputSummary?.meaning_class ?? 'tts-summary-unavailable'
       }
     >
-      {showCharacterName && variant !== 'operator' && (
-        <div className="td-assistant-bubble-name">{characterName}</div>
-      )}
       <div className="td-assistant-bubble-text">{currentPage}</div>
       <span className="td-assistant-bubble-tail" aria-hidden="true" />
       <div

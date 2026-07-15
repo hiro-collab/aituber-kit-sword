@@ -161,14 +161,6 @@ body {
     left: 50%;
   }
 
-  .td-assistant-bubble-name {
-    padding: 15px 24px 0;
-    color: #3a4450;
-    font-size: 15px;
-    font-weight: 900;
-    letter-spacing: 0;
-  }
-
   .td-assistant-bubble-text {
     display: block;
     flex: 1 1 auto;
@@ -256,14 +248,6 @@ body {
     box-shadow:
       0 10px 28px rgba(0, 0, 0, 0.34),
       0 0 0 1px rgba(255, 255, 255, 0.38) inset;
-  }
-
-  .projection-visual[data-projection-visual-mode='passive']
-    .td-assistant-bubble-name,
-  .projection-visual[data-projection-visual-mode='stage-output']
-    .td-assistant-bubble-name {
-    padding: 16px 26px 0;
-    font-size: 18px;
   }
 
   .projection-visual[data-projection-visual-mode='passive']

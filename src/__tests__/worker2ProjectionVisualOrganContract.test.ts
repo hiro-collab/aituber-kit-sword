@@ -1199,7 +1199,8 @@ describe('worker-2 projection visual organ contract', () => {
     )
   })
 
-  it('keeps the operator conversation log content-only even when character names are enabled', () => {
+  it('keeps projection bubbles content-only even when character names are enabled', () => {
+    const cssSource = readSource('src/styles/globals.css')
     mockSettingsState.showCharacterName = true
     mockHomeState = {
       chatLog: [
@@ -1221,6 +1222,26 @@ describe('worker-2 projection visual organ contract', () => {
         '.td-assistant-bubble-text:not(.td-assistant-bubble-text-measure)'
       )?.textContent
     ).toBe('会話内容だけを表示する')
+
+    mockProjectionDisplayState = {
+      assistantMessage: '会話内容だけを表示する',
+      assistantMessageId: passiveVector.assistantEventId,
+      speechOutputSummary: null,
+      sequence: 1,
+      updatedAt: null,
+    }
+    const stage = render(
+      createElement(ProjectionVisualAssistantBubble, {
+        variant: 'stage-output',
+      })
+    )
+    expect(stage.queryByText('Assistant')).toBeNull()
+    expect(
+      stage.container.querySelector(
+        '.td-assistant-bubble-text:not(.td-assistant-bubble-text-measure)'
+      )?.textContent
+    ).toBe('会話内容だけを表示する')
+    expect(cssSource).not.toContain('.td-assistant-bubble-name')
   })
 
   it('keeps one canonical body-map implementation behind the bounded compatibility route', () => {
