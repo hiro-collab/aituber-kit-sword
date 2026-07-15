@@ -59,7 +59,6 @@
     "@headlessui/react": "^2.2.9",
     "@hello-pangea/dnd": "^18.0.1",
     "@heroicons/react": "^2.1.5",
-    "@marp-team/marp-core": "^3.9.0",
     "@marp-team/marpit": "^3.2.0",
     "@mastra/core": "^1.1.0",
     "@opennextjs/cloudflare": "^1.17.1",
