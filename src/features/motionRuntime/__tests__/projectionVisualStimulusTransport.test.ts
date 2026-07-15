@@ -12,21 +12,31 @@ import {
 } from '../projectionVisualStimulusTransport'
 import {
   DANCE_MOTION_ASSET_PATH_ENV,
+  MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
   receiveMotionStimulusV0,
 } from '../motionStimulusReceiver'
 
 const CONFIGURED_DANCE_MOTION_ASSET_PATH = '/local-vrma/configured-dance.vrma'
 const REQUESTED_AT = new Date('2026-06-13T10:30:15.123Z')
 const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
+const originalMotionAssetRegistry =
+  process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
 
 describe('Projection Visual safe stimulus ref transport', () => {
   beforeEach(() => {
     process.env[DANCE_MOTION_ASSET_PATH_ENV] =
       CONFIGURED_DANCE_MOTION_ASSET_PATH
+    process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV] = JSON.stringify({
+      dance: CONFIGURED_DANCE_MOTION_ASSET_PATH,
+    })
   })
 
   afterEach(() => {
     restoreEnv(DANCE_MOTION_ASSET_PATH_ENV, originalDanceMotionAssetPath)
+    restoreEnv(
+      MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
+      originalMotionAssetRegistry
+    )
   })
 
   const danceState: ProjectionVisualStimulusDispatchAdapterState = {
