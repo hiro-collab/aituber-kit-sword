@@ -69,7 +69,7 @@
     "@types/react-beautiful-dnd": "^13.1.8",
     "@vercel/analytics": "^1.6.1",
     "ai": "^6.0.6",
-    "axios": "^1.6.8",
+    "axios": "^1.16.0",
     "canvas": "^3.2.0",
     "face-api.js": "^0.22.2",
     "fluent-ffmpeg": "^2.1.3",

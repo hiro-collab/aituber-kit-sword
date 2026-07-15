@@ -24,6 +24,55 @@ interface AivisCloudRequestBody {
   style_name?: string
 }
 
+const AUDIO_CONTENT_TYPE_PATTERN =
+  /^audio\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}(?:; *[a-z0-9][a-z0-9!#$&^_.+-]{0,31}=[a-z0-9][a-z0-9!#$&^_.+-]{0,63})*$/i
+const MAX_CONTENT_TYPE_LENGTH = 128
+const MAX_COUNT_HEADER_LENGTH = 20
+
+function normalizeAudioContentType(value: unknown): string | undefined {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MAX_CONTENT_TYPE_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    !AUDIO_CONTENT_TYPE_PATTERN.test(value)
+  ) {
+    return undefined
+  }
+
+  return value
+}
+
+function normalizeCountHeader(value: unknown): string | number | undefined {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return value
+  }
+
+  if (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_COUNT_HEADER_LENGTH &&
+    /^\d+$/.test(value)
+  ) {
+    return value
+  }
+
+  return undefined
+}
+
+function normalizeProviderErrorStatus(value: unknown): number | undefined {
+  if (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 400 &&
+    value <= 599
+  ) {
+    return value
+  }
+
+  return undefined
+}
+
 function isValidUUID(uuid: string): boolean {
   const uuidRegex =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -138,36 +187,43 @@ export default async function handler(
     )
 
     // レスポンスのContent-Typeを設定
-    const contentType = response.headers['content-type'] || 'audio/mpeg'
+    const contentType =
+      normalizeAudioContentType(response.headers['content-type']) ??
+      'audio/mpeg'
     res.setHeader('Content-Type', contentType)
 
     // Aivis Cloud APIのカスタムヘッダーがあれば転送
-    if (response.headers['x-aivis-character-count']) {
-      res.setHeader(
-        'X-Aivis-Character-Count',
-        response.headers['x-aivis-character-count']
-      )
+    const characterCount = normalizeCountHeader(
+      response.headers['x-aivis-character-count']
+    )
+    if (characterCount !== undefined) {
+      res.setHeader('X-Aivis-Character-Count', characterCount)
     }
-    if (response.headers['x-aivis-credits-remaining']) {
-      res.setHeader(
-        'X-Aivis-Credits-Remaining',
-        response.headers['x-aivis-credits-remaining']
-      )
+    const creditsRemaining = normalizeCountHeader(
+      response.headers['x-aivis-credits-remaining']
+    )
+    if (creditsRemaining !== undefined) {
+      res.setHeader('X-Aivis-Credits-Remaining', creditsRemaining)
     }
-    if (response.headers['x-aivis-credits-used']) {
-      res.setHeader(
-        'X-Aivis-Credits-Used',
-        response.headers['x-aivis-credits-used']
-      )
+    const creditsUsed = normalizeCountHeader(
+      response.headers['x-aivis-credits-used']
+    )
+    if (creditsUsed !== undefined) {
+      res.setHeader('X-Aivis-Credits-Used', creditsUsed)
     }
 
     res.end(Buffer.from(response.data))
-  } catch (error: any) {
-    console.error('Error in Aivis Cloud API TTS:', error)
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      const status = normalizeProviderErrorStatus(error.response?.status)
+      console.error(
+        'AIVIS_CLOUD_TTS_PROVIDER_ERROR',
+        status ?? 'provider_status_unavailable'
+      )
 
-    if (error.response) {
-      const status = error.response.status
-      const message = error.response.data?.detail || 'API Error'
+      if (status === undefined) {
+        return res.status(502).json({ error: 'Aivis provider unavailable' })
+      }
 
       switch (status) {
         case 401:
@@ -181,10 +237,11 @@ export default async function handler(
         case 429:
           return res.status(429).json({ error: 'Rate limit exceeded' })
         default:
-          return res.status(status).json({ error: message })
+          return res.status(status).json({ error: 'Aivis provider error' })
       }
     }
 
-    res.status(500).json({ error: 'Internal Server Error' })
+    console.error('AIVIS_CLOUD_TTS_INTERNAL_ERROR')
+    return res.status(500).json({ error: 'Internal Server Error' })
   }
 }
