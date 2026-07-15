@@ -4,10 +4,11 @@ import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motio
 import { loadVRMAnimation } from '@/lib/VRMAnimation/loadVRMAnimation'
 import { buildUrl } from '@/utils/buildUrl'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import settingsStore, {
+import settingsStore from '@/features/stores/settings'
+import {
   CAMERA_HORIZONTAL_FOV_DEFAULT,
   isCameraHorizontalFov,
-} from '@/features/stores/settings'
+} from '@/features/stores/settingsValidation'
 import { calculateCameraFit, horizontalToVerticalFovDegrees } from './cameraFit'
 import {
   DANCE_SEQUENCE_GROUP_KEY,

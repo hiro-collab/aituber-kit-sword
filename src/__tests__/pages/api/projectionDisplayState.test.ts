@@ -81,6 +81,7 @@ describe('/api/projectionDisplayState', () => {
             characterPosition: { x: 100, y: -100, z: 2, scale: 99 },
             characterRotation: { x: 1, y: 2, z: 3 },
             lightingIntensity: 99,
+            cameraHorizontalFov: 45,
           },
         },
       }),
@@ -105,6 +106,7 @@ describe('/api/projectionDisplayState', () => {
           characterName?: string
           characterPosition?: { x: number; y: number; z: number; scale: number }
           lightingIntensity?: number
+          cameraHorizontalFov?: number
         }
       }
     }
@@ -129,6 +131,7 @@ describe('/api/projectionDisplayState', () => {
       scale: 10,
     })
     expect(postBody.state.settings.lightingIntensity).toBe(3)
+    expect(postBody.state.settings.cameraHorizontalFov).toBe(45)
 
     const getRes = createMockRes()
     handler(createMockReq(), getRes)
@@ -136,6 +139,35 @@ describe('/api/projectionDisplayState', () => {
     expect(
       (getRes._json as { state: { sequence: number } }).state.sequence
     ).toBe(1)
+  })
+
+  it.each([
+    ['numeric string', '45'],
+    ['below minimum', 19],
+    ['above maximum', 91],
+    ['not finite', Number.POSITIVE_INFINITY],
+    ['null', null],
+    ['object', { value: 45 }],
+  ])('rejects an invalid synchronized camera FOV: %s', (_label, value) => {
+    const handler = require('@/pages/api/projectionDisplayState').default
+    const postRes = createMockRes()
+
+    handler(
+      createMockReq({
+        method: 'POST',
+        body: { settings: { cameraHorizontalFov: value } },
+      }),
+      postRes
+    )
+
+    expect(postRes._status).toBe(200)
+    expect(
+      (
+        postRes._json as {
+          state: { settings: { cameraHorizontalFov?: number } }
+        }
+      ).state.settings
+    ).not.toHaveProperty('cameraHorizontalFov')
   })
 
   it('redacts unsafe assistant message ids from the passive display state', () => {

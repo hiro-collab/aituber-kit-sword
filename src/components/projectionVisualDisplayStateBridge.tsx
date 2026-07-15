@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import homeStore from '@/features/stores/home'
 import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
+import { isCameraHorizontalFov } from '@/features/stores/settingsValidation'
 import { getLatestAssistantMessageEntry } from '@/utils/assistantMessageUtils'
 import {
   readWindowSpeechOutputDisplayState,
@@ -17,7 +18,7 @@ type ProjectionVisualDisplayStateBridgeProps = {
 
 type DisplayModelType = 'vrm' | 'live2d' | 'pngtuber'
 
-type RemoteProjectionDisplaySettings = {
+export type RemoteProjectionDisplaySettings = {
   modelType?: DisplayModelType
   selectedVrmPath?: string
   selectedLive2DPath?: string
@@ -36,9 +37,10 @@ type RemoteProjectionDisplaySettings = {
     z: number
   }
   lightingIntensity?: number
+  cameraHorizontalFov?: number
 }
 
-type RemoteProjectionDisplayState = {
+export type RemoteProjectionDisplayState = {
   sequence?: number
   updatedAt?: string | null
   assistantMessage?: string
@@ -49,7 +51,7 @@ type RemoteProjectionDisplayState = {
 
 const SYNC_INTERVAL_MS = 500
 
-const readOperatorDisplayState = () => {
+export const readOperatorDisplayState = () => {
   const settings = settingsStore.getState()
   const chatLog = homeStore.getState().chatLog
   const latestAssistantMessage = getLatestAssistantMessageEntry(chatLog)
@@ -80,11 +82,14 @@ const readOperatorDisplayState = () => {
       characterPosition: settings.characterPosition,
       characterRotation: settings.characterRotation,
       lightingIntensity: settings.lightingIntensity,
+      cameraHorizontalFov: settings.cameraHorizontalFov,
     },
   }
 }
 
-const applyPassiveDisplayState = (state: RemoteProjectionDisplayState) => {
+export const applyPassiveDisplayState = (
+  state: RemoteProjectionDisplayState
+) => {
   const settings = state.settings || {}
 
   projectionDisplayStore.getState().setDisplayState({
@@ -126,6 +131,9 @@ const applyPassiveDisplayState = (state: RemoteProjectionDisplayState) => {
     }),
     ...(typeof settings.lightingIntensity === 'number' && {
       lightingIntensity: settings.lightingIntensity,
+    }),
+    ...(isCameraHorizontalFov(settings.cameraHorizontalFov) && {
+      cameraHorizontalFov: settings.cameraHorizontalFov,
     }),
   })
 
