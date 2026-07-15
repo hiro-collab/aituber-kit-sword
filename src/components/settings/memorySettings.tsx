@@ -631,9 +631,7 @@ const MemorySettings = () => {
 
           {/* 過去のメッセージ保持数 */}
           <div className="my-6">
-            <div className="my-4 text-xl font-bold">
-              {t('MaxPastMessages')}
-            </div>
+            <div className="my-4 text-xl font-bold">{t('MaxPastMessages')}</div>
             <div className="my-4">
               <input
                 type="number"

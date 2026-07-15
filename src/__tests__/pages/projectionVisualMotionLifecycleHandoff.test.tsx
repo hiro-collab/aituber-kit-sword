@@ -59,11 +59,11 @@ jest.mock('@/utils/projectionVisualQuery', () => ({
 }))
 jest.mock('@/components/vrmViewer', () => ({
   __esModule: true,
-  default: ({
+  default: function MockVrmViewer({
     onDanceLifecycleAcceptanceReady,
   }: {
     onDanceLifecycleAcceptanceReady: (value: typeof predicate) => void
-  }) => {
+  }) {
     const { useEffect } = require('react') as typeof import('react')
     useEffect(
       () => onDanceLifecycleAcceptanceReady(predicate),

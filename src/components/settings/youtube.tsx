@@ -200,9 +200,7 @@ const YouTube = () => {
                 conversationContinuityMode: v,
               })
             }
-            disabled={
-              slideMode || externalLinkageMode
-            }
+            disabled={slideMode || externalLinkageMode}
           />
           {conversationContinuityMode && (
             <>

@@ -179,7 +179,9 @@ jest.mock('@/features/stores/settings', () => ({
 }))
 
 const readSource = (relativePath: string) =>
-  fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8')
+  fs
+    .readFileSync(path.join(process.cwd(), relativePath), 'utf8')
+    .replace(/\r\n?/g, '\n')
 
 const readAgentOsSource = (relativePath: string) =>
   fs.readFileSync(
@@ -1258,8 +1260,8 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(source).toContain('td-state-rail')
     expect(source).toContain('stateWordLabel')
-    expect(source).toContain(
-      "return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'"
+    expect(source).toMatch(
+      /return\s+reportedStates\.length\s*>\s*0\s*\?\s*aggregateState\(reportedStates\)\s*:\s*'UNREPORTED'/
     )
     expect(source).toContain("if (normalized === 'UNREPORTED') return '-'")
     expect(source).toContain('environmentRailWordLabel')
@@ -1273,8 +1275,8 @@ describe('worker-2 projection visual organ contract', () => {
     expect(source).not.toContain('environmentActionState')
     expect(source).toContain('stateQueryIndicators')
     expect(source).toContain('visionEstimateIndicators')
-    expect(source).toContain(
-      "entry[0] !== 'room_light' ||\n          resolveProjectionVisualRoomLightSafeView(entry[1]) !== undefined"
+    expect(source).toMatch(
+      /entry\[0\]\s*!==\s*'room_light'\s*\|\|\s*resolveProjectionVisualRoomLightSafeView\(entry\[1\]\)\s*!==\s*undefined/
     )
     expect(source).toContain(
       "import { resolveProjectionVisualRoomLightSafeView } from '@/utils/projectionVisualRoomLight'"

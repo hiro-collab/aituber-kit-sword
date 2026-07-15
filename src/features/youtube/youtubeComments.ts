@@ -126,10 +126,7 @@ const retrieveLiveComments = async (
  */
 const getApiKey = (ss: ReturnType<typeof settingsStore.getState>): string => {
   const aiService = ss.selectAIService
-  if (
-    typeof aiService === 'string' &&
-    aiService !== 'custom-api'
-  ) {
+  if (typeof aiService === 'string' && aiService !== 'custom-api') {
     return (ss[`${aiService}Key` as keyof typeof ss] as string) || ''
   }
   return ''

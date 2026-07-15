@@ -50,14 +50,14 @@ describe('RR003 gesture voice proof evaluation', () => {
       fixture_result: 'pass',
     })
 
-    expect(evaluateGestureVoiceProof('open', ['gesture_ws_open'])).toMatchObject(
-      {
-        gesture_start_request_observed: false,
-        gesture_start_result_observed: false,
-        result: 'fail',
-        fixture_result: 'fail',
-      }
-    )
+    expect(
+      evaluateGestureVoiceProof('open', ['gesture_ws_open'])
+    ).toMatchObject({
+      gesture_start_request_observed: false,
+      gesture_start_result_observed: false,
+      result: 'fail',
+      fixture_result: 'fail',
+    })
   })
 
   it('fails negative victory/open-hand cases when a start request/result is observed', () => {
@@ -74,25 +74,21 @@ describe('RR003 gesture voice proof evaluation', () => {
       fixture_result: 'fail',
     })
 
-    expect(evaluateGestureVoiceProof('closed', ['gesture_ws_open'])).toMatchObject(
-      {
-        gesture_start_request_observed: false,
-        gesture_start_result_observed: false,
-        result: 'pass',
-        fixture_result: 'pass',
-      }
-    )
+    expect(
+      evaluateGestureVoiceProof('closed', ['gesture_ws_open'])
+    ).toMatchObject({
+      gesture_start_request_observed: false,
+      gesture_start_result_observed: false,
+      result: 'pass',
+      fixture_result: 'pass',
+    })
   })
 
   it('separates upstream false-positive propagation from victory negative fixture proof', () => {
     expect(
       evaluateGestureVoiceProof(
         'open',
-        [
-          'gesture_ws_open',
-          'gesture_start_request',
-          'gesture_start_result',
-        ],
+        ['gesture_ws_open', 'gesture_start_request', 'gesture_start_result'],
         {
           proof_scope: 'upstream_false_positive_propagation',
           proof_case_type: 'upstream_false_positive_propagation_test',

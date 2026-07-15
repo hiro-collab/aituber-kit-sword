@@ -19,8 +19,7 @@ const getAIConfig = () => {
 
   // APIキー名は条件分岐で取得
   const apiKey =
-    typeof aiService === 'string' &&
-    aiService !== 'custom-api'
+    typeof aiService === 'string' && aiService !== 'custom-api'
       ? (ss[`${aiService}Key` as keyof typeof ss] as string)
       : ''
 

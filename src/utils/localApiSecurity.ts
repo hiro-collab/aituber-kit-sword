@@ -47,7 +47,9 @@ function getClientAddress(req: NextApiRequest): string {
     ? firstHeader(req.headers?.['x-forwarded-for'])
     : ''
   if (forwardedFor) {
-    const forwardedAddress = normalizeIpAddress(forwardedFor.split(',')[0] || '')
+    const forwardedAddress = normalizeIpAddress(
+      forwardedFor.split(',')[0] || ''
+    )
     if (forwardedAddress) return forwardedAddress
   }
   return normalizeIpAddress(req.socket?.remoteAddress || '')

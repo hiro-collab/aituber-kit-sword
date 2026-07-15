@@ -80,11 +80,9 @@ export const evaluateGestureVoiceProof = (
   const gesture_start_result_observed = observed_event_names.includes(
     'gesture_start_result'
   )
-  const opened =
-    gesture_start_request_observed && gesture_start_result_observed
+  const opened = gesture_start_request_observed && gesture_start_result_observed
   const matched = expected_gate === 'open' ? opened : !opened
-  const fixtureMatched =
-    fixture_expected_gate === 'open' ? opened : !opened
+  const fixtureMatched = fixture_expected_gate === 'open' ? opened : !opened
 
   return {
     proof_scope: options.proof_scope,

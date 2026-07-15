@@ -384,210 +384,206 @@ const ModelProvider = () => {
       {renderServiceConfiguration()}
 
       {state.selectAIService !== 'thought-core' && (
-          <>
-            {!state.realtimeAPIMode &&
-              !state.audioMode &&
-              state.selectAIService !== 'custom-api' && (
-                <>
-                  {state.isReasoningSupported && (
-                    <div className="border-t border-gray-300 pt-6 my-6">
-                      <div className="my-4 text-xl font-bold">
-                        {t('ReasoningMode')}
-                      </div>
-                      <div className="my-2 text-sm whitespace-pre-wrap">
-                        {t('ReasoningModeInfo')}
-                      </div>
-                      <div className="my-2">
-                        <ToggleSwitch
-                          enabled={state.reasoningMode}
-                          onChange={(v) =>
-                            settingsStore.setState({ reasoningMode: v })
-                          }
-                        />
-                      </div>
-
-                      {state.reasoningMode && (
-                        <>
-                          {state.availableReasoningEfforts.length > 0 && (
-                            <div className="my-4">
-                              <div className="my-2 font-bold">
-                                {t('ReasoningEffort')}
-                              </div>
-                              <div className="my-2 text-sm whitespace-pre-wrap">
-                                {t('ReasoningEffortInfo')}
-                              </div>
-                              <select
-                                className="px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
-                                value={state.reasoningEffort}
-                                onChange={(e) =>
-                                  settingsStore.setState({
-                                    reasoningEffort: e.target
-                                      .value as ReasoningEffort,
-                                  })
-                                }
-                              >
-                                {state.availableReasoningEfforts.map(
-                                  (effort) => (
-                                    <option key={effort} value={effort}>
-                                      {effort.charAt(0).toUpperCase() +
-                                        effort.slice(1)}
-                                    </option>
-                                  )
-                                )}
-                              </select>
-                            </div>
-                          )}
-
-                          {state.showReasoningTokenBudget && (
-                            <div className="my-4">
-                              <div className="my-2 font-bold">
-                                {t('ReasoningTokenBudget')}
-                              </div>
-                              <div className="my-2 text-sm whitespace-pre-wrap">
-                                {t('ReasoningTokenBudgetInfo')}
-                              </div>
-                              <input
-                                type="number"
-                                min="1024"
-                                max="131072"
-                                className="px-4 py-2 w-140 bg-white hover:bg-white-hover rounded-lg"
-                                value={state.reasoningTokenBudget}
-                                onChange={(e) => {
-                                  const value = parseInt(e.target.value)
-                                  if (!Number.isNaN(value) && value >= 1024) {
-                                    settingsStore.setState({
-                                      reasoningTokenBudget: value,
-                                    })
-                                  }
-                                }}
-                              />
-                            </div>
-                          )}
-                          <div className="my-4">
-                            <div className="my-2 font-bold">
-                              {t('ShowThinkingText')}
-                            </div>
-                            <div className="my-2 text-sm whitespace-pre-wrap">
-                              {t('ShowThinkingTextInfo')}
-                            </div>
-                            <div className="my-2">
-                              <ToggleSwitch
-                                enabled={state.showThinkingText}
-                                onChange={(v) =>
-                                  settingsStore.setState({
-                                    showThinkingText: v,
-                                  })
-                                }
-                              />
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-
+        <>
+          {!state.realtimeAPIMode &&
+            !state.audioMode &&
+            state.selectAIService !== 'custom-api' && (
+              <>
+                {state.isReasoningSupported && (
                   <div className="border-t border-gray-300 pt-6 my-6">
                     <div className="my-4 text-xl font-bold">
-                      {t('Temperature')}: {state.temperature.toFixed(2)}
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={2}
-                      step={0.01}
-                      value={state.temperature}
-                      className="mt-2 mb-4 input-range"
-                      onChange={(e) =>
-                        settingsStore.setState({
-                          temperature: parseFloat(e.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="my-6">
-                    <div className="my-4 text-xl font-bold">
-                      {t('MaxTokens')}
+                      {t('ReasoningMode')}
                     </div>
                     <div className="my-2 text-sm whitespace-pre-wrap">
-                      {t('MaxTokensInfo')}
+                      {t('ReasoningModeInfo')}
                     </div>
                     <div className="my-2">
-                      <input
-                        type="number"
-                        min="1"
-                        className="px-4 py-2 w-140 bg-white hover:bg-white-hover rounded-lg"
-                        value={state.maxTokens}
-                        onChange={(e) => {
-                          const value = parseInt(e.target.value)
-                          if (!Number.isNaN(value) && value >= 1) {
-                            settingsStore.setState({ maxTokens: value })
-                          }
-                        }}
+                      <ToggleSwitch
+                        enabled={state.reasoningMode}
+                        onChange={(v) =>
+                          settingsStore.setState({ reasoningMode: v })
+                        }
                       />
                     </div>
-                  </div>
-                </>
-              )}
 
-            {state.isMultiModalSupported && (
-              <div className="border-t border-gray-300 pt-6 my-6">
-                <div className="my-4 text-xl font-bold">
-                  {t('MultiModalMode')}
-                </div>
-                <div className="my-2 text-sm whitespace-pre-wrap">
-                  {t('MultiModalModeDescription')}
-                </div>
-                <div className="my-2">
-                  <select
-                    className="px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
-                    value={state.multiModalMode}
+                    {state.reasoningMode && (
+                      <>
+                        {state.availableReasoningEfforts.length > 0 && (
+                          <div className="my-4">
+                            <div className="my-2 font-bold">
+                              {t('ReasoningEffort')}
+                            </div>
+                            <div className="my-2 text-sm whitespace-pre-wrap">
+                              {t('ReasoningEffortInfo')}
+                            </div>
+                            <select
+                              className="px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
+                              value={state.reasoningEffort}
+                              onChange={(e) =>
+                                settingsStore.setState({
+                                  reasoningEffort: e.target
+                                    .value as ReasoningEffort,
+                                })
+                              }
+                            >
+                              {state.availableReasoningEfforts.map((effort) => (
+                                <option key={effort} value={effort}>
+                                  {effort.charAt(0).toUpperCase() +
+                                    effort.slice(1)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {state.showReasoningTokenBudget && (
+                          <div className="my-4">
+                            <div className="my-2 font-bold">
+                              {t('ReasoningTokenBudget')}
+                            </div>
+                            <div className="my-2 text-sm whitespace-pre-wrap">
+                              {t('ReasoningTokenBudgetInfo')}
+                            </div>
+                            <input
+                              type="number"
+                              min="1024"
+                              max="131072"
+                              className="px-4 py-2 w-140 bg-white hover:bg-white-hover rounded-lg"
+                              value={state.reasoningTokenBudget}
+                              onChange={(e) => {
+                                const value = parseInt(e.target.value)
+                                if (!Number.isNaN(value) && value >= 1024) {
+                                  settingsStore.setState({
+                                    reasoningTokenBudget: value,
+                                  })
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
+                        <div className="my-4">
+                          <div className="my-2 font-bold">
+                            {t('ShowThinkingText')}
+                          </div>
+                          <div className="my-2 text-sm whitespace-pre-wrap">
+                            {t('ShowThinkingTextInfo')}
+                          </div>
+                          <div className="my-2">
+                            <ToggleSwitch
+                              enabled={state.showThinkingText}
+                              onChange={(v) =>
+                                settingsStore.setState({
+                                  showThinkingText: v,
+                                })
+                              }
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <div className="border-t border-gray-300 pt-6 my-6">
+                  <div className="my-4 text-xl font-bold">
+                    {t('Temperature')}: {state.temperature.toFixed(2)}
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    value={state.temperature}
+                    className="mt-2 mb-4 input-range"
                     onChange={(e) =>
                       settingsStore.setState({
-                        multiModalMode: e.target.value as
-                          | 'ai-decide'
-                          | 'always'
-                          | 'never',
+                        temperature: parseFloat(e.target.value),
                       })
                     }
-                  >
-                    {state.selectAIService !== 'custom-api' && (
-                      <option value="ai-decide">
-                        {t('MultiModalModeAIDecide')}
-                      </option>
-                    )}
-                    <option value="always">{t('MultiModalModeAlways')}</option>
-                    <option value="never">{t('MultiModalModeNever')}</option>
-                  </select>
+                  />
                 </div>
-                {state.multiModalMode === 'ai-decide' &&
-                  state.selectAIService !== 'custom-api' && (
-                    <div className="my-4">
-                      <div className="my-2 text-sm font-medium">
-                        {t('MultiModalAIDecisionPrompt')}
-                      </div>
-                      <textarea
-                        className="w-full px-4 py-2 bg-white hover:bg-white-hover rounded-lg text-sm"
-                        rows={3}
-                        value={state.multiModalAiDecisionPrompt}
-                        onChange={(e) => {
-                          settingsStore.setState({
-                            multiModalAiDecisionPrompt: e.target.value,
-                          })
-                        }}
-                        placeholder={t('MultiModalAIDecisionPromptPlaceholder')}
-                      />
-                    </div>
-                  )}
-              </div>
+                <div className="my-6">
+                  <div className="my-4 text-xl font-bold">{t('MaxTokens')}</div>
+                  <div className="my-2 text-sm whitespace-pre-wrap">
+                    {t('MaxTokensInfo')}
+                  </div>
+                  <div className="my-2">
+                    <input
+                      type="number"
+                      min="1"
+                      className="px-4 py-2 w-140 bg-white hover:bg-white-hover rounded-lg"
+                      value={state.maxTokens}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value)
+                        if (!Number.isNaN(value) && value >= 1) {
+                          settingsStore.setState({ maxTokens: value })
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
             )}
 
-            {(state.realtimeAPIMode || state.audioMode) && (
-              <div className="my-6 p-4 bg-white rounded-lg text-sm ">
-                {t('CannotUseParameters')}
+          {state.isMultiModalSupported && (
+            <div className="border-t border-gray-300 pt-6 my-6">
+              <div className="my-4 text-xl font-bold">
+                {t('MultiModalMode')}
               </div>
-            )}
-          </>
-        )}
+              <div className="my-2 text-sm whitespace-pre-wrap">
+                {t('MultiModalModeDescription')}
+              </div>
+              <div className="my-2">
+                <select
+                  className="px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
+                  value={state.multiModalMode}
+                  onChange={(e) =>
+                    settingsStore.setState({
+                      multiModalMode: e.target.value as
+                        | 'ai-decide'
+                        | 'always'
+                        | 'never',
+                    })
+                  }
+                >
+                  {state.selectAIService !== 'custom-api' && (
+                    <option value="ai-decide">
+                      {t('MultiModalModeAIDecide')}
+                    </option>
+                  )}
+                  <option value="always">{t('MultiModalModeAlways')}</option>
+                  <option value="never">{t('MultiModalModeNever')}</option>
+                </select>
+              </div>
+              {state.multiModalMode === 'ai-decide' &&
+                state.selectAIService !== 'custom-api' && (
+                  <div className="my-4">
+                    <div className="my-2 text-sm font-medium">
+                      {t('MultiModalAIDecisionPrompt')}
+                    </div>
+                    <textarea
+                      className="w-full px-4 py-2 bg-white hover:bg-white-hover rounded-lg text-sm"
+                      rows={3}
+                      value={state.multiModalAiDecisionPrompt}
+                      onChange={(e) => {
+                        settingsStore.setState({
+                          multiModalAiDecisionPrompt: e.target.value,
+                        })
+                      }}
+                      placeholder={t('MultiModalAIDecisionPromptPlaceholder')}
+                    />
+                  </div>
+                )}
+            </div>
+          )}
+
+          {(state.realtimeAPIMode || state.audioMode) && (
+            <div className="my-6 p-4 bg-white rounded-lg text-sm ">
+              {t('CannotUseParameters')}
+            </div>
+          )}
+        </>
+      )}
 
       {state.isMultiModalSupported && (
         <div className="pt-6 my-6">

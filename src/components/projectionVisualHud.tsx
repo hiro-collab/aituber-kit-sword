@@ -96,7 +96,12 @@ type SttDiagnostic = {
 type HudUpdateSignal = {
   target: string
   kind: 'updated' | 'fresh' | 'stale' | 'warning'
-  source: 'camera' | 'homeAssistant' | 'thoughtCore' | 'launcher' | 'environment'
+  source:
+    | 'camera'
+    | 'homeAssistant'
+    | 'thoughtCore'
+    | 'launcher'
+    | 'environment'
   observedAt?: string
   snapshotId?: string
   token?: string
@@ -446,10 +451,7 @@ const homeActionProofLabel = (
   return 'CMD SENT / state未確認'
 }
 
-const readNumericField = (
-  source: any,
-  keys: string[]
-): number | undefined => {
+const readNumericField = (source: any, keys: string[]): number | undefined => {
   for (const key of keys) {
     const value = source?.[key]
     const parsed = typeof value === 'number' ? value : Number(value)
@@ -460,10 +462,7 @@ const readNumericField = (
   return undefined
 }
 
-const readStringField = (
-  source: any,
-  keys: string[]
-): string | undefined => {
+const readStringField = (source: any, keys: string[]): string | undefined => {
   for (const key of keys) {
     const value = source?.[key]
     if (typeof value === 'string' && value.trim()) {
@@ -569,9 +568,7 @@ const environmentFreshnessVisual = (
   }
 }
 
-const freshnessDetailLabel = (
-  visual?: EnvironmentFreshnessVisual
-): string => {
+const freshnessDetailLabel = (visual?: EnvironmentFreshnessVisual): string => {
   if (!visual) return 'age unknown'
   if (visual.level === 'live') return 'fresh signal'
   if (visual.level === 'recent') return 'recent signal'
@@ -620,12 +617,7 @@ const environmentValueLabel = (key: string, source: string): string => {
   const normalized = key.replace(/-/g, '_')
   const baseLabel =
     ENVIRONMENT_VALUE_LABELS[normalized] ??
-    normalized
-      .split('_')
-      .filter(Boolean)
-      .slice(0, 2)
-      .join(' ')
-      .toUpperCase()
+    normalized.split('_').filter(Boolean).slice(0, 2).join(' ').toUpperCase()
   return source === 'vision' && !baseLabel.startsWith('VISION')
     ? `VISION ${baseLabel}`.slice(0, 14)
     : baseLabel.slice(0, 14)
@@ -665,14 +657,17 @@ const environmentSourceFreshnessLabel = (
   nowMs: number,
   fallbackTimestamp?: string
 ): string => {
-  if (source) return freshnessDetailLabel(environmentFreshnessVisual(source, nowMs))
+  if (source)
+    return freshnessDetailLabel(environmentFreshnessVisual(source, nowMs))
   return freshnessDetailLabel(
     serviceFreshnessVisual(service, nowMs, fallbackTimestamp)
   )
 }
 
 const environmentStateValueLabel = (value: unknown): string => {
-  const state = String(value ?? '').trim().toLowerCase()
+  const state = String(value ?? '')
+    .trim()
+    .toLowerCase()
   if (!state) return 'Unknown'
   if (state === 'on') return 'On'
   if (state === 'off') return 'Off'
@@ -746,7 +741,10 @@ const roomLightObservationFreshnessVisual = (
   return environmentFreshnessVisual({ observed_at: safeView.observedAt }, nowMs)
 }
 
-const roomLightObservationDetailLabel = (signal: any, nowMs: number): string => {
+const roomLightObservationDetailLabel = (
+  signal: any,
+  nowMs: number
+): string => {
   return (
     resolveProjectionVisualRoomLightSafeView(signal)?.detail ??
     'Camera room-light observation unavailable'
@@ -783,10 +781,7 @@ const hudUpdateSignalKind = (signal: any): HudUpdateSignal['kind'] => {
   return 'fresh'
 }
 
-const hudUpdateSemanticToken = (
-  target: string,
-  signal: any
-): string => {
+const hudUpdateSemanticToken = (target: string, signal: any): string => {
   const roomLightSafeView = resolveProjectionVisualRoomLightSafeView(signal)
   if (roomLightSafeView) return roomLightSafeView.token
   const learning = signal?.learning ?? {}
@@ -803,12 +798,7 @@ const hudUpdateSemanticToken = (
     'observationId',
   ])
 
-  return [
-    target,
-    semanticState.toLowerCase(),
-    learningLevel,
-    snapshotId,
-  ]
+  return [target, semanticState.toLowerCase(), learningLevel, snapshotId]
     .filter(Boolean)
     .join(':')
 }
@@ -900,7 +890,10 @@ const compactHudValue = (key: string, value: unknown): string => {
     }
     return raw.replace(/\s*wss?:\/\/\S+$/i, '')
   }
-  if (key === 'Detail' && raw.includes('UDP receiver cannot be health-checked')) {
+  if (
+    key === 'Detail' &&
+    raw.includes('UDP receiver cannot be health-checked')
+  ) {
     return 'UDP receiver unchecked'
   }
   return raw
@@ -919,7 +912,11 @@ const compactMetricState = (value: unknown): string => {
   ) {
     return 'ERROR'
   }
-  if (raw.includes('stale') || raw.includes('pending') || raw.includes('wait')) {
+  if (
+    raw.includes('stale') ||
+    raw.includes('pending') ||
+    raw.includes('wait')
+  ) {
     return 'DEGRADED'
   }
   return 'OK'
@@ -956,10 +953,7 @@ const listeningPoseHudState = (
 ): string => {
   if (!diagnostic) return 'DEGRADED'
   if (diagnostic.status === 'failed') return 'ERROR'
-  if (
-    diagnostic.status === 'disabled' ||
-    diagnostic.status === 'unavailable'
-  ) {
+  if (diagnostic.status === 'disabled' || diagnostic.status === 'unavailable') {
     return 'DEGRADED'
   }
   return 'OK'
@@ -1416,7 +1410,9 @@ export const ProjectionVisualHud = ({
     const reportedStates = members
       .map((member) => serviceByKey.get(member)?.state)
       .filter((state) => state !== undefined)
-    return reportedStates.length > 0 ? aggregateState(reportedStates) : 'UNREPORTED'
+    return reportedStates.length > 0
+      ? aggregateState(reportedStates)
+      : 'UNREPORTED'
   }
   const events = [...(status?.homeActions?.events ?? [])].reverse().slice(0, 2)
   const thoughtCoreEvents = status?.thoughtCoreChat?.events ?? []
@@ -1427,7 +1423,9 @@ export const ProjectionVisualHud = ({
     thoughtCoreEvents[thoughtCoreEvents.length - 1] ??
     null
   const lastAiEvent =
-    (lastThoughtCoreEvent ? { ...lastThoughtCoreEvent, source: 'thought-core' } : null) ??
+    (lastThoughtCoreEvent
+      ? { ...lastThoughtCoreEvent, source: 'thought-core' }
+      : null) ??
     status?.aiChat?.lastEvent ??
     null
   const lastHomeEvent = status?.homeActions?.lastEvent ?? events[0] ?? null
@@ -1438,7 +1436,8 @@ export const ProjectionVisualHud = ({
   const environmentSources = environmentSnapshot.sources ?? {}
   const visionSource = environmentSources.vision_snapshot_processor
   const homeAssistantSource =
-    environmentSources.home_assistant_bridge ?? environmentSources.home_assistant
+    environmentSources.home_assistant_bridge ??
+    environmentSources.home_assistant
   const applianceIndicators = Object.entries(appliances)
     .filter((entry): entry is [string, Record<string, any>] =>
       isRecordObject(entry[1])
@@ -1456,8 +1455,9 @@ export const ProjectionVisualHud = ({
       liveMetrics: undefined,
     }))
   const stateQueryIndicators = Object.entries(stateQueries)
-    .filter((entry): entry is [string, Record<string, any>] =>
-      entry[0] !== 'room_light' && isRecordObject(entry[1])
+    .filter(
+      (entry): entry is [string, Record<string, any>] =>
+        entry[0] !== 'room_light' && isRecordObject(entry[1])
     )
     .map(([key, signal]) => ({
       id: `state-query-${key}`,
@@ -1479,7 +1479,8 @@ export const ProjectionVisualHud = ({
       (entry): entry is [string, Record<string, any>] =>
         isRecordObject(entry[1]) &&
         !VISION_SOURCE_ONLY_KEYS.has(entry[0]) &&
-        (entry[0] === 'room_light' || !isRecordObject(stateQueries[entry[0]])) &&
+        (entry[0] === 'room_light' ||
+          !isRecordObject(stateQueries[entry[0]])) &&
         (entry[0] !== 'room_light' ||
           resolveProjectionVisualRoomLightSafeView(entry[1]) !== undefined)
     )
@@ -1496,9 +1497,13 @@ export const ProjectionVisualHud = ({
           : environmentSignalState(signal, 'DEGRADED'),
       value:
         key === 'room_light'
-          ? resolveProjectionVisualRoomLightSafeView(signal)?.value ?? 'Unknown'
+          ? (resolveProjectionVisualRoomLightSafeView(signal)?.value ??
+            'Unknown')
           : environmentStateValueLabel(signal.state ?? signal.label),
-      summary: key === 'room_light' ? 'Vision' : compactSourceLabel(signal.source, 'Vision'),
+      summary:
+        key === 'room_light'
+          ? 'Vision'
+          : compactSourceLabel(signal.source, 'Vision'),
       detail:
         key === 'room_light'
           ? roomLightObservationDetailLabel(signal, nowMs)
@@ -1561,7 +1566,10 @@ export const ProjectionVisualHud = ({
       id: 'device',
       label: 'HOME DEVICE',
       title: 'Home Device',
-      state: environmentSourceState(homeAssistantSource, homeAssistantService?.state),
+      state: environmentSourceState(
+        homeAssistantSource,
+        homeAssistantService?.state
+      ),
       summary: 'Home Assistant',
       detail: homeAssistantSource
         ? environmentSourceFreshnessLabel(
@@ -1574,12 +1582,10 @@ export const ProjectionVisualHud = ({
       freshnessVisual: homeDeviceFreshness,
     },
   ]
-  const environmentRailState = aggregateState(
-    [
-      ...environmentValueIndicators.map((indicator) => indicator.state),
-      ...environmentIndicators.map((indicator) => indicator.state),
-    ]
-  )
+  const environmentRailState = aggregateState([
+    ...environmentValueIndicators.map((indicator) => indicator.state),
+    ...environmentIndicators.map((indicator) => indicator.state),
+  ])
   const environmentRailLabel = environmentRailWordLabel(environmentRailState, [
     ...environmentValueIndicators,
     ...environmentIndicators,
@@ -1646,11 +1652,11 @@ export const ProjectionVisualHud = ({
       ? 'execute'
       : pipelineStage.includes('PREVIEW')
         ? 'preview'
-      : pipelineStage.includes('THOUGHT_CORE')
-        ? 'respond'
-        : pipelineStage.includes('WAITING')
-          ? ''
-          : 'observe'
+        : pipelineStage.includes('THOUGHT_CORE')
+          ? 'respond'
+          : pipelineStage.includes('WAITING')
+            ? ''
+            : 'observe'
   const activeCallIndex = SYSTEM_CALLS.findIndex(
     (call) => call.id === activeCallId
   )
@@ -1674,7 +1680,7 @@ export const ProjectionVisualHud = ({
   const latestBridgeDiagnostic =
     sttDiagnostic?.controller === 'gesture_bridge' ? sttDiagnostic : null
   const isHudVisible = isPassiveHud ? true : hud.visible
-  const pipelineDetail = isPassiveHud ? '-' : pipeline?.detail ?? '-'
+  const pipelineDetail = isPassiveHud ? '-' : (pipeline?.detail ?? '-')
   const sttGateLabel = sttStatus?.speaking
     ? 'speaking'
     : sttStatus?.chatProcessing
@@ -1688,10 +1694,12 @@ export const ProjectionVisualHud = ({
       ? 'listening'
       : 'idle'
   const sttGateFreshness = freshnessVisualFromAgeMs(sttUpdatedAge)
-  const browserDiagnosticFreshness =
-    freshnessVisualFromAgeMs(browserSttDiagnosticAge)
-  const listeningPoseFreshness =
-    freshnessVisualFromAgeMs(listeningPoseDiagnosticAge)
+  const browserDiagnosticFreshness = freshnessVisualFromAgeMs(
+    browserSttDiagnosticAge
+  )
+  const listeningPoseFreshness = freshnessVisualFromAgeMs(
+    listeningPoseDiagnosticAge
+  )
   const motionStimulusFreshness = freshnessVisualFromAgeMs(
     motionStimulusResultAge
   )
@@ -1710,7 +1718,8 @@ export const ProjectionVisualHud = ({
       label: 'INPUT GATE',
       value: sttGateLabel,
       detail: freshnessDetailLabel(sttGateFreshness),
-      state: sttStatus?.speaking || sttStatus?.chatProcessing ? 'DEGRADED' : 'OK',
+      state:
+        sttStatus?.speaking || sttStatus?.chatProcessing ? 'DEGRADED' : 'OK',
       freshnessVisual: sttGateFreshness,
     },
     {
@@ -1728,7 +1737,9 @@ export const ProjectionVisualHud = ({
       label: 'AUDIO INPUT',
       value: speechAudioLabel,
       detail: `diag ${freshnessDetailLabel(browserDiagnosticFreshness)}`,
-      state: browserSttDiagnostic?.error ? 'ERROR' : compactMetricState(speechAudioLabel),
+      state: browserSttDiagnostic?.error
+        ? 'ERROR'
+        : compactMetricState(speechAudioLabel),
       freshnessVisual: browserDiagnosticFreshness,
     },
   ]
@@ -1941,7 +1952,6 @@ export const ProjectionVisualHud = ({
               <span>policy</span>
             </div>
           </TdPanel>
-
         </div>
 
         <div className="td-panel-column td-panel-column-right">
@@ -1950,7 +1960,10 @@ export const ProjectionVisualHud = ({
             kicker="INPUT / TURN STATUS"
             className="td-top-right td-reflex-thought-panel"
           >
-            <div className="td-sense-metric-grid" aria-label="Reflex state tiles">
+            <div
+              className="td-sense-metric-grid"
+              aria-label="Reflex state tiles"
+            >
               {reflexMetricTiles.map((tile) => (
                 <div
                   className="td-sense-metric-tile"
@@ -1998,7 +2011,10 @@ export const ProjectionVisualHud = ({
               ))}
             </div>
             {latestBridgeDiagnostic ? (
-              <div className="td-stt-bridge-line" title={latestBridgeDiagnostic.detail ?? '-'}>
+              <div
+                className="td-stt-bridge-line"
+                title={latestBridgeDiagnostic.detail ?? '-'}
+              >
                 bridge {latestBridgeDiagnostic.event ?? '-'} /{' '}
                 {isPassiveHud
                   ? '-'
@@ -2006,7 +2022,7 @@ export const ProjectionVisualHud = ({
                         'SpeechRecognition is inactive'
                       )
                     ? 'recognition inactive'
-                    : latestBridgeDiagnostic.detail ?? '-'}
+                    : (latestBridgeDiagnostic.detail ?? '-')}
               </div>
             ) : null}
             <div className="td-panel-subtitle">Current Step</div>
@@ -2038,7 +2054,9 @@ export const ProjectionVisualHud = ({
             <div className={`td-magic ${magicActive ? 'td-magic-active' : ''}`}>
               <span>Action</span>
               <strong>
-                {magicActive ? status?.magic?.lastActionId ?? 'running' : 'idle'}
+                {magicActive
+                  ? (status?.magic?.lastActionId ?? 'running')
+                  : 'idle'}
               </strong>
             </div>
             <div className="td-panel-subtitle">Turn Trace</div>
@@ -2059,7 +2077,10 @@ export const ProjectionVisualHud = ({
                 <div className="td-panel-subtitle">Action Journal</div>
                 <div className="td-events">
                   {events.map((event, index) => (
-                    <div className="td-event" key={`${event.timestamp}-${index}`}>
+                    <div
+                      className="td-event"
+                      key={`${event.timestamp}-${index}`}
+                    >
                       <strong>{event.action_id || event.event || '-'}</strong>
                       <span>
                         {formatTime(event.timestamp)} / {event.source || '-'} /{' '}

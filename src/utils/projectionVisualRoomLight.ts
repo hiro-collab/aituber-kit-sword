@@ -1,7 +1,4 @@
-export type ProjectionVisualRoomLightUpdateKind =
-  | 'fresh'
-  | 'updated'
-  | 'stale'
+export type ProjectionVisualRoomLightUpdateKind = 'fresh' | 'updated' | 'stale'
 
 export type ProjectionVisualRoomLightSafeView = {
   kind: ProjectionVisualRoomLightUpdateKind
@@ -25,10 +22,7 @@ const ROOM_LIGHT_OBSERVATION_BUCKETS = new Set([
   'balanced',
   'bright',
 ])
-const ROOM_LIGHT_SOURCES = new Set([
-  'camera_hub',
-  'vision_snapshot_processor',
-])
+const ROOM_LIGHT_SOURCES = new Set(['camera_hub', 'vision_snapshot_processor'])
 const CANONICAL_MODEL_NAME = 'room-light-heuristic-snapshot-v3'
 const CANONICAL_MODEL_KIND = 'heuristic'
 const CANONICAL_DOES_NOT_PROVE = [
@@ -54,7 +48,10 @@ const hasOwn = (value: RecordValue, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key)
 
 const isLikelihood = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+  typeof value === 'number' &&
+  Number.isFinite(value) &&
+  value >= 0 &&
+  value <= 1
 
 const isBoundedIdentifier = (value: unknown): value is string =>
   typeof value === 'string' &&
@@ -63,7 +60,9 @@ const isBoundedIdentifier = (value: unknown): value is string =>
   PRINTABLE_IDENTIFIER.test(value)
 
 const isParseableTimestamp = (value: unknown): value is string =>
-  typeof value === 'string' && value.trim().length > 0 && Number.isFinite(Date.parse(value))
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  Number.isFinite(Date.parse(value))
 
 const isRoomLightLike = (value: RecordValue): boolean =>
   value.type === 'room_light_observation' ||
@@ -72,7 +71,8 @@ const isRoomLightLike = (value: RecordValue): boolean =>
 const hasCompleteSequence = (value: unknown): boolean => {
   if (!isRecord(value)) return false
 
-  const { frame_count, first_frame_id, last_frame_id, temporal_window_ms } = value
+  const { frame_count, first_frame_id, last_frame_id, temporal_window_ms } =
+    value
   return (
     typeof frame_count === 'number' &&
     Number.isInteger(frame_count) &&
@@ -102,7 +102,9 @@ const hasCanonicalDoesNotProve = (value: unknown): boolean =>
 
 const hasRecognizedFreshness = (value: unknown): boolean =>
   isRecord(value) &&
-  (value.level === 'fresh' || value.level === 'recent' || value.level === 'stale')
+  (value.level === 'fresh' ||
+    value.level === 'recent' ||
+    value.level === 'stale')
 
 const isCompleteRoomLightObservation = (value: RecordValue): boolean => {
   const { observation_bucket, daylight_ambiguity, cue_likelihoods } = value
@@ -133,7 +135,8 @@ const isCompleteRoomLightObservation = (value: RecordValue): boolean => {
   )
 }
 
-const formatProbability = (value: number): string => `${Math.round(value * 100)}%`
+const formatProbability = (value: number): string =>
+  `${Math.round(value * 100)}%`
 
 const staleSafeView = (): ProjectionVisualRoomLightSafeView => ({
   kind: 'stale',
@@ -163,11 +166,11 @@ export const resolveProjectionVisualRoomLightSafeView = (
   const observationBucket = signal.observation_bucket as string
   const confidence = signal.confidence as number
   const daylightAmbiguity = signal.daylight_ambiguity as string
-const snapshotId = isBoundedIdentifier(signal.source_snapshot_id)
-  ? signal.source_snapshot_id
-  : isBoundedIdentifier(signal.observation_id)
-    ? signal.observation_id
-    : undefined
+  const snapshotId = isBoundedIdentifier(signal.source_snapshot_id)
+    ? signal.source_snapshot_id
+    : isBoundedIdentifier(signal.observation_id)
+      ? signal.observation_id
+      : undefined
 
   return {
     kind,
@@ -186,11 +189,36 @@ const snapshotId = isBoundedIdentifier(signal.source_snapshot_id)
       formatProbability(cueLikelihoods.darkness as number),
     ].join(':'),
     metrics: [
-      { id: 'confidence', label: 'CONF', value: formatProbability(confidence), title: 'Observation confidence' },
-      { id: 'daylight-ambiguity', label: 'AMB', value: daylightAmbiguity.toUpperCase(), title: 'Daylight ambiguity' },
-      { id: 'warm-light', label: 'WARM', value: formatProbability(cueLikelihoods.warm_light as number), title: 'Warm-light cue likelihood' },
-      { id: 'daylight', label: 'DAY', value: formatProbability(cueLikelihoods.daylight as number), title: 'Daylight cue likelihood' },
-      { id: 'darkness', label: 'DARK', value: formatProbability(cueLikelihoods.darkness as number), title: 'Darkness cue likelihood' },
+      {
+        id: 'confidence',
+        label: 'CONF',
+        value: formatProbability(confidence),
+        title: 'Observation confidence',
+      },
+      {
+        id: 'daylight-ambiguity',
+        label: 'AMB',
+        value: daylightAmbiguity.toUpperCase(),
+        title: 'Daylight ambiguity',
+      },
+      {
+        id: 'warm-light',
+        label: 'WARM',
+        value: formatProbability(cueLikelihoods.warm_light as number),
+        title: 'Warm-light cue likelihood',
+      },
+      {
+        id: 'daylight',
+        label: 'DAY',
+        value: formatProbability(cueLikelihoods.daylight as number),
+        title: 'Daylight cue likelihood',
+      },
+      {
+        id: 'darkness',
+        label: 'DARK',
+        value: formatProbability(cueLikelihoods.darkness as number),
+        title: 'Darkness cue likelihood',
+      },
     ],
   }
 }

@@ -15,11 +15,9 @@ import {
   receiveMotionStimulusV0,
 } from '../motionStimulusReceiver'
 
-const CONFIGURED_DANCE_MOTION_ASSET_PATH =
-  '/local-vrma/configured-dance.vrma'
+const CONFIGURED_DANCE_MOTION_ASSET_PATH = '/local-vrma/configured-dance.vrma'
 const REQUESTED_AT = new Date('2026-06-13T10:30:15.123Z')
-const originalDanceMotionAssetPath =
-  process.env[DANCE_MOTION_ASSET_PATH_ENV]
+const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
 
 describe('Projection Visual safe stimulus ref transport', () => {
   beforeEach(() => {
