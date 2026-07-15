@@ -57,7 +57,7 @@ const PresetQuestions = () => {
     })
   }
 
-  // Fix for hydration issues with react-beautiful-dnd
+  // Render the drag-and-drop surface only after client hydration.
   const [isClient, setIsClient] = useState(false)
 
   useEffect(() => {
