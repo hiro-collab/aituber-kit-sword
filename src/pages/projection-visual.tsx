@@ -45,7 +45,10 @@ import {
   resolveProjectionEffectSelection,
 } from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
 import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
-import { registerProjectionStageCaptureHandle } from '@/features/projectionDisplay/captureSourceHandle'
+import {
+  createProjectionStageCaptureHandleSession,
+  registerProjectionStageCaptureHandle,
+} from '@/features/projectionDisplay/captureSourceHandle'
 import '@/lib/i18n'
 
 const projectionVisualAIService = ((): 'thought-core' | null => {
@@ -100,6 +103,10 @@ const ProjectionVisual = () => {
     const value = router.query.captureOwnerOrigin
     return Array.isArray(value) ? value[0] : value
   }, [router.query.captureOwnerOrigin])
+  const captureHandleSession = useMemo(
+    () => createProjectionStageCaptureHandleSession(),
+    []
+  )
   const projectionVisualRootRef = useRef<HTMLDivElement>(null)
   const captureHandleClearFailedRef = useRef(false)
   const messageReceiverEnabled = settingsStore((s) => s.messageReceiverEnabled)
@@ -182,6 +189,8 @@ const ProjectionVisual = () => {
       isSecureContext:
         typeof window === 'object' ? window.isSecureContext : false,
       referrer: typeof document === 'object' ? document.referrer : undefined,
+      opener: typeof window === 'object' ? window.opener : null,
+      session: captureHandleSession,
     })
     if (root) {
       root.dataset.projectionCaptureHandleStatus = registration.status
@@ -196,7 +205,7 @@ const ProjectionVisual = () => {
           cleanup === 'clear_failed' ? 'clear_failed' : 'inactive'
       }
     }
-  }, [captureOwnerOrigin, isStageOutputMode])
+  }, [captureHandleSession, captureOwnerOrigin, isStageOutputMode])
 
   useEffect(() => {
     if (isDisplayOnlyMode) return

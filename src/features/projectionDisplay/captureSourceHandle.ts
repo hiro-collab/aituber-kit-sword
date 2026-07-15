@@ -3,6 +3,9 @@ export const PROJECTION_STAGE_CAPTURE_HANDLE_SCHEMA =
 export const PROJECTION_STAGE_CAPTURE_HANDLE_ROLE =
   'projection-visual-stage-output'
 export const PROJECTION_STAGE_CAPTURE_HANDLE_VERSION = 1
+export const PROJECTION_STAGE_CAPTURE_READY_MESSAGE =
+  'projection_stage_capture_source_ready'
+export const PROJECTION_STAGE_CAPTURE_READY_VERSION = 1
 
 export type ProjectionStageCaptureHandleStatus =
   | 'registered'
@@ -11,8 +14,10 @@ export type ProjectionStageCaptureHandleStatus =
   | 'referrer_mismatch'
   | 'not_top_level'
   | 'insecure_context'
+  | 'opener_unavailable'
   | 'unsupported'
   | 'registration_failed'
+  | 'announcement_failed'
   | 'clear_failed'
 
 export type ProjectionStageCaptureHandleCleanup =
@@ -33,6 +38,32 @@ type CaptureHandleMediaDevices = {
 
 type RandomSource = {
   randomUUID: () => string
+}
+
+type CaptureSourceOpener = {
+  postMessage: (
+    message: { type: string; version: number; ref: string },
+    targetOrigin: string
+  ) => void
+}
+
+export type ProjectionStageCaptureHandleSession = object
+
+type ProjectionStageCaptureHandleSessionState = {
+  identity?: ReturnType<typeof createOpaqueHandle>
+  ownerOrigin?: string
+  announced: boolean
+}
+
+const captureHandleSessionStates = new WeakMap<
+  ProjectionStageCaptureHandleSession,
+  ProjectionStageCaptureHandleSessionState
+>()
+
+export function createProjectionStageCaptureHandleSession(): ProjectionStageCaptureHandleSession {
+  const session = Object.freeze({})
+  captureHandleSessionStates.set(session, { announced: false })
+  return session
 }
 
 export type ProjectionStageCaptureHandleRegistration = {
@@ -72,7 +103,10 @@ function resolveReferrerOrigin(value: string | undefined): string | undefined {
   }
 }
 
-function createOpaqueHandle(randomSource: RandomSource): string {
+function createOpaqueHandle(randomSource: RandomSource): {
+  handle: string
+  ref: string
+} {
   const ref = randomSource.randomUUID().toLowerCase()
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
@@ -81,11 +115,14 @@ function createOpaqueHandle(randomSource: RandomSource): string {
   ) {
     throw new Error('invalid_random_uuid')
   }
-  return JSON.stringify({
-    role: PROJECTION_STAGE_CAPTURE_HANDLE_ROLE,
-    version: PROJECTION_STAGE_CAPTURE_HANDLE_VERSION,
+  return {
+    handle: JSON.stringify({
+      role: PROJECTION_STAGE_CAPTURE_HANDLE_ROLE,
+      version: PROJECTION_STAGE_CAPTURE_HANDLE_VERSION,
+      ref,
+    }),
     ref,
-  })
+  }
 }
 
 export function registerProjectionStageCaptureHandle(options: {
@@ -96,6 +133,8 @@ export function registerProjectionStageCaptureHandle(options: {
   isTopLevel?: boolean
   isSecureContext?: boolean
   referrer?: string
+  opener?: CaptureSourceOpener | null
+  session?: ProjectionStageCaptureHandleSession
 }): ProjectionStageCaptureHandleRegistration {
   const noOp = () => 'not_registered' as const
   if (!options.enabled) return { status: 'inactive', dispose: noOp }
@@ -112,6 +151,9 @@ export function registerProjectionStageCaptureHandle(options: {
   }
   if (resolveReferrerOrigin(options.referrer) !== ownerOrigin) {
     return { status: 'referrer_mismatch', dispose: noOp }
+  }
+  if (!options.opener || typeof options.opener.postMessage !== 'function') {
+    return { status: 'opener_unavailable', dispose: noOp }
   }
 
   const mediaDevices =
@@ -131,14 +173,51 @@ export function registerProjectionStageCaptureHandle(options: {
     return { status: 'registration_failed', dispose: noOp }
   }
 
+  const session = options.session ?? createProjectionStageCaptureHandleSession()
+  const sessionState = captureHandleSessionStates.get(session)
+  if (!sessionState) {
+    return { status: 'registration_failed', dispose: noOp }
+  }
+  if (
+    sessionState.ownerOrigin !== undefined &&
+    sessionState.ownerOrigin !== ownerOrigin
+  ) {
+    return { status: 'registration_failed', dispose: noOp }
+  }
+  sessionState.ownerOrigin = ownerOrigin
+
+  let identity: ReturnType<typeof createOpaqueHandle>
   try {
+    identity = sessionState.identity ?? createOpaqueHandle(randomSource)
+    sessionState.identity = identity
     setCaptureHandleConfig.call(mediaDevices, {
       exposeOrigin: true,
-      handle: createOpaqueHandle(randomSource),
+      handle: identity.handle,
       permittedOrigins: [ownerOrigin],
     })
   } catch {
     return { status: 'registration_failed', dispose: noOp }
+  }
+
+  if (!sessionState.announced) {
+    try {
+      options.opener.postMessage(
+        {
+          type: PROJECTION_STAGE_CAPTURE_READY_MESSAGE,
+          version: PROJECTION_STAGE_CAPTURE_READY_VERSION,
+          ref: identity.ref,
+        },
+        ownerOrigin
+      )
+      sessionState.announced = true
+    } catch {
+      try {
+        setCaptureHandleConfig.call(mediaDevices)
+        return { status: 'announcement_failed', dispose: noOp }
+      } catch {
+        return { status: 'clear_failed', dispose: () => 'clear_failed' }
+      }
+    }
   }
 
   let cleanupOutcome: 'cleared' | 'clear_failed' | undefined
