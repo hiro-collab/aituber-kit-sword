@@ -193,11 +193,12 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
         raw_private_publication_flags: false,
       })
     }
+    const afterOrdinal = cursor.value
     const transport =
-      cursor.value === null
+      afterOrdinal === null
         ? latestLifecycle
         : (lifecycleHistory.find(
-            (candidate) => candidate.transition_ordinal > cursor.value
+            (candidate) => candidate.transition_ordinal > afterOrdinal
           ) ?? null)
     return res.status(200).json({
       ok: true,
