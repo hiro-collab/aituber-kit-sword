@@ -11,7 +11,7 @@
     "@ffmpeg-installer/linux-x64@4.1.0": true,
     "@parcel/watcher@2.5.1": true,
     "canvas@3.2.0": true,
-    "electron@39.2.7": true,
+    "electron@39.8.10": true,
     "esbuild@0.25.4": true,
     "esbuild@0.28.1": true,
     "fsevents@2.3.2": true,
