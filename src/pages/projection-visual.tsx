@@ -40,6 +40,10 @@ import {
   requestAcceptedPreparedSamplePresentation,
 } from '@/features/chat/thoughtCoreChat'
 import { presentAcceptedPreparedSampleAssistantResponse } from '@/features/chat/handlers'
+import {
+  FluidFireRelayCanvasLayer,
+  resolveProjectionEffectSelection,
+} from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
 import '@/lib/i18n'
 
 const projectionVisualAIService = ((): 'thought-core' | null => {
@@ -55,6 +59,8 @@ const projectionVisualAIService = ((): 'thought-core' | null => {
 })()
 const shouldForceContinuousMicForProjectionVisual =
   process.env.NEXT_PUBLIC_PROJECTION_VISUAL_CONTINUOUS_MIC === 'true'
+const configuredProjectionEffectId =
+  process.env.NEXT_PUBLIC_PROJECTION_EFFECT_ID || ''
 
 const ProjectionVisual = () => {
   const [
@@ -110,6 +116,10 @@ const ProjectionVisual = () => {
   const displayStateBridgeMode = shouldReceiveDisplayState
     ? projectionVisualMode
     : 'operator'
+  const projectionEffectId = resolveProjectionEffectSelection(
+    'projectionEffect' in routeQuery ? routeQuery.projectionEffect : undefined,
+    configuredProjectionEffectId
+  )
 
   const characterPresets = useMemo(
     () => [
@@ -218,9 +228,13 @@ const ProjectionVisual = () => {
       data-projection-visual-stimulus-ref={
         projectionVisualStimulusRef ?? 'none'
       }
+      data-projection-effect-id={projectionEffectId ?? 'none'}
     >
       <Meta />
       <ProjectionVisualDisplayStateBridge mode={displayStateBridgeMode} />
+      <FluidFireRelayCanvasLayer
+        enabled={projectionEffectId === 'fluidFireRelay'}
+      />
       {shouldRenderHud && (
         <ProjectionVisualHud
           variant={isDisplayOnlyMode ? 'passive' : 'operator'}

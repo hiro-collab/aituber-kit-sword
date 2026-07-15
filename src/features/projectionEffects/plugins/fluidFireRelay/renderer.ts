@@ -15,6 +15,11 @@ export interface FluidFireRelayRendererSnapshot {
   completedPassCount: number
 }
 
+export type FluidFireRelayFrameObserver = (
+  snapshot: Readonly<FluidFireRelayRendererSnapshot>,
+  context: ProjectionEffectFrameContext
+) => void
+
 export class FluidFireRelayRenderer implements ProjectionEffectRenderer {
   private disposed = false
   private frameCount = 0
@@ -22,6 +27,8 @@ export class FluidFireRelayRenderer implements ProjectionEffectRenderer {
   private temperatureEnergy = 0
   private pressureEnergy = 0
   private completedPassCount = 0
+
+  constructor(private readonly frameObserver?: FluidFireRelayFrameObserver) {}
 
   render(context: ProjectionEffectFrameContext): void {
     if (this.disposed) return
@@ -50,6 +57,7 @@ export class FluidFireRelayRenderer implements ProjectionEffectRenderer {
       this.completedPassCount += 1
     }
     this.frameCount += 1
+    this.frameObserver?.(this.snapshot(), context)
   }
 
   reset(): void {
