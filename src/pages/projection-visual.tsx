@@ -21,7 +21,6 @@ import { MemoryServiceInitializer } from '@/components/memoryServiceInitializer'
 import { ProjectionVisualHud } from '@/components/projectionVisualHud'
 import { ProjectionVisualAssistantBubble } from '@/components/projectionVisualAssistantBubble'
 import { ProjectionVisualDisplayStateBridge } from '@/components/projectionVisualDisplayStateBridge'
-import { ProjectionVisualVrmPositionControls } from '@/components/projectionVisualVrmPositionControls'
 import { ProjectionVisualCalibrationPanel } from '@/components/projectionVisualCalibrationPanel'
 import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
@@ -260,11 +259,6 @@ const ProjectionVisual = () => {
         stimulusRef={projectionVisualStimulusRef}
         acceptDanceLifecycleCandidate={danceLifecycleAcceptancePredicate}
       />
-      {!isPassiveMode &&
-        !isStageOutputMode &&
-        !isDisplayOnlyMode &&
-        controlOwner.isOwner &&
-        modelType === 'vrm' && <ProjectionVisualVrmPositionControls />}
       <ProjectionVisualAssistantBubble
         variant={
           isStageOutputMode
@@ -276,6 +270,7 @@ const ProjectionVisual = () => {
       />
       <ProjectionVisualCalibrationPanel
         enabled={!isDisplayOnlyMode && controlOwner.isOwner}
+        framingEnabled={modelType === 'vrm'}
       />
       {!isDisplayOnlyMode &&
         (controlOwner.isOwner ? (

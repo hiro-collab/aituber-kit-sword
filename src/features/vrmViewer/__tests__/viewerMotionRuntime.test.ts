@@ -39,6 +39,8 @@ describe('VRM camera fit', () => {
     fixedCharacterPosition: settingsStore.getState().fixedCharacterPosition,
     cameraHorizontalFov: settingsStore.getState().cameraHorizontalFov,
     lightingIntensity: settingsStore.getState().lightingIntensity,
+    characterPosition: settingsStore.getState().characterPosition,
+    characterRotation: settingsStore.getState().characterRotation,
   }
 
   afterEach(() => {
@@ -96,6 +98,66 @@ describe('VRM camera fit', () => {
         0
       )
     ).toBeNull()
+  })
+
+  it('persists a successful auto-fit once and skips an unchanged repeat', () => {
+    const viewer = new Viewer()
+    const camera = new THREE.PerspectiveCamera(20, 16 / 9, 0.1, 20)
+    const controls = {
+      target: new THREE.Vector3(),
+      update: jest.fn(),
+      enabled: false,
+    }
+    const scene = new THREE.Group()
+    scene.add(new THREE.Mesh(new THREE.BoxGeometry(1, 2, 0.4)))
+    Object.assign(viewer, {
+      _camera: camera,
+      _cameraControls: controls,
+      model: { vrm: { scene } },
+    })
+    settingsStore.setState({
+      fixedCharacterPosition: true,
+      characterPosition: { x: 0, y: 0, z: 0, scale: 1 },
+      characterRotation: { x: 0, y: 0, z: 0 },
+    })
+    const setState = jest.spyOn(settingsStore, 'setState')
+
+    expect(viewer.autoFitCameraToModel()).toBe(true)
+    expect(settingsStore.getState().characterPosition).toEqual({
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+      scale: 1,
+    })
+    expect(settingsStore.getState().characterRotation).toEqual({
+      x: controls.target.x,
+      y: controls.target.y,
+      z: controls.target.z,
+    })
+    expect(settingsStore.getState().fixedCharacterPosition).toBe(false)
+    expect(controls.enabled).toBe(true)
+
+    setState.mockClear()
+    expect(viewer.autoFitCameraToModel()).toBe(true)
+    expect(setState).not.toHaveBeenCalled()
+  })
+
+  it('preserves saved framing when auto-fit has no model bounds', () => {
+    const viewer = new Viewer()
+    const savedPosition = { x: 1, y: 2, z: 3, scale: 1 }
+    const savedTarget = { x: 0.2, y: 1.2, z: 0 }
+    settingsStore.setState({
+      fixedCharacterPosition: true,
+      characterPosition: savedPosition,
+      characterRotation: savedTarget,
+    })
+
+    expect(viewer.autoFitCameraToModel()).toBe(false)
+    expect(settingsStore.getState().fixedCharacterPosition).toBe(true)
+    expect(settingsStore.getState().characterPosition).toEqual(savedPosition)
+    expect(settingsStore.getState().characterRotation).toEqual(savedTarget)
+    expect(viewer.fixCameraPosition()).toBe(false)
+    expect(viewer.unfixCameraPosition()).toBe(false)
   })
 
   it('fails closed when finite inputs overflow derived camera geometry', () => {

@@ -6,7 +6,9 @@ import {
   DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
   DEFAULT_PROJECTION_EFFECTS_SETTINGS,
 } from '@/features/projectionEffects/settings'
+import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
+import toastStore from '@/features/stores/toast'
 
 describe('ProjectionVisualCalibrationPanel', () => {
   const initialCameraHorizontalFov =
@@ -15,6 +17,10 @@ describe('ProjectionVisualCalibrationPanel', () => {
   const initialProjectionEffects = settingsStore.getState().projectionEffects
   const initialSpeechBubblePresentation =
     settingsStore.getState().speechBubblePresentation
+  const initialFixedCharacterPosition =
+    settingsStore.getState().fixedCharacterPosition
+  const initialCharacterPosition = settingsStore.getState().characterPosition
+  const initialCharacterRotation = settingsStore.getState().characterRotation
 
   afterEach(() => {
     cleanup()
@@ -24,6 +30,9 @@ describe('ProjectionVisualCalibrationPanel', () => {
       lightingIntensity: initialLightingIntensity,
       projectionEffects: initialProjectionEffects,
       speechBubblePresentation: initialSpeechBubblePresentation,
+      fixedCharacterPosition: initialFixedCharacterPosition,
+      characterPosition: initialCharacterPosition,
+      characterRotation: initialCharacterRotation,
     })
   })
 
@@ -35,6 +44,15 @@ describe('ProjectionVisualCalibrationPanel', () => {
       screen.queryByRole('dialog', {
         name: '投影キャリブレーションと外観',
       })
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps VRM framing actions out of non-VRM operator modes', () => {
+    render(<ProjectionVisualCalibrationPanel enabled framingEnabled={false} />)
+    fireEvent.click(screen.getByText('投影調整'))
+
+    expect(
+      screen.queryByText('モデル全体へ自動フィット')
     ).not.toBeInTheDocument()
   })
 
@@ -60,7 +78,7 @@ describe('ProjectionVisualCalibrationPanel', () => {
     fireEvent.change(screen.getByLabelText('VRM照明の強度スライダー'), {
       target: { value: '1.5' },
     })
-    fireEvent.click(screen.getByText('開いた時の値に戻す'))
+    fireEvent.click(screen.getByText('画角・外観を開いた時へ戻す'))
 
     expect(settingsStore.getState().cameraHorizontalFov).toBe(45)
     expect(settingsStore.getState().lightingIntensity).toBe(2)
@@ -102,6 +120,63 @@ describe('ProjectionVisualCalibrationPanel', () => {
 
     expect(settingsStore.getState().cameraHorizontalFov).toBe(45)
     expect(settingsStore.getState().lightingIntensity).toBe(1.7)
+  })
+
+  it('routes framing actions to the existing viewer authority only', () => {
+    const viewer = homeStore.getState().viewer
+    const fixCameraPosition = jest
+      .spyOn(viewer, 'fixCameraPosition')
+      .mockImplementation(() => {
+        settingsStore.setState({ fixedCharacterPosition: true })
+        return true
+      })
+    const unfixCameraPosition = jest
+      .spyOn(viewer, 'unfixCameraPosition')
+      .mockImplementation(() => {
+        settingsStore.setState({ fixedCharacterPosition: false })
+        return true
+      })
+    const autoFitCameraToModel = jest
+      .spyOn(viewer, 'autoFitCameraToModel')
+      .mockImplementation(() => {
+        settingsStore.setState({ fixedCharacterPosition: false })
+        return true
+      })
+    settingsStore.setState({ fixedCharacterPosition: false })
+    render(<ProjectionVisualCalibrationPanel enabled />)
+    fireEvent.click(screen.getByText('投影調整'))
+
+    fireEvent.click(screen.getByText('現在の構図を固定'))
+    expect(fixCameraPosition).toHaveBeenCalledTimes(1)
+    expect(
+      screen.getByText('固定解除', { selector: 'button' })
+    ).not.toBeDisabled()
+
+    fireEvent.click(screen.getByText('固定解除'))
+    expect(unfixCameraPosition).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByText('モデル全体へ自動フィット'))
+    expect(autoFitCameraToModel).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports auto-fit failure without claiming completion', () => {
+    const viewer = homeStore.getState().viewer
+    jest.spyOn(viewer, 'autoFitCameraToModel').mockReturnValue(false)
+    const addToast = jest.spyOn(toastStore.getState(), 'addToast')
+    render(<ProjectionVisualCalibrationPanel enabled />)
+    fireEvent.click(screen.getByText('投影調整'))
+
+    fireEvent.click(screen.getByText('モデル全体へ自動フィット'))
+
+    expect(addToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        message: expect.stringContaining('構図を変更できませんでした'),
+      })
+    )
+    expect(addToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'モデル全体へ自動フィットしました' })
+    )
   })
 
   it('updates the bounded projection effect selection and parameters through the same owner', () => {
@@ -163,7 +238,7 @@ describe('ProjectionVisualCalibrationPanel', () => {
       target: { value: '0.2' },
     })
 
-    fireEvent.click(screen.getByText('開いた時の値に戻す'))
+    fireEvent.click(screen.getByText('画角・外観を開いた時へ戻す'))
 
     expect(settingsStore.getState().projectionEffects).toEqual(opening)
   })
@@ -185,7 +260,15 @@ describe('ProjectionVisualCalibrationPanel', () => {
   })
 
   it('distinguishes the opening snapshot from canonical defaults', () => {
-    settingsStore.setState({ cameraHorizontalFov: 45, lightingIntensity: 2 })
+    const savedFraming = { x: 1, y: 2, z: 3, scale: 1 }
+    const savedTarget = { x: 0.1, y: 1.1, z: 0 }
+    settingsStore.setState({
+      cameraHorizontalFov: 45,
+      lightingIntensity: 2,
+      fixedCharacterPosition: true,
+      characterPosition: savedFraming,
+      characterRotation: savedTarget,
+    })
     render(<ProjectionVisualCalibrationPanel enabled />)
     fireEvent.click(screen.getByText('投影調整'))
 
@@ -193,16 +276,19 @@ describe('ProjectionVisualCalibrationPanel', () => {
     fireEvent.change(screen.getByLabelText('VRM照明の強度スライダー'), {
       target: { value: '1.5' },
     })
-    fireEvent.click(screen.getByText('開いた時の値に戻す'))
+    fireEvent.click(screen.getByText('画角・外観を開いた時へ戻す'))
     expect(settingsStore.getState().cameraHorizontalFov).toBe(45)
     expect(settingsStore.getState().lightingIntensity).toBe(2)
 
-    fireEvent.click(screen.getByText('既定値へ戻す'))
+    fireEvent.click(screen.getByText('画角・外観を既定値へ戻す'))
     expect(settingsStore.getState().cameraHorizontalFov).toBe(35)
     expect(settingsStore.getState().lightingIntensity).toBe(1)
     expect(settingsStore.getState().projectionEffects).toEqual(
       DEFAULT_PROJECTION_EFFECTS_SETTINGS
     )
+    expect(settingsStore.getState().fixedCharacterPosition).toBe(true)
+    expect(settingsStore.getState().characterPosition).toEqual(savedFraming)
+    expect(settingsStore.getState().characterRotation).toEqual(savedTarget)
   })
 
   it('updates bounded bubble layout and timing through the same operator settings owner', () => {
@@ -268,7 +354,7 @@ describe('ProjectionVisualCalibrationPanel', () => {
     expect(screen.getByLabelText('吹き出し文字プレビュー')).toHaveTextContent(
       '長い文章でも'
     )
-    fireEvent.click(screen.getByText('既定値へ戻す'))
+    fireEvent.click(screen.getByText('画角・外観を既定値へ戻す'))
     expect(settingsStore.getState().speechBubblePresentation).toEqual(
       DEFAULT_SPEECH_BUBBLE_PRESENTATION
     )

@@ -76,21 +76,11 @@ body {
     --projection-visual-input-bottom-safe: clamp(92px, 10vh, 118px);
     --projection-visual-render-controls-bottom-safe: clamp(140px, 14vh, 170px);
     --projection-visual-render-controls-stack-height: 76px;
-    --projection-visual-vrm-position-controls-bottom: calc(
-      var(--projection-visual-render-controls-bottom-safe) +
-        var(--projection-visual-render-controls-stack-height) + 12px
-    );
   }
 
   .projection-visual .td-message-input-shell {
     width: min(112rem, calc(100vw - 2rem)) !important;
     max-width: calc(100vw - 2rem) !important;
-  }
-
-  .projection-visual-vrm-position-controls {
-    position: absolute;
-    bottom: var(--projection-visual-vrm-position-controls-bottom);
-    left: var(--projection-visual-edge-inset);
   }
 
   .td-assistant-bubble {

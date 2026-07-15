@@ -667,6 +667,7 @@ export class Viewer {
     camera.updateProjectionMatrix()
     controls.target.set(fit.target.x, fit.target.y, fit.target.z)
     controls.update()
+    this.saveCameraPosition()
     return true
   }
 
@@ -688,23 +689,37 @@ export class Viewer {
   /**
    * 現在のカメラ位置を設定に保存する
    */
-  public saveCameraPosition() {
-    if (!this._camera || !this._cameraControls) return
+  public saveCameraPosition(): boolean {
+    if (!this._camera || !this._cameraControls) return false
 
     const settings = settingsStore.getState()
+    const nextPosition = {
+      x: this._camera.position.x,
+      y: this._camera.position.y,
+      z: this._camera.position.z,
+      scale: settings.characterPosition?.scale ?? 1,
+    }
+    const nextTarget = {
+      x: this._cameraControls.target.x,
+      y: this._cameraControls.target.y,
+      z: this._cameraControls.target.z,
+    }
+    if (
+      settings.characterPosition.x === nextPosition.x &&
+      settings.characterPosition.y === nextPosition.y &&
+      settings.characterPosition.z === nextPosition.z &&
+      settings.characterPosition.scale === nextPosition.scale &&
+      settings.characterRotation.x === nextTarget.x &&
+      settings.characterRotation.y === nextTarget.y &&
+      settings.characterRotation.z === nextTarget.z
+    ) {
+      return true
+    }
     settingsStore.setState({
-      characterPosition: {
-        x: this._camera.position.x,
-        y: this._camera.position.y,
-        z: this._camera.position.z,
-        scale: settings.characterPosition?.scale ?? 1,
-      },
-      characterRotation: {
-        x: this._cameraControls.target.x,
-        y: this._cameraControls.target.y,
-        z: this._cameraControls.target.z,
-      },
+      characterPosition: nextPosition,
+      characterRotation: nextTarget,
     })
+    return true
   }
 
   /**
@@ -739,22 +754,35 @@ export class Viewer {
   /**
    * カメラ位置を固定する
    */
-  public fixCameraPosition() {
-    this.saveCameraPosition()
+  public fixCameraPosition(): boolean {
+    if (!this.saveCameraPosition() || !this._cameraControls) return false
     settingsStore.setState({ fixedCharacterPosition: true })
-    if (this._cameraControls) {
-      this._cameraControls.enabled = false
-    }
+    this._cameraControls.enabled = false
+    return true
   }
 
   /**
    * カメラ位置の固定を解除する
    */
-  public unfixCameraPosition() {
+  public unfixCameraPosition(): boolean {
+    if (!this._cameraControls) return false
     settingsStore.setState({ fixedCharacterPosition: false })
-    if (this._cameraControls) {
+    this._cameraControls.enabled = true
+    return true
+  }
+
+  /**
+   * 現在のモデル境界へカメラを合わせる。失敗時は保存済み構図を変更しない。
+   */
+  public autoFitCameraToModel(): boolean {
+    if (!this.fitCameraToModel() || !this._cameraControls) return false
+    if (settingsStore.getState().fixedCharacterPosition) {
+      settingsStore.setState({ fixedCharacterPosition: false })
+    }
+    if (!this._cameraControls.enabled) {
       this._cameraControls.enabled = true
     }
+    return true
   }
 
   /**

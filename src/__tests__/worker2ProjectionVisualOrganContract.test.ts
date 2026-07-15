@@ -1623,23 +1623,24 @@ describe('worker-2 projection visual organ contract', () => {
     expect(vrmViewerSource).toContain('motionStimulusAssetPathRef')
   })
 
-  it('keeps Projection Visual VRM position controls out of the bottom input lane', () => {
-    const controlsSource = readSource(
-      'src/components/projectionVisualVrmPositionControls.tsx'
+  it('keeps Projection Visual framing controls in the operator-only calibration surface', () => {
+    const panelSource = readSource(
+      'src/components/projectionVisualCalibrationPanel.tsx'
     )
+    const pageSource = readSource('src/pages/projection-visual.tsx')
     const stylesSource = readSource('src/styles/globals.css')
 
-    expect(controlsSource).toContain('projection-visual-vrm-position-controls')
-    expect(controlsSource).not.toContain('absolute bottom-4 left-4')
+    expect(panelSource).toContain(
+      'data-projection-camera-framing-controls="operator-only"'
+    )
+    expect(panelSource).toContain("runProjectionFramingAction('auto-fit')")
+    expect(pageSource).not.toContain('ProjectionVisualVrmPositionControls')
+    expect(stylesSource).not.toContain(
+      '--projection-visual-vrm-position-controls-bottom'
+    )
     expect(stylesSource).toContain('--projection-visual-input-bottom-safe')
     expect(stylesSource).toContain(
       '--projection-visual-render-controls-bottom-safe'
-    )
-    expect(stylesSource).toContain(
-      '--projection-visual-vrm-position-controls-bottom'
-    )
-    expect(stylesSource).toContain(
-      'bottom: var(--projection-visual-vrm-position-controls-bottom)'
     )
     expect(stylesSource).toContain('.projection-visual .td-message-input-shell')
   })

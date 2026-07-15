@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 
+import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
+import toastStore from '@/features/stores/toast'
 import {
   CAMERA_HORIZONTAL_FOV_DEFAULT,
   CAMERA_HORIZONTAL_FOV_MAX,
@@ -31,6 +33,7 @@ import {
 
 type ProjectionVisualCalibrationPanelProps = {
   enabled: boolean
+  framingEnabled?: boolean
 }
 
 type CalibrationSnapshot = {
@@ -45,6 +48,32 @@ const BUBBLE_PREVIEW_REFERENCE_VIEWPORT = { width: 1366, height: 768 }
 const SHORT_PREVIEW = '今日はどんなことを一緒に試しましょうか。'
 const LONG_PREVIEW =
   '長い文章でも、読みやすい文字の大きさと行間を保ちながら、吹き出しの中で順番に読めるように表示します。位置や大きさ、喉の向きも投影環境に合わせて調整できます。'
+
+type ProjectionFramingAction = 'fix' | 'unfix' | 'auto-fit'
+
+const runProjectionFramingAction = (action: ProjectionFramingAction) => {
+  const { viewer } = homeStore.getState()
+  let succeeded = false
+  if (action === 'fix') {
+    succeeded = viewer.fixCameraPosition()
+  } else if (action === 'unfix') {
+    succeeded = viewer.unfixCameraPosition()
+  } else {
+    succeeded = viewer.autoFitCameraToModel()
+  }
+
+  toastStore.getState().addToast({
+    message: succeeded
+      ? action === 'fix'
+        ? '現在の投影構図を固定しました'
+        : action === 'unfix'
+          ? '投影構図の固定を解除しました'
+          : 'モデル全体へ自動フィットしました'
+      : 'モデルの準備が完了していないため、構図を変更できませんでした',
+    type: succeeded ? (action === 'fix' ? 'success' : 'info') : 'error',
+    tag: `projection-calibration-framing-${action}`,
+  })
+}
 
 const applyCameraHorizontalFov = (value: number) => {
   if (!isCameraHorizontalFov(value)) return false
@@ -108,8 +137,10 @@ const applySpeechBubblePresentation = (
 
 export function ProjectionVisualCalibrationPanel({
   enabled,
+  framingEnabled = true,
 }: ProjectionVisualCalibrationPanelProps) {
   const cameraHorizontalFov = settingsStore((s) => s.cameraHorizontalFov)
+  const fixedCharacterPosition = settingsStore((s) => s.fixedCharacterPosition)
   const storedLightingIntensity = settingsStore((s) => s.lightingIntensity)
   const lightingIntensity = isLightingIntensity(storedLightingIntensity)
     ? storedLightingIntensity
@@ -324,6 +355,52 @@ export function ProjectionVisualCalibrationPanel({
             <p className="mt-2 text-xs leading-5 text-cyan-100/65">
               30°は遠距離投影、35°は既定、45°は近距離表示の目安です。
             </p>
+            {framingEnabled && (
+              <div
+                className="mt-3 rounded-lg border border-cyan-100/20 bg-slate-900/60 p-3"
+                data-projection-camera-framing-controls="operator-only"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-bold">モデル構図</span>
+                  <span
+                    className="rounded-full border border-cyan-100/25 px-2 py-1 text-xs text-cyan-100/80"
+                    data-projection-camera-framing-state={
+                      fixedCharacterPosition ? 'fixed' : 'adjustable'
+                    }
+                  >
+                    {fixedCharacterPosition ? '固定中' : '調整可'}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-cyan-100/65">
+                  固定中はカメラ距離を保つため、狭い画角ではモデルが切れる場合があります。
+                </p>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <button
+                    type="button"
+                    onClick={() => runProjectionFramingAction('unfix')}
+                    disabled={!fixedCharacterPosition}
+                    className="rounded-md border border-cyan-100/30 px-3 py-2 text-xs font-bold hover:bg-cyan-50/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    固定解除
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runProjectionFramingAction('fix')}
+                    disabled={fixedCharacterPosition}
+                    className="rounded-md border border-cyan-100/30 px-3 py-2 text-xs font-bold hover:bg-cyan-50/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    現在の構図を固定
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runProjectionFramingAction('auto-fit')}
+                    className="rounded-md border border-cyan-100/30 px-3 py-2 text-xs font-bold hover:bg-cyan-50/10"
+                  >
+                    モデル全体へ自動フィット
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="mb-4 rounded-xl border border-cyan-100/20 p-3">
@@ -762,14 +839,14 @@ export function ProjectionVisualCalibrationPanel({
               onClick={restoreOpenSnapshot}
               className="rounded-lg border border-cyan-100/30 px-3 py-2 text-xs font-bold hover:bg-cyan-50/10"
             >
-              開いた時の値に戻す
+              画角・外観を開いた時へ戻す
             </button>
             <button
               type="button"
               onClick={restoreDefaults}
               className="rounded-lg border border-cyan-100/30 px-3 py-2 text-xs font-bold hover:bg-cyan-50/10"
             >
-              既定値へ戻す
+              画角・外観を既定値へ戻す
             </button>
           </div>
         </section>

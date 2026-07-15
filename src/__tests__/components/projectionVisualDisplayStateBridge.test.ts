@@ -25,6 +25,8 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
   const originalProjectionEffects = settingsStore.getState().projectionEffects
   const originalFixedCharacterPosition =
     settingsStore.getState().fixedCharacterPosition
+  const originalCharacterPosition = settingsStore.getState().characterPosition
+  const originalCharacterRotation = settingsStore.getState().characterRotation
   const originalSpeechBubblePresentation =
     settingsStore.getState().speechBubblePresentation
 
@@ -39,6 +41,8 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
       lightingIntensity: originalLightingIntensity,
       projectionEffects: originalProjectionEffects,
       fixedCharacterPosition: originalFixedCharacterPosition,
+      characterPosition: originalCharacterPosition,
+      characterRotation: originalCharacterRotation,
       speechBubblePresentation: originalSpeechBubblePresentation,
     })
     homeStore.setState({ isSpeaking: false })
@@ -52,6 +56,28 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
     settingsStore.setState({ cameraHorizontalFov: 45 })
 
     expect(readOperatorDisplayState().settings.cameraHorizontalFov).toBe(45)
+  })
+
+  it('publishes one fitted operator framing and applies the same framing to passive output', () => {
+    const characterPosition = { x: 1, y: 2, z: 3, scale: 1 }
+    const characterRotation = { x: 0.1, y: 1.1, z: 0 }
+    settingsStore.setState({ characterPosition, characterRotation })
+    const operatorState = readOperatorDisplayState()
+
+    settingsStore.setState({
+      fixedCharacterPosition: false,
+      characterPosition: { x: 0, y: 0, z: 0, scale: 1 },
+      characterRotation: { x: 0, y: 0, z: 0 },
+    })
+    applyPassiveDisplayState(operatorState)
+
+    expect(settingsStore.getState().characterPosition).toEqual(
+      characterPosition
+    )
+    expect(settingsStore.getState().characterRotation).toEqual(
+      characterRotation
+    )
+    expect(settingsStore.getState().fixedCharacterPosition).toBe(true)
   })
 
   it('publishes and applies one bounded operator-owned projection effect contract', () => {
