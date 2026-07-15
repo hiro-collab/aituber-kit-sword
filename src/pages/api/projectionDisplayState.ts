@@ -9,7 +9,10 @@ import {
   sanitizeSpeechOutputSummary,
   type SpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
-import { isCameraHorizontalFov } from '@/features/stores/settingsValidation'
+import {
+  isCameraHorizontalFov,
+  isLightingIntensity,
+} from '@/features/stores/settingsValidation'
 
 type CharacterPosition = {
   x: number
@@ -142,7 +145,9 @@ const sanitizeSettings = (value: unknown): ProjectionDisplaySettings => {
         : undefined,
     characterPosition: readPosition(value.characterPosition),
     characterRotation: readRotation(value.characterRotation),
-    lightingIntensity: clampNumber(value.lightingIntensity, 1, 0, 3),
+    ...(isLightingIntensity(value.lightingIntensity) && {
+      lightingIntensity: value.lightingIntensity,
+    }),
     ...(isCameraHorizontalFov(value.cameraHorizontalFov) && {
       cameraHorizontalFov: value.cameraHorizontalFov,
     }),

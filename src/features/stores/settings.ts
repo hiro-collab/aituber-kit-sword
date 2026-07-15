@@ -44,6 +44,8 @@ import {
 import {
   CAMERA_HORIZONTAL_FOV_DEFAULT,
   isCameraHorizontalFov,
+  isLightingIntensity,
+  LIGHTING_INTENSITY_DEFAULT,
 } from './settingsValidation'
 
 export {
@@ -577,8 +579,12 @@ const getInitialValuesFromEnv = (): SettingsState => ({
     )
     return isCameraHorizontalFov(value) ? value : CAMERA_HORIZONTAL_FOV_DEFAULT
   })(),
-  lightingIntensity:
-    parseFloat(process.env.NEXT_PUBLIC_LIGHTING_INTENSITY || '1.0') || 1.0,
+  lightingIntensity: (() => {
+    const value = Number(
+      process.env.NEXT_PUBLIC_LIGHTING_INTENSITY || LIGHTING_INTENSITY_DEFAULT
+    )
+    return isLightingIntensity(value) ? value : LIGHTING_INTENSITY_DEFAULT
+  })(),
   poseAdjustMode: false,
 
   // General
@@ -946,6 +952,12 @@ const mergePersistedSettings = (
   )
     ? persistedCameraHorizontalFov
     : currentState.cameraHorizontalFov
+  const persistedLightingIntensity = migratedState?.lightingIntensity
+  mergedState.lightingIntensity = isLightingIntensity(
+    persistedLightingIntensity
+  )
+    ? persistedLightingIntensity
+    : currentState.lightingIntensity
   const systemCellAIService = getConfiguredSystemCellAIService()
   if (systemCellAIService) {
     mergedState.selectAIService = systemCellAIService

@@ -22,6 +22,7 @@ import { ProjectionVisualHud } from '@/components/projectionVisualHud'
 import { ProjectionVisualAssistantBubble } from '@/components/projectionVisualAssistantBubble'
 import { ProjectionVisualDisplayStateBridge } from '@/components/projectionVisualDisplayStateBridge'
 import { ProjectionVisualVrmPositionControls } from '@/components/projectionVisualVrmPositionControls'
+import { ProjectionVisualCalibrationPanel } from '@/components/projectionVisualCalibrationPanel'
 import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
 import toastStore from '@/features/stores/toast'
@@ -269,6 +270,9 @@ const ProjectionVisual = () => {
               ? 'passive'
               : 'operator'
         }
+      />
+      <ProjectionVisualCalibrationPanel
+        enabled={!isDisplayOnlyMode && controlOwner.isOwner}
       />
       {!isDisplayOnlyMode &&
         (controlOwner.isOwner ? (

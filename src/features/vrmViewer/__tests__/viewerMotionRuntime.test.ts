@@ -34,6 +34,7 @@ describe('VRM camera fit', () => {
   const originalCameraSettings = {
     fixedCharacterPosition: settingsStore.getState().fixedCharacterPosition,
     cameraHorizontalFov: settingsStore.getState().cameraHorizontalFov,
+    lightingIntensity: settingsStore.getState().lightingIntensity,
   }
 
   afterEach(() => {
@@ -168,6 +169,21 @@ describe('VRM camera fit', () => {
     }
   )
 
+  it('uses the canonical default when raw stored lighting is invalid at construction', () => {
+    settingsStore.setState({ lightingIntensity: 99 })
+
+    const viewer = new Viewer()
+    const directionalLight = (
+      viewer as unknown as { _directionalLight: THREE.DirectionalLight }
+    )._directionalLight
+    const ambientLight = (
+      viewer as unknown as { _ambientLight: THREE.AmbientLight }
+    )._ambientLight
+
+    expect(directionalLight.intensity).toBe(1.8)
+    expect(ambientLight.intensity).toBe(1.2)
+  })
+
   it.each([
     ['unlocked', false, 1],
     ['fixed', true, 0],
@@ -207,6 +223,32 @@ describe('VRM camera fit', () => {
     expect(camera.fov).toBe(20)
     expect(updateProjectionMatrix).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['numeric string', '1.5'],
+    ['object', { value: 1.5 }],
+    ['null', null],
+    ['not finite', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+    ['below minimum', 0.09],
+    ['above maximum', 3.01],
+  ])(
+    'rejects an invalid lighting update at the viewer boundary: %s',
+    (_label, value) => {
+      const viewer = new Viewer()
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.8)
+      const ambientLight = new THREE.AmbientLight(0xffffff, 1.2)
+      Object.assign(viewer, {
+        _directionalLight: directionalLight,
+        _ambientLight: ambientLight,
+      })
+
+      viewer.updateLightingIntensity(value as unknown as number)
+
+      expect(directionalLight.intensity).toBe(1.8)
+      expect(ambientLight.intensity).toBe(1.2)
+    }
+  )
 
   it('rejects an out-of-policy raw store FOV during resize', () => {
     const viewer = new Viewer()

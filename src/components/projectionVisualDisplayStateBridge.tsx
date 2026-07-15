@@ -3,7 +3,10 @@ import { useEffect } from 'react'
 import homeStore from '@/features/stores/home'
 import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
-import { isCameraHorizontalFov } from '@/features/stores/settingsValidation'
+import {
+  isCameraHorizontalFov,
+  isLightingIntensity,
+} from '@/features/stores/settingsValidation'
 import { getLatestAssistantMessageEntry } from '@/utils/assistantMessageUtils'
 import {
   readWindowSpeechOutputDisplayState,
@@ -129,19 +132,13 @@ export const applyPassiveDisplayState = (
     ...(settings.characterRotation && {
       characterRotation: settings.characterRotation,
     }),
-    ...(typeof settings.lightingIntensity === 'number' && {
+    ...(isLightingIntensity(settings.lightingIntensity) && {
       lightingIntensity: settings.lightingIntensity,
     }),
     ...(isCameraHorizontalFov(settings.cameraHorizontalFov) && {
       cameraHorizontalFov: settings.cameraHorizontalFov,
     }),
   })
-
-  const viewer = homeStore.getState().viewer
-  viewer.restoreCameraPosition()
-  if (typeof settings.lightingIntensity === 'number') {
-    viewer.updateLightingIntensity(settings.lightingIntensity)
-  }
 }
 
 export const ProjectionVisualDisplayStateBridge = ({

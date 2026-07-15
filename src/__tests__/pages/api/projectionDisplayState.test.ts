@@ -80,7 +80,7 @@ describe('/api/projectionDisplayState', () => {
             fixedCharacterPosition: false,
             characterPosition: { x: 100, y: -100, z: 2, scale: 99 },
             characterRotation: { x: 1, y: 2, z: 3 },
-            lightingIntensity: 99,
+            lightingIntensity: 3,
             cameraHorizontalFov: 45,
           },
         },
@@ -168,6 +168,36 @@ describe('/api/projectionDisplayState', () => {
         }
       ).state.settings
     ).not.toHaveProperty('cameraHorizontalFov')
+  })
+
+  it.each([
+    ['numeric string', '1.5'],
+    ['object', { value: 1.5 }],
+    ['null', null],
+    ['not finite', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+    ['below minimum', 0.09],
+    ['above maximum', 3.01],
+  ])('rejects an invalid synchronized lighting value: %s', (_label, value) => {
+    const handler = require('@/pages/api/projectionDisplayState').default
+    const postRes = createMockRes()
+
+    handler(
+      createMockReq({
+        method: 'POST',
+        body: { settings: { lightingIntensity: value } },
+      }),
+      postRes
+    )
+
+    expect(postRes._status).toBe(200)
+    expect(
+      (
+        postRes._json as {
+          state: { settings: { lightingIntensity?: number } }
+        }
+      ).state.settings
+    ).not.toHaveProperty('lightingIntensity')
   })
 
   it('redacts unsafe assistant message ids from the passive display state', () => {

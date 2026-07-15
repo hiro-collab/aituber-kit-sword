@@ -711,8 +711,6 @@ const Character = () => {
     customPresetName4,
     customPresetName5,
     selectedPresetIndex,
-    cameraHorizontalFov,
-    lightingIntensity,
     poseAdjustMode,
     thinkingPoseEnabled,
     thinkingPoseId,
@@ -1305,73 +1303,6 @@ const Character = () => {
                 {t('CopyEnvVars')}
               </button>
             </div>
-          </div>
-        )}
-
-        {modelType === 'vrm' && (
-          <div className="my-6">
-            <div className="text-xl font-bold mb-4">
-              {isJa ? 'VRMカメラの水平画角' : 'VRM camera horizontal FOV'}
-            </div>
-            <div className="mb-4 text-sm text-gray-600">
-              {isJa
-                ? 'プロジェクターでは30°、近距離ディスプレイでは45°、従来に近い表示は35°が目安です。'
-                : 'Use 30° for a projector, 45° for a nearby display, or 35° for the legacy-like view.'}
-            </div>
-            <select
-              className="text-ellipsis px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
-              value={cameraHorizontalFov}
-              onChange={(event) =>
-                settingsStore.setState({
-                  cameraHorizontalFov: Number(event.target.value),
-                })
-              }
-              aria-label={
-                isJa ? 'VRMカメラの水平画角' : 'VRM camera horizontal FOV'
-              }
-            >
-              <option value={30}>
-                {isJa ? '30°（投影・狭角）' : '30° (projector)'}
-              </option>
-              <option value={35}>
-                {isJa ? '35°（従来相当）' : '35° (legacy-like)'}
-              </option>
-              <option value={45}>
-                {isJa ? '45°（標準）' : '45° (standard)'}
-              </option>
-            </select>
-          </div>
-        )}
-
-        {/* VRM Lighting Controls */}
-        {modelType === 'vrm' && (
-          <div className="my-6">
-            <div className="text-xl font-bold mb-4">照明の強度</div>
-            <div className="mb-4">
-              VRMキャラクターの照明の明るさを調整します。
-            </div>
-            <div className="font-bold">
-              照明の強度: {lightingIntensity.toFixed(1)}
-            </div>
-            <input
-              type="range"
-              min="0.1"
-              max="3.0"
-              step="0.1"
-              value={lightingIntensity}
-              onChange={(e) => {
-                const intensity = parseFloat(e.target.value)
-                settingsStore.setState({ lightingIntensity: intensity })
-                const { viewer } = homeStore.getState()
-                if (
-                  viewer &&
-                  typeof viewer.updateLightingIntensity === 'function'
-                ) {
-                  viewer.updateLightingIntensity(intensity)
-                }
-              }}
-              className="mt-2 mb-4 input-range"
-            />
           </div>
         )}
 

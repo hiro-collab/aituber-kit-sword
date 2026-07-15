@@ -15,6 +15,7 @@ describe('settingsStore persistence', () => {
     'NEXT_PUBLIC_THOUGHT_CORE_BASE_URL',
     'NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE',
     'NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV',
+    'NEXT_PUBLIC_LIGHTING_INTENSITY',
   ] as const
   const originalEnv = Object.fromEntries(
     managedEnvNames.map((name) => [name, process.env[name]])
@@ -203,6 +204,47 @@ describe('settingsStore persistence', () => {
       const settingsStore = loadStore()
 
       expect(settingsStore.getState().cameraHorizontalFov).toBe(35)
+    }
+  )
+
+  it('rehydrates a valid persisted projector lighting intensity', () => {
+    process.env.NEXT_PUBLIC_LIGHTING_INTENSITY = '1.2'
+    setPersistedState({ lightingIntensity: 2.4 })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().lightingIntensity).toBe(2.4)
+  })
+
+  it.each([
+    ['numeric string', '1.5'],
+    ['object', { value: 1.5 }],
+    ['null', null],
+    ['not finite', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+    ['below minimum', 0.09],
+    ['above maximum', 3.01],
+  ])(
+    'rejects an invalid persisted projector lighting value: %s',
+    (_label, persistedValue) => {
+      process.env.NEXT_PUBLIC_LIGHTING_INTENSITY = '1.2'
+      setPersistedState({ lightingIntensity: persistedValue })
+
+      const settingsStore = loadStore()
+
+      expect(settingsStore.getState().lightingIntensity).toBe(1.2)
+    }
+  )
+
+  it.each(['0', '3.01', 'Infinity', 'NaN', '1.2x'])(
+    'fails closed to the default for an invalid environment lighting value: %s',
+    (environmentValue) => {
+      process.env.NEXT_PUBLIC_LIGHTING_INTENSITY = environmentValue
+      setPersistedState({ characterName: 'invalid-env-lighting' })
+
+      const settingsStore = loadStore()
+
+      expect(settingsStore.getState().lightingIntensity).toBe(1)
     }
   )
 

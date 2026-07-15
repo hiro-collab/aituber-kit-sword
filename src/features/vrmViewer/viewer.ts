@@ -8,6 +8,8 @@ import settingsStore from '@/features/stores/settings'
 import {
   CAMERA_HORIZONTAL_FOV_DEFAULT,
   isCameraHorizontalFov,
+  isLightingIntensity,
+  LIGHTING_INTENSITY_DEFAULT,
 } from '@/features/stores/settingsValidation'
 import { calculateCameraFit, horizontalToVerticalFovDegrees } from './cameraFit'
 import {
@@ -136,7 +138,10 @@ export class Viewer {
     this._scene = scene
 
     // light
-    const lightingIntensity = settingsStore.getState().lightingIntensity
+    const storedLightingIntensity = settingsStore.getState().lightingIntensity
+    const lightingIntensity = isLightingIntensity(storedLightingIntensity)
+      ? storedLightingIntensity
+      : LIGHTING_INTENSITY_DEFAULT
     this._directionalLight = new THREE.DirectionalLight(
       0xffffff,
       1.8 * lightingIntensity
@@ -747,6 +752,7 @@ export class Viewer {
    * ライトの強度を更新する
    */
   public updateLightingIntensity(intensity: number) {
+    if (!isLightingIntensity(intensity)) return
     if (this._directionalLight) {
       this._directionalLight.intensity = 1.8 * intensity
     }
