@@ -52,7 +52,6 @@
     "@ai-sdk/perplexity": "^3.0.17",
     "@ai-sdk/xai": "^3.0.3",
     "@anthropic-ai/sdk": "^0.20.8",
-    "@azure/identity": "^4.13.0",
     "@charcoal-ui/icons": "^5.1.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@google-cloud/text-to-speech": "^5.0.1",
