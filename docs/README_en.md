@@ -139,7 +139,7 @@ For detailed usage and configuration instructions, please visit the [Documentati
 ### Development Environment
 
 - Node.js: 24.x
-- npm: ^11.6.2
+- npm: `>=11.16.0 <13` (required to enforce the project's `allowScripts` policy)
 
 ### Installation Steps
 

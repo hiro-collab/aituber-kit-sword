@@ -139,7 +139,7 @@ Szczegółowe instrukcje użytkowania i konfiguracji można znaleźć w [dokumen
 ### Środowisko programistyczne
 
 - Node.js: 24.x
-- npm: ^11.6.2
+- npm: `>=11.16.0 <13` (wymagane do egzekwowania projektowej polityki `allowScripts`)
 
 ### Instrukcje instalacji
 
