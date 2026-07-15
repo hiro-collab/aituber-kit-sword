@@ -13,13 +13,13 @@
     "canvas@3.2.0": true,
     "electron@39.2.7": true,
     "esbuild@0.25.4": true,
-    "esbuild@0.27.3": true,
+    "esbuild@0.28.1": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "protobufjs": false,
     "sharp@0.34.5": true,
     "unrs-resolver@1.7.2": true,
-    "workerd@1.20260210.0": true
+    "workerd@1.20260617.1": true
   },
   "scripts": {
     "dev": "next dev",
@@ -62,7 +62,7 @@
     "@marp-team/marp-core": "^3.9.0",
     "@marp-team/marpit": "^3.2.0",
     "@mastra/core": "^1.1.0",
-    "@opennextjs/cloudflare": "^1.16.4",
+    "@opennextjs/cloudflare": "^1.17.1",
     "@openrouter/ai-sdk-provider": "^2.1.1",
     "@pixiv/three-vrm": "^3.4.4",
     "@supabase/supabase-js": "^2.89.0",
@@ -136,7 +136,14 @@
     "typescript": "5.0.2",
     "wait-on": "^7.2.0",
     "web-streams-polyfill": "^4.2.0",
-    "wrangler": "^4.64.0"
+    "wrangler": "4.93.0"
+  },
+  "overrides": {
+    "wrangler": {
+      "esbuild": "0.28.1",
+      "miniflare": "4.20260617.0",
+      "workerd": "1.20260617.1"
+    }
   },
   "engines": {
     "node": "24.x",
