@@ -108,7 +108,8 @@ const getLineHeight = (style: CSSStyleDeclaration) => {
 const paginateMeasuredText = (
   text: string,
   measureElement: HTMLDivElement,
-  maxVisibleLines: number
+  maxVisibleLines: number,
+  visibleTextHeightPx: number
 ): BubblePage[] => {
   const segments = Array.from(text)
   if (segments.length === 0) {
@@ -117,11 +118,15 @@ const paginateMeasuredText = (
 
   const style = window.getComputedStyle(measureElement)
   const lineHeight = getLineHeight(style)
-  const maxHeight =
+  const lineLimitedHeight =
     lineHeight * maxVisibleLines +
     getNumericStyle(style, 'padding-top') +
     getNumericStyle(style, 'padding-bottom') +
     MEASURE_EPSILON_PX
+  const maxHeight =
+    visibleTextHeightPx > 0
+      ? Math.min(lineLimitedHeight, visibleTextHeightPx)
+      : lineLimitedHeight
   const pages: BubblePage[] = []
   let start = 0
 
@@ -188,6 +193,7 @@ export const ProjectionVisualAssistantBubble = ({
     storedBubblePresentation
   )
   const bubbleRef = useRef<HTMLElement | null>(null)
+  const visibleTextRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const pageVisibleRef = useRef({
     messageKey: '',
@@ -452,6 +458,7 @@ export const ProjectionVisualAssistantBubble = ({
 
   useBrowserLayoutEffect(() => {
     const measureElement = measureRef.current
+    const visibleTextElement = visibleTextRef.current
     if (!isVisible || !cleanedMessage) {
       if (!cleanedMessage) {
         setPagination((current) =>
@@ -467,7 +474,7 @@ export const ProjectionVisualAssistantBubble = ({
       }
       return
     }
-    if (!measureElement) {
+    if (!measureElement || !visibleTextElement) {
       return
     }
 
@@ -475,7 +482,8 @@ export const ProjectionVisualAssistantBubble = ({
       const nextPages = paginateMeasuredText(
         cleanedMessage,
         measureElement,
-        maxVisibleLines
+        maxVisibleLines,
+        visibleTextElement.clientHeight
       )
       setPagination((current) => {
         const unchanged =
@@ -501,6 +509,7 @@ export const ProjectionVisualAssistantBubble = ({
         ? null
         : new ResizeObserver(updatePages)
     observer?.observe(measureElement)
+    observer?.observe(visibleTextElement)
 
     return () => {
       window.removeEventListener('resize', updatePages)
@@ -697,7 +706,9 @@ export const ProjectionVisualAssistantBubble = ({
         ttsSpeechOutputSummary?.meaning_class ?? 'tts-summary-unavailable'
       }
     >
-      <div className="td-assistant-bubble-text">{currentPage}</div>
+      <div ref={visibleTextRef} className="td-assistant-bubble-text">
+        {currentPage}
+      </div>
       <span className="td-assistant-bubble-tail" aria-hidden="true" />
       <div
         ref={measureRef}

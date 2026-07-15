@@ -26,6 +26,7 @@ describe('ProjectionVisualAssistantBubble presentation', () => {
   const originalPresentation = settingsStore.getState().speechBubblePresentation
   const originalChatLog = homeStore.getState().chatLog
   const originalIsSpeaking = homeStore.getState().isSpeaking
+  const originalInnerHeight = window.innerHeight
 
   beforeAll(() => {
     global.fetch = jest.fn().mockResolvedValue({
@@ -63,6 +64,10 @@ describe('ProjectionVisualAssistantBubble presentation', () => {
     cleanup()
     jest.useRealTimers()
     global.ResizeObserver = originalResizeObserver
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: originalInnerHeight,
+    })
     settingsStore.setState({ speechBubblePresentation: originalPresentation })
     homeStore.setState({
       chatLog: originalChatLog,
@@ -192,7 +197,11 @@ describe('ProjectionVisualAssistantBubble presentation', () => {
     )
   })
 
-  it('allows one-line pages when a fixed bubble height cannot fit two lines', () => {
+  it('caps pagination to the browser-realized text height at a fixed bubble size', () => {
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 1080,
+    })
     setAssistantMessage('狭い高さでも内容を隠さず分割する文章です。'.repeat(4))
     usePresentation({
       heightMode: 'fixed',
@@ -203,10 +212,24 @@ describe('ProjectionVisualAssistantBubble presentation', () => {
     jest
       .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
       .mockImplementation(function (this: HTMLElement) {
-        return Array.from(this.textContent ?? '').length <= 4 ? 70 : 140
+        const length = Array.from(this.textContent ?? '').length
+        return length <= 4 ? 116 : length <= 8 ? 188 : 260
       })
+    jest
+      .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockReturnValue(186)
+    jest.spyOn(window, 'getComputedStyle').mockReturnValue({
+      fontSize: '36px',
+      lineHeight: '72px',
+      getPropertyValue: (property: string) =>
+        property === 'padding-top'
+          ? '16px'
+          : property === 'padding-bottom'
+            ? '28px'
+            : '',
+    } as CSSStyleDeclaration)
 
-    render(<ProjectionVisualAssistantBubble />)
+    render(<ProjectionVisualAssistantBubble variant="passive" />)
 
     const bubble = screen.getByLabelText('アシスタントの会話内容')
     const visibleText =
