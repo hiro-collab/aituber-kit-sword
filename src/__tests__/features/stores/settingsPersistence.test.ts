@@ -14,6 +14,7 @@ describe('settingsStore persistence', () => {
     'NEXT_PUBLIC_SELECT_AI_SERVICE',
     'NEXT_PUBLIC_THOUGHT_CORE_BASE_URL',
     'NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE',
+    'NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV',
   ] as const
   const originalEnv = Object.fromEntries(
     managedEnvNames.map((name) => [name, process.env[name]])
@@ -156,6 +157,54 @@ describe('settingsStore persistence', () => {
       characterRotation: { x: 0, y: 1.42, z: 0 },
     })
   })
+
+  it('rehydrates a valid persisted projector horizontal FOV', () => {
+    process.env.NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV = '30'
+    setPersistedState({ cameraHorizontalFov: 45 })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().cameraHorizontalFov).toBe(45)
+  })
+
+  it('keeps the validated environment FOV when persistence omits it', () => {
+    process.env.NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV = '30'
+    setPersistedState({ characterName: 'camera-fov-missing' })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().cameraHorizontalFov).toBe(30)
+  })
+
+  it.each([
+    ['numeric string', '45'],
+    ['object', { value: 45 }],
+    ['null', null],
+    ['below minimum', 19],
+    ['above maximum', 91],
+  ])(
+    'rejects an invalid persisted projector FOV: %s',
+    (_label, persistedValue) => {
+      process.env.NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV = '30'
+      setPersistedState({ cameraHorizontalFov: persistedValue })
+
+      const settingsStore = loadStore()
+
+      expect(settingsStore.getState().cameraHorizontalFov).toBe(30)
+    }
+  )
+
+  it.each(['179', 'Infinity', 'NaN'])(
+    'fails closed to the default for an invalid environment FOV: %s',
+    (environmentValue) => {
+      process.env.NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV = environmentValue
+      setPersistedState({ characterName: 'invalid-env-fov' })
+
+      const settingsStore = loadStore()
+
+      expect(settingsStore.getState().cameraHorizontalFov).toBe(35)
+    }
+  )
 
   it('System Cell forces Thought Core across a contradictory full env override', () => {
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE = 'thought-core'

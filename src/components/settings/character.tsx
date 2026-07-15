@@ -711,6 +711,7 @@ const Character = () => {
     customPresetName4,
     customPresetName5,
     selectedPresetIndex,
+    cameraHorizontalFov,
     lightingIntensity,
     poseAdjustMode,
     thinkingPoseEnabled,
@@ -1281,6 +1282,7 @@ const Character = () => {
                     `NEXT_PUBLIC_FIXED_CHARACTER_POSITION="${settings.fixedCharacterPosition}"`,
                     `NEXT_PUBLIC_CHARACTER_POSITION="${pos.x},${pos.y},${pos.z},${pos.scale}"`,
                     `NEXT_PUBLIC_CHARACTER_ROTATION="${rot.x},${rot.y},${rot.z}"`,
+                    `NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV="${settings.cameraHorizontalFov}"`,
                   ].join('\n')
                   try {
                     await navigator.clipboard.writeText(envText)
@@ -1303,6 +1305,41 @@ const Character = () => {
                 {t('CopyEnvVars')}
               </button>
             </div>
+          </div>
+        )}
+
+        {modelType === 'vrm' && (
+          <div className="my-6">
+            <div className="text-xl font-bold mb-4">
+              {isJa ? 'VRMカメラの水平画角' : 'VRM camera horizontal FOV'}
+            </div>
+            <div className="mb-4 text-sm text-gray-600">
+              {isJa
+                ? 'プロジェクターでは30°、近距離ディスプレイでは45°、従来に近い表示は35°が目安です。'
+                : 'Use 30° for a projector, 45° for a nearby display, or 35° for the legacy-like view.'}
+            </div>
+            <select
+              className="text-ellipsis px-4 py-2 w-full sm:w-col-span-2 bg-white hover:bg-white-hover rounded-lg"
+              value={cameraHorizontalFov}
+              onChange={(event) =>
+                settingsStore.setState({
+                  cameraHorizontalFov: Number(event.target.value),
+                })
+              }
+              aria-label={
+                isJa ? 'VRMカメラの水平画角' : 'VRM camera horizontal FOV'
+              }
+            >
+              <option value={30}>
+                {isJa ? '30°（投影・狭角）' : '30° (projector)'}
+              </option>
+              <option value={35}>
+                {isJa ? '35°（従来相当）' : '35° (legacy-like)'}
+              </option>
+              <option value={45}>
+                {isJa ? '45°（標準）' : '45° (standard)'}
+              </option>
+            </select>
           </div>
         )}
 

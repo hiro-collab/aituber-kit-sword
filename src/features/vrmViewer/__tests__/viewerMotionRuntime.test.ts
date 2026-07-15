@@ -4,7 +4,10 @@
 
 import * as THREE from 'three'
 import { createProjectionVisualInPageDiagnostics, Viewer } from '../viewer'
-import { calculateCameraFit } from '../cameraFit'
+import {
+  calculateCameraFit,
+  horizontalToVerticalFovDegrees,
+} from '../cameraFit'
 import { loadVRMAnimation } from '@/lib/VRMAnimation/loadVRMAnimation'
 import {
   CONTEXT_NOD_DURATION_MS,
@@ -14,6 +17,7 @@ import {
   MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV,
   SEMANTIC_MOTION_GROUP_KEY,
 } from '@/features/motionRuntime/motionStimulusReceiver'
+import settingsStore from '@/features/stores/settings'
 
 jest.mock('@/lib/VRMAnimation/loadVRMAnimation', () => ({
   loadVRMAnimation: jest.fn(),
@@ -27,6 +31,23 @@ const originalSemanticMotionRegistry =
   process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
 
 describe('VRM camera fit', () => {
+  const originalCameraSettings = {
+    fixedCharacterPosition: settingsStore.getState().fixedCharacterPosition,
+    cameraHorizontalFov: settingsStore.getState().cameraHorizontalFov,
+  }
+
+  afterEach(() => {
+    settingsStore.setState(originalCameraSettings)
+  })
+
+  it('converts a stable horizontal projector FOV to the vertical Three.js FOV', () => {
+    expect(horizontalToVerticalFovDegrees(30, 16 / 9)).toBeCloseTo(17.14, 2)
+    expect(horizontalToVerticalFovDegrees(45, 16 / 9)).toBeCloseTo(26.23, 2)
+    expect(horizontalToVerticalFovDegrees(35, 1)).toBeCloseTo(35, 8)
+    expect(horizontalToVerticalFovDegrees(0, 16 / 9)).toBeNull()
+    expect(horizontalToVerticalFovDegrees(30, 0)).toBeNull()
+  })
+
   it('fits tall and wide model bounds using the limiting field of view', () => {
     const tall = calculateCameraFit(
       { min: { x: -0.5, y: 0, z: -0.2 }, max: { x: 0.5, y: 2, z: 0.2 } },
@@ -92,6 +113,136 @@ describe('VRM camera fit', () => {
         16 / 9
       )
     ).toBeNull()
+  })
+
+  it.each([
+    ['unlocked', false, 1],
+    ['fixed', true, 0],
+  ])(
+    'recalculates projection on resize and refits exactly when %s',
+    (_label, fixedCharacterPosition, expectedRefits) => {
+      const viewer = new Viewer()
+      const camera = new THREE.PerspectiveCamera(20, 1, 0.1, 20)
+      camera.position.set(0.2, 1.4, 1.8)
+      const parentElement = { clientWidth: 1600, clientHeight: 900 }
+      const controls = { target: new THREE.Vector3(0.1, 1.2, 0) }
+      const renderer = {
+        domElement: { parentElement },
+        setPixelRatio: jest.fn(),
+        setSize: jest.fn(),
+      }
+      const fitCameraToModel = jest
+        .spyOn(viewer as never, 'fitCameraToModel' as never)
+        .mockReturnValue(true as never)
+      Object.assign(viewer, {
+        _renderer: renderer,
+        _camera: camera,
+        _cameraControls: controls,
+      })
+      const positionBefore = camera.position.clone()
+      const targetBefore = controls.target.clone()
+      settingsStore.setState({
+        fixedCharacterPosition,
+        cameraHorizontalFov: 30,
+      })
+      const previousWindow = globalThis.window
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: { devicePixelRatio: 1 },
+      })
+
+      try {
+        viewer.resize()
+      } finally {
+        Object.defineProperty(globalThis, 'window', {
+          configurable: true,
+          value: previousWindow,
+        })
+      }
+
+      expect(camera.aspect).toBeCloseTo(16 / 9)
+      expect(camera.fov).toBeCloseTo(17.14, 2)
+      expect(fitCameraToModel).toHaveBeenCalledTimes(expectedRefits)
+      expect(camera.position).toEqual(positionBefore)
+      expect(controls.target).toEqual(targetBefore)
+    }
+  )
+
+  it.each([
+    ['unlocked', false, 1],
+    ['fixed', true, 0],
+  ])(
+    'applies settings-store FOV changes and refits exactly when %s',
+    (_label, fixedCharacterPosition, expectedRefits) => {
+      const viewer = new Viewer()
+      const camera = new THREE.PerspectiveCamera(20, 16 / 9, 0.1, 20)
+      const fitCameraToModel = jest
+        .spyOn(viewer as never, 'fitCameraToModel' as never)
+        .mockReturnValue(true as never)
+      Object.assign(viewer, { _camera: camera })
+      ;(
+        viewer as unknown as { subscribeToSettings: () => void }
+      ).subscribeToSettings()
+      settingsStore.setState({ fixedCharacterPosition })
+      fitCameraToModel.mockClear()
+
+      settingsStore.setState({ cameraHorizontalFov: 45 })
+
+      expect(camera.fov).toBeCloseTo(26.23, 2)
+      expect(fitCameraToModel).toHaveBeenCalledTimes(expectedRefits)
+      ;(
+        viewer as unknown as { _settingsUnsubscribe?: () => void }
+      )._settingsUnsubscribe?.()
+    }
+  )
+
+  it('rejects out-of-policy FOV updates at the viewer boundary', () => {
+    const viewer = new Viewer()
+    const camera = new THREE.PerspectiveCamera(20, 16 / 9, 0.1, 20)
+    const updateProjectionMatrix = jest.spyOn(camera, 'updateProjectionMatrix')
+    Object.assign(viewer, { _camera: camera })
+
+    viewer.updateCameraHorizontalFov(100)
+
+    expect(camera.fov).toBe(20)
+    expect(updateProjectionMatrix).not.toHaveBeenCalled()
+  })
+
+  it('rejects an out-of-policy raw store FOV during resize', () => {
+    const viewer = new Viewer()
+    const camera = new THREE.PerspectiveCamera(20, 1, 0.1, 20)
+    const parentElement = { clientWidth: 1600, clientHeight: 900 }
+    const renderer = {
+      domElement: { parentElement },
+      setPixelRatio: jest.fn(),
+      setSize: jest.fn(),
+    }
+    const fitCameraToModel = jest
+      .spyOn(viewer as never, 'fitCameraToModel' as never)
+      .mockReturnValue(true as never)
+    Object.assign(viewer, { _renderer: renderer, _camera: camera })
+    settingsStore.setState({
+      fixedCharacterPosition: false,
+      cameraHorizontalFov: 100,
+    })
+    const previousWindow = globalThis.window
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { devicePixelRatio: 1 },
+    })
+
+    try {
+      viewer.resize()
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: previousWindow,
+      })
+    }
+
+    expect(camera.aspect).toBeCloseTo(16 / 9)
+    expect(camera.fov).toBe(20)
+    expect(fitCameraToModel).not.toHaveBeenCalled()
   })
 })
 

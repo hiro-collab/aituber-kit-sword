@@ -20,6 +20,28 @@ const isFinitePoint = (point: CameraFitBounds['min']) =>
 const areFiniteNumbers = (...values: number[]) =>
   values.every((value) => Number.isFinite(value))
 
+export const horizontalToVerticalFovDegrees = (
+  horizontalFovDegrees: number,
+  aspect: number
+): number | null => {
+  if (
+    !Number.isFinite(horizontalFovDegrees) ||
+    horizontalFovDegrees <= 0 ||
+    horizontalFovDegrees >= 180 ||
+    !Number.isFinite(aspect) ||
+    aspect <= 0
+  ) {
+    return null
+  }
+
+  const horizontalHalfFov = (horizontalFovDegrees * Math.PI) / 360
+  const verticalHalfFov = Math.atan(Math.tan(horizontalHalfFov) / aspect)
+  const verticalFovDegrees = (verticalHalfFov * 360) / Math.PI
+  return Number.isFinite(verticalFovDegrees) && verticalFovDegrees > 0
+    ? verticalFovDegrees
+    : null
+}
+
 export const calculateCameraFit = (
   bounds: CameraFitBounds,
   verticalFovDegrees: number,

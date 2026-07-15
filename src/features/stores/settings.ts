@@ -42,6 +42,16 @@ import {
   getCommentTextColor,
 } from '@/utils/commentDisplayStyle'
 
+export const CAMERA_HORIZONTAL_FOV_MIN = 20
+export const CAMERA_HORIZONTAL_FOV_MAX = 90
+export const CAMERA_HORIZONTAL_FOV_DEFAULT = 35
+
+export const isCameraHorizontalFov = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isFinite(value) &&
+  value >= CAMERA_HORIZONTAL_FOV_MIN &&
+  value <= CAMERA_HORIZONTAL_FOV_MAX
+
 const getConfiguredSystemCellAIService = (): 'thought-core' | null => {
   const candidates = [
     process.env.NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE,
@@ -209,6 +219,7 @@ interface Character {
     y: number
     z: number
   }
+  cameraHorizontalFov: number
   lightingIntensity: number
   poseAdjustMode: boolean
   selectedPNGTuberPath: string
@@ -557,6 +568,13 @@ const getInitialValuesFromEnv = (): SettingsState => ({
           z: parseFloat(parts[2]) || 0,
         }
       : { x: 0, y: 0, z: 0 }
+  })(),
+  cameraHorizontalFov: (() => {
+    const value = Number(
+      process.env.NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV ||
+        CAMERA_HORIZONTAL_FOV_DEFAULT
+    )
+    return isCameraHorizontalFov(value) ? value : CAMERA_HORIZONTAL_FOV_DEFAULT
   })(),
   lightingIntensity:
     parseFloat(process.env.NEXT_PUBLIC_LIGHTING_INTENSITY || '1.0') || 1.0,
@@ -921,6 +939,12 @@ const mergePersistedSettings = (
     ...currentState,
     ...migratedState,
   }
+  const persistedCameraHorizontalFov = migratedState?.cameraHorizontalFov
+  mergedState.cameraHorizontalFov = isCameraHorizontalFov(
+    persistedCameraHorizontalFov
+  )
+    ? persistedCameraHorizontalFov
+    : currentState.cameraHorizontalFov
   const systemCellAIService = getConfiguredSystemCellAIService()
   if (systemCellAIService) {
     mergedState.selectAIService = systemCellAIService
@@ -1091,6 +1115,7 @@ const settingsStore = create<SettingsState>()(
         fixedCharacterPosition: state.fixedCharacterPosition,
         characterPosition: state.characterPosition,
         characterRotation: state.characterRotation,
+        cameraHorizontalFov: state.cameraHorizontalFov,
         lightingIntensity: state.lightingIntensity,
         modelType: state.modelType,
         selectedPNGTuberPath: state.selectedPNGTuberPath,

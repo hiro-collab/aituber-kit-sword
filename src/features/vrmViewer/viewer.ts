@@ -4,8 +4,11 @@ import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motio
 import { loadVRMAnimation } from '@/lib/VRMAnimation/loadVRMAnimation'
 import { buildUrl } from '@/utils/buildUrl'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import settingsStore from '@/features/stores/settings'
-import { calculateCameraFit } from './cameraFit'
+import settingsStore, {
+  CAMERA_HORIZONTAL_FOV_DEFAULT,
+  isCameraHorizontalFov,
+} from '@/features/stores/settings'
+import { calculateCameraFit, horizontalToVerticalFovDegrees } from './cameraFit'
 import {
   DANCE_SEQUENCE_GROUP_KEY,
   SEMANTIC_MOTION_GROUP_KEY,
@@ -24,6 +27,14 @@ export const PROJECTION_VISUAL_IN_PAGE_DIAGNOSTICS_SCHEMA_VERSION =
   'projection_visual_in_page_diagnostics.v0'
 export const PROJECTION_VISUAL_ROI_REGISTRY_VERSION =
   'projection_visual_roi_registry.v0'
+
+const toValidatedVerticalFovDegrees = (
+  horizontalFovDegrees: unknown,
+  aspect: number
+): number | null =>
+  isCameraHorizontalFov(horizontalFovDegrees)
+    ? horizontalToVerticalFovDegrees(horizontalFovDegrees, aspect)
+    : null
 
 export interface ProjectionVisualInPageDiagnosticsV0 {
   schema_version: typeof PROJECTION_VISUAL_IN_PAGE_DIAGNOSTICS_SCHEMA_VERSION
@@ -486,7 +497,13 @@ export class Viewer {
     this._renderer.setPixelRatio(window.devicePixelRatio)
 
     // camera
-    this._camera = new THREE.PerspectiveCamera(20.0, width / height, 0.1, 20.0)
+    const aspect = width / height
+    const horizontalFov = settingsStore.getState().cameraHorizontalFov
+    const verticalFov =
+      toValidatedVerticalFovDegrees(horizontalFov, aspect) ??
+      toValidatedVerticalFovDegrees(CAMERA_HORIZONTAL_FOV_DEFAULT, aspect) ??
+      20.0
+    this._camera = new THREE.PerspectiveCamera(verticalFov, aspect, 0.1, 20.0)
     this._camera.position.set(0, 1.3, 1.5)
     this._cameraControls?.target.set(0, 1.3, 0)
     this._cameraControls?.update()
@@ -514,10 +531,17 @@ export class Viewer {
     // Restore saved position if available
     this.restoreCameraPosition()
 
+    this.subscribeToSettings()
+  }
+
+  private subscribeToSettings() {
     this._settingsUnsubscribe?.()
     this._settingsUnsubscribe = settingsStore.subscribe((state, previous) => {
       if (state.lightingIntensity !== previous.lightingIntensity) {
         this.updateLightingIntensity(state.lightingIntensity)
+      }
+      if (state.cameraHorizontalFov !== previous.cameraHorizontalFov) {
+        this.updateCameraHorizontalFov(state.cameraHorizontalFov)
       }
       if (
         state.fixedCharacterPosition !== previous.fixedCharacterPosition ||
@@ -546,7 +570,19 @@ export class Viewer {
 
     if (!this._camera) return
     this._camera.aspect = parentElement.clientWidth / parentElement.clientHeight
+    const verticalFov = toValidatedVerticalFovDegrees(
+      settingsStore.getState().cameraHorizontalFov,
+      this._camera.aspect
+    )
+    if (verticalFov === null) {
+      this._camera.updateProjectionMatrix()
+      return
+    }
+    this._camera.fov = verticalFov
     this._camera.updateProjectionMatrix()
+    if (!settingsStore.getState().fixedCharacterPosition) {
+      this.fitCameraToModel()
+    }
   }
 
   /**
@@ -715,6 +751,25 @@ export class Viewer {
     }
     if (this._ambientLight) {
       this._ambientLight.intensity = 1.2 * intensity
+    }
+  }
+
+  /**
+   * 水平画角を維持し、Three.js が使う垂直画角へ変換して反映する
+   */
+  public updateCameraHorizontalFov(horizontalFovDegrees: number) {
+    if (!this._camera) return
+
+    const verticalFov = toValidatedVerticalFovDegrees(
+      horizontalFovDegrees,
+      this._camera.aspect
+    )
+    if (verticalFov === null) return
+
+    this._camera.fov = verticalFov
+    this._camera.updateProjectionMatrix()
+    if (!settingsStore.getState().fixedCharacterPosition) {
+      this.fitCameraToModel()
     }
   }
 
