@@ -311,6 +311,40 @@ describe('settingsStore persistence', () => {
     expect(settingsStore.getState().speechBubblePresentation).toEqual(persisted)
   })
 
+  it('keeps operator-owned projection calibration local during a full environment override', () => {
+    process.env.NEXT_PUBLIC_ALWAYS_OVERRIDE_WITH_ENV_VARIABLES = 'true'
+    process.env.NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV = '30'
+    process.env.NEXT_PUBLIC_LIGHTING_INTENSITY = '1'
+    process.env.NEXT_PUBLIC_PROJECTION_EFFECT_ID = 'none'
+    const persistedBubble = {
+      ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+      fontSizePx: 28,
+      timingMode: 'reading-time' as const,
+    }
+    const persistedEffects = {
+      selectedEffect: 'fluidFireRelay' as const,
+      fluidFireRelay: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        bloomGain: 1.4,
+      },
+    }
+    setPersistedState({
+      cameraHorizontalFov: 45,
+      lightingIntensity: 2.2,
+      projectionEffects: persistedEffects,
+      speechBubblePresentation: persistedBubble,
+    })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState()).toMatchObject({
+      cameraHorizontalFov: 45,
+      lightingIntensity: 2.2,
+      projectionEffects: persistedEffects,
+      speechBubblePresentation: persistedBubble,
+    })
+  })
+
   it.each([
     ['partial', { fontSizePx: 30 }],
     [

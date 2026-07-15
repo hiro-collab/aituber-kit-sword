@@ -1007,6 +1007,13 @@ const mergePersistedSettings = (
       ...mergedState,
       ...getInitialValuesFromEnv(),
     }
+    // Projection calibration is owned by the operator's private browser
+    // settings. Environment values provide its first-load defaults, but a
+    // full environment override must not erase later on-device calibration.
+    envState.cameraHorizontalFov = mergedState.cameraHorizontalFov
+    envState.lightingIntensity = mergedState.lightingIntensity
+    envState.projectionEffects = mergedState.projectionEffects
+    envState.speechBubblePresentation = mergedState.speechBubblePresentation
     if (systemCellAIService) {
       envState.selectAIService = systemCellAIService
       if (process.env.NEXT_PUBLIC_THOUGHT_CORE_BASE_URL) {
