@@ -242,8 +242,12 @@ describe('ProjectionVisualCalibrationPanel', () => {
     )
     const preview = screen.getByLabelText('吹き出し文字プレビュー')
     expect(preview).toHaveAttribute('data-tail-side', 'left')
+    expect(preview).toHaveAttribute(
+      'data-preview-reference-viewport',
+      '1366x768'
+    )
     expect(preview.getAttribute('style')).toContain(
-      '--speech-bubble-font-size: 16.5px'
+      '--speech-bubble-font-size: 7.906px'
     )
     expect(screen.getByRole('status')).toHaveTextContent(
       '安全領域で補正中（選択値は変更しません）'

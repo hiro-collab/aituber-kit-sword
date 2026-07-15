@@ -41,6 +41,7 @@ type CalibrationSnapshot = {
 }
 
 const CAMERA_FOV_PRESETS = [30, 35, 45] as const
+const BUBBLE_PREVIEW_REFERENCE_VIEWPORT = { width: 1366, height: 768 }
 const SHORT_PREVIEW = '今日はどんなことを一緒に試しましょうか。'
 const LONG_PREVIEW =
   '長い文章でも、読みやすい文字の大きさと行間を保ちながら、吹き出しの中で順番に読めるように表示します。位置や大きさ、喉の向きも投影環境に合わせて調整できます。'
@@ -191,18 +192,20 @@ export function ProjectionVisualCalibrationPanel({
   }
 
   const previewViewport = { width: 360, height: 203 }
+  const previewScale =
+    previewViewport.width / BUBBLE_PREVIEW_REFERENCE_VIEWPORT.width
   const previewBubbleWidth = Math.max(
     96,
     previewViewport.width * (speechBubblePresentation.widthPercent / 100)
   )
-  const previewBubbleHeight =
-    speechBubblePresentation.heightMode === 'fixed'
-      ? Math.max(
-          64,
-          previewViewport.height *
-            (speechBubblePresentation.heightPercent / 100)
-        )
-      : 88
+  const previewBubbleHeight = Math.max(
+    64,
+    previewViewport.height * (speechBubblePresentation.heightPercent / 100)
+  )
+  const previewFontSize = Math.max(
+    6,
+    Number((speechBubblePresentation.fontSizePx * previewScale).toFixed(3))
+  )
   const previewPlacement = resolveSpeechBubblePlacement({
     preferredX: speechBubblePresentation.positionX,
     preferredY: speechBubblePresentation.positionY,
@@ -231,9 +234,10 @@ export function ProjectionVisualCalibrationPanel({
         ? previewBubbleHeight
         : undefined,
     maxHeight: previewBubbleHeight,
-    '--speech-bubble-font-size': `${Math.max(10, speechBubblePresentation.fontSizePx * 0.55)}px`,
+    '--speech-bubble-font-size': `${previewFontSize}px`,
     '--speech-bubble-line-height': String(speechBubblePresentation.lineHeight),
     '--speech-bubble-tail-angle': `${previewTailAngle}deg`,
+    '--speech-bubble-preview-scale': String(previewScale),
   } as CSSProperties
 
   return (
@@ -454,6 +458,7 @@ export function ProjectionVisualCalibrationPanel({
                 aria-label="吹き出し文字プレビュー"
                 className="td-assistant-bubble projection-bubble-preview"
                 data-tail-side={speechBubblePresentation.tailSide}
+                data-preview-reference-viewport={`${BUBBLE_PREVIEW_REFERENCE_VIEWPORT.width}x${BUBBLE_PREVIEW_REFERENCE_VIEWPORT.height}`}
                 style={previewStyle}
               >
                 <div className="td-assistant-bubble-text">{previewText}</div>
