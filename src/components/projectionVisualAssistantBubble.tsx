@@ -1,8 +1,21 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
 
 import homeStore from '@/features/stores/home'
 import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
+import {
+  resolveSpeechBubblePlacement,
+  resolveSpeechBubblePresentationSettings,
+  resolveSpeechBubbleTailAngle,
+  resolveSpeechBubbleTimerDecision,
+} from '@/features/projectionVisualBubble/presentation'
 import { EMOTIONS } from '@/features/messages/messages'
 import { getLatestAssistantMessageEntry } from '@/utils/assistantMessageUtils'
 import { compactReviewProofMessage } from '@/utils/reviewProofMessage'
@@ -21,10 +34,9 @@ const MAX_OPERATOR_COMFORTABLE_VISIBLE_LINES = 6
 const MAX_OPERATOR_COMPACT_VISIBLE_LINES = 9
 const MAX_OPERATOR_DENSE_VISIBLE_LINES = 11
 const MAX_PASSIVE_VISIBLE_LINES = 3
-const MIN_PAGE_READ_MS = 12000
-const MAX_PAGE_READ_MS = 36000
-const PAGE_READ_MS_PER_CHARACTER = 160
 const MEASURE_EPSILON_PX = 2
+const OPERATOR_RESERVED_BOTTOM_PX = 132
+const BUBBLE_TAIL_EXTENT_PX = 64
 
 export type ProjectionVisualBubbleTextDensity =
   | 'comfortable'
@@ -58,13 +70,7 @@ export const resolveProjectionVisualBubbleTextDensity = (
 }
 
 export const resolveProjectionVisualBubblePageReadMs = (text: string) =>
-  Math.min(
-    MAX_PAGE_READ_MS,
-    Math.max(
-      MIN_PAGE_READ_MS,
-      Array.from(text).length * PAGE_READ_MS_PER_CHARACTER
-    )
-  )
+  Math.min(36000, Math.max(12000, Array.from(text).length * 160))
 
 const useBrowserLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
@@ -162,6 +168,10 @@ export const ProjectionVisualAssistantBubble = ({
   const passiveSpeechOutputSummary = projectionDisplayStore(
     (s) => s.speechOutputSummary
   )
+  const passiveSpeechOutputActive = projectionDisplayStore(
+    (s) => s.speechOutputActive
+  )
+  const operatorSpeechOutputActive = homeStore((s) => s.isSpeaking)
   const [
     operatorSpeechOutputDisplayState,
     setOperatorSpeechOutputDisplayState,
@@ -173,12 +183,46 @@ export const ProjectionVisualAssistantBubble = ({
   const characterName = settingsStore((s) => s.characterName)
   const showCharacterName = settingsStore((s) => s.showCharacterName)
   const poseConfigs = settingsStore((s) => s.poseConfigs)
+  const storedBubblePresentation = settingsStore(
+    (s) => s.speechBubblePresentation
+  )
+  const bubblePresentation = resolveSpeechBubblePresentationSettings(
+    storedBubblePresentation
+  )
+  const bubbleRef = useRef<HTMLElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
-  const [pages, setPages] = useState<BubblePage[]>([])
-  const [pageIndex, setPageIndex] = useState(0)
+  const pageVisibleRef = useRef({
+    messageKey: '',
+    pageIndex: -1,
+    pageText: '',
+    since: 0,
+  })
+  const speechLifecycleRef = useRef({
+    messageKey: '',
+    active: false,
+    endedAt: 0,
+  })
+  const [pagination, setPagination] = useState<{
+    messageKey: string
+    pages: BubblePage[]
+  }>({ messageKey: '', pages: [] })
+  const [pageCursor, setPageCursor] = useState({
+    messageKey: '',
+    pageIndex: 0,
+  })
+  const [hiddenMessageKey, setHiddenMessageKey] = useState<string | null>(null)
+  const [placement, setPlacement] = useState<{
+    centerX: number
+    centerY: number
+    clamped: boolean
+  } | null>(null)
+  const [tailAngleDeg, setTailAngleDeg] = useState(0)
   const shouldUseProjectionDisplayMessage =
     variant === 'stage-output' ||
     (variant === 'passive' && Boolean(passiveAssistantMessage))
+  const speechOutputActive = shouldUseProjectionDisplayMessage
+    ? passiveSpeechOutputActive
+    : operatorSpeechOutputActive
   const latestChatAssistantMessageEntry =
     getLatestAssistantMessageEntry(chatLog)
   const latestChatAssistantMessage = useMemo(() => {
@@ -218,12 +262,27 @@ export const ProjectionVisualAssistantBubble = ({
       ),
     [latestAssistantMessage, motionPattern]
   )
+  const messageKey = `${latestAssistantMessageEntry.id ?? 'unidentified'}\u0000${cleanedMessage}`
+  const pages =
+    pagination.messageKey === messageKey
+      ? pagination.pages
+      : cleanedMessage
+        ? [{ text: cleanedMessage }]
+        : []
+  const pageIndex =
+    pageCursor.messageKey === messageKey ? pageCursor.pageIndex : 0
   const currentPage = pages[pageIndex]?.text ?? cleanedMessage
+  const isVisible = Boolean(cleanedMessage) && hiddenMessageKey !== messageKey
   const bubbleTextDensity = resolveProjectionVisualBubbleTextDensity(
     cleanedMessage,
     variant
   )
-  const currentPageReadMs = resolveProjectionVisualBubblePageReadMs(currentPage)
+  const effectiveFontSizePx =
+    bubbleTextDensity === 'dense'
+      ? Math.max(16, bubblePresentation.fontSizePx * 0.78)
+      : bubbleTextDensity === 'compact'
+        ? Math.max(16, bubblePresentation.fontSizePx * 0.88)
+        : bubblePresentation.fontSizePx
   const bubbleTextScopeClass =
     pages.length > 1 ? 'current_visible_page' : 'compacted_full_text'
   const bubbleSourceField = shouldUseProjectionDisplayMessage
@@ -307,7 +366,7 @@ export const ProjectionVisualAssistantBubble = ({
       }),
     [bubbleSummary, intendedTextSummary, ttsSpeechOutputSummary]
   )
-  const maxVisibleLines =
+  const densityLineCeiling =
     variant === 'operator'
       ? bubbleTextDensity === 'dense'
         ? MAX_OPERATOR_DENSE_VISIBLE_LINES
@@ -315,6 +374,53 @@ export const ProjectionVisualAssistantBubble = ({
           ? MAX_OPERATOR_COMPACT_VISIBLE_LINES
           : MAX_OPERATOR_COMFORTABLE_VISIBLE_LINES
       : MAX_PASSIVE_VISIBLE_LINES
+  const viewportHeight =
+    typeof window === 'undefined' ? 1080 : window.innerHeight
+  const viewportWidth = typeof window === 'undefined' ? 1920 : window.innerWidth
+  const protectedInsetPx = bubblePresentation.safeAreaPx + BUBBLE_TAIL_EXTENT_PX
+  const reservedBottomPx =
+    variant === 'operator' ? OPERATOR_RESERVED_BOTTOM_PX : 0
+  const maxAvailableBubbleWidth = Math.max(
+    240,
+    viewportWidth - protectedInsetPx * 2
+  )
+  const maxAvailableBubbleHeight = Math.max(
+    120,
+    viewportHeight - protectedInsetPx * 2 - reservedBottomPx
+  )
+  const heightLineCeiling = Math.max(
+    2,
+    Math.floor(
+      (Math.min(
+        viewportHeight * (bubblePresentation.heightPercent / 100),
+        maxAvailableBubbleHeight
+      ) -
+        48) /
+        (effectiveFontSizePx * bubblePresentation.lineHeight)
+    )
+  )
+  const maxVisibleLines = Math.min(densityLineCeiling, heightLineCeiling)
+  const bubbleStyle = {
+    left: placement
+      ? `${placement.centerX}px`
+      : `${bubblePresentation.positionX * 100}vw`,
+    top: placement
+      ? `${placement.centerY}px`
+      : `${bubblePresentation.positionY * 100}vh`,
+    width:
+      bubblePresentation.widthMode === 'fixed'
+        ? `min(${bubblePresentation.widthPercent}vw, ${maxAvailableBubbleWidth}px)`
+        : `clamp(240px, ${bubblePresentation.widthPercent}vw, ${Math.min(960, maxAvailableBubbleWidth)}px)`,
+    height:
+      bubblePresentation.heightMode === 'fixed'
+        ? `min(${bubblePresentation.heightPercent}vh, ${maxAvailableBubbleHeight}px)`
+        : undefined,
+    maxWidth: `${maxAvailableBubbleWidth}px`,
+    maxHeight: `${maxAvailableBubbleHeight}px`,
+    '--speech-bubble-font-size': `${effectiveFontSizePx}px`,
+    '--speech-bubble-line-height': String(bubblePresentation.lineHeight),
+    '--speech-bubble-tail-angle': `${tailAngleDeg}deg`,
+  } as CSSProperties
 
   useEffect(() => {
     if (shouldUseProjectionDisplayMessage || typeof window === 'undefined') {
@@ -348,9 +454,22 @@ export const ProjectionVisualAssistantBubble = ({
 
   useBrowserLayoutEffect(() => {
     const measureElement = measureRef.current
-    if (!measureElement || !cleanedMessage) {
-      setPages([])
-      setPageIndex(0)
+    if (!isVisible || !cleanedMessage) {
+      if (!cleanedMessage) {
+        setPagination((current) =>
+          current.messageKey || current.pages.length
+            ? { messageKey: '', pages: [] }
+            : current
+        )
+        setPageCursor((current) =>
+          current.messageKey || current.pageIndex
+            ? { messageKey: '', pageIndex: 0 }
+            : current
+        )
+      }
+      return
+    }
+    if (!measureElement) {
       return
     }
 
@@ -360,46 +479,191 @@ export const ProjectionVisualAssistantBubble = ({
         measureElement,
         maxVisibleLines
       )
-      setPages(nextPages)
-      setPageIndex(0)
+      setPagination((current) => {
+        const unchanged =
+          current.messageKey === messageKey &&
+          current.pages.length === nextPages.length &&
+          current.pages.every(
+            (page, index) => page.text === nextPages[index]?.text
+          )
+        return unchanged ? current : { messageKey, pages: nextPages }
+      })
+      setPageCursor((current) =>
+        current.messageKey === messageKey &&
+        current.pageIndex < nextPages.length
+          ? current
+          : { messageKey, pageIndex: 0 }
+      )
     }
 
     updatePages()
     window.addEventListener('resize', updatePages)
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updatePages)
+    observer?.observe(measureElement)
 
     return () => {
       window.removeEventListener('resize', updatePages)
+      observer?.disconnect()
     }
-  }, [cleanedMessage, maxVisibleLines])
+  }, [
+    bubblePresentation.heightMode,
+    bubblePresentation.heightPercent,
+    bubblePresentation.lineHeight,
+    bubblePresentation.widthMode,
+    bubblePresentation.widthPercent,
+    cleanedMessage,
+    effectiveFontSizePx,
+    isVisible,
+    maxVisibleLines,
+    messageKey,
+  ])
 
   useEffect(() => {
-    if (pages.length <= 1) {
-      return
+    if (!isVisible || !currentPage || pages.length === 0) return
+
+    if (
+      pageVisibleRef.current.messageKey !== messageKey ||
+      pageVisibleRef.current.pageIndex !== pageIndex ||
+      pageVisibleRef.current.pageText !== currentPage
+    ) {
+      pageVisibleRef.current = {
+        messageKey,
+        pageIndex,
+        pageText: currentPage,
+        since: Date.now(),
+      }
     }
 
+    const now = Date.now()
+    if (speechLifecycleRef.current.messageKey !== messageKey) {
+      speechLifecycleRef.current = {
+        messageKey,
+        active: speechOutputActive,
+        endedAt: speechOutputActive ? 0 : pageVisibleRef.current.since,
+      }
+    } else if (speechLifecycleRef.current.active && !speechOutputActive) {
+      speechLifecycleRef.current = {
+        messageKey,
+        active: false,
+        endedAt: now,
+      }
+    } else if (!speechLifecycleRef.current.active && speechOutputActive) {
+      speechLifecycleRef.current = {
+        messageKey,
+        active: true,
+        endedAt: 0,
+      }
+    }
+
+    const decision = resolveSpeechBubbleTimerDecision({
+      settings: bubblePresentation,
+      characterCount: Array.from(currentPage).length,
+      pageIndex,
+      pageCount: pages.length,
+      speechOutputActive,
+      pageVisibleElapsedMs: now - pageVisibleRef.current.since,
+      postSpeechElapsedMs: speechLifecycleRef.current.endedAt
+        ? now - speechLifecycleRef.current.endedAt
+        : 0,
+    })
+    if (decision.action === 'hold') return
+
     const timer = window.setTimeout(() => {
-      setPageIndex((current) => (current + 1) % pages.length)
-    }, currentPageReadMs)
+      if (decision.action === 'advance') {
+        setPageCursor({
+          messageKey,
+          pageIndex: Math.min(pageIndex + 1, pages.length - 1),
+        })
+      } else {
+        setHiddenMessageKey(messageKey)
+      }
+    }, decision.delayMs)
 
     return () => {
       window.clearTimeout(timer)
     }
-  }, [currentPageReadMs, pageIndex, pages.length])
+  }, [
+    bubblePresentation,
+    currentPage,
+    isVisible,
+    messageKey,
+    pageIndex,
+    pages.length,
+    speechOutputActive,
+  ])
 
-  if (!cleanedMessage) {
+  useBrowserLayoutEffect(() => {
+    const bubble = bubbleRef.current
+    if (!isVisible || !bubble || typeof window === 'undefined') return
+
+    const updateGeometry = () => {
+      const rect = bubble.getBoundingClientRect()
+      const nextPlacement = resolveSpeechBubblePlacement({
+        preferredX: bubblePresentation.positionX,
+        preferredY: bubblePresentation.positionY,
+        bubbleWidth: rect.width,
+        bubbleHeight: rect.height,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        safeAreaPx: bubblePresentation.safeAreaPx,
+        reservedBottomPx,
+        tailExtentPx: BUBBLE_TAIL_EXTENT_PX,
+      })
+      setPlacement((current) =>
+        current?.centerX === nextPlacement.centerX &&
+        current?.centerY === nextPlacement.centerY &&
+        current?.clamped === nextPlacement.clamped
+          ? current
+          : nextPlacement
+      )
+
+      setTailAngleDeg(
+        resolveSpeechBubbleTailAngle({
+          side: bubblePresentation.tailSide,
+          targetX: bubblePresentation.tailTargetX * window.innerWidth,
+          targetY: bubblePresentation.tailTargetY * window.innerHeight,
+          centerX: nextPlacement.centerX,
+          centerY: nextPlacement.centerY,
+          bubbleWidth: rect.width,
+          bubbleHeight: rect.height,
+        })
+      )
+    }
+
+    updateGeometry()
+    window.addEventListener('resize', updateGeometry)
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateGeometry)
+    observer?.observe(bubble)
+    return () => {
+      window.removeEventListener('resize', updateGeometry)
+      observer?.disconnect()
+    }
+  }, [bubblePresentation, currentPage, isVisible, reservedBottomPx])
+
+  if (!cleanedMessage || !isVisible) {
     return null
   }
 
   return (
     <aside
+      ref={bubbleRef}
       className="td-assistant-bubble"
+      style={bubbleStyle}
       aria-live="polite"
       aria-label="アシスタントの会話内容"
       data-variant={variant}
       data-text-density={bubbleTextDensity}
       data-page-count={pages.length || 1}
       data-page-index={pageIndex}
-      data-page-read-ms={currentPageReadMs}
+      data-timing-mode={bubblePresentation.timingMode}
+      data-safe-area-clamped={String(placement?.clamped ?? false)}
+      data-tail-side={bubblePresentation.tailSide}
       data-assistant-message-id={
         latestAssistantMessageEntry.id ?? 'assistant-message-id-unavailable'
       }
@@ -439,6 +703,7 @@ export const ProjectionVisualAssistantBubble = ({
         <div className="td-assistant-bubble-name">{characterName}</div>
       )}
       <div className="td-assistant-bubble-text">{currentPage}</div>
+      <span className="td-assistant-bubble-tail" aria-hidden="true" />
       <div
         ref={measureRef}
         className="td-assistant-bubble-text td-assistant-bubble-text-measure"

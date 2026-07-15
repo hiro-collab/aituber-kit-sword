@@ -3,6 +3,7 @@
  */
 
 import type { NextApiRequest, NextApiResponse } from 'next'
+import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
 
 function createMockReq(
   overrides: Partial<NextApiRequest> = {}
@@ -70,6 +71,7 @@ describe('/api/projectionDisplayState', () => {
             provider_payload_published: false,
             private_data_published: false,
           },
+          speechOutputActive: true,
           settings: {
             modelType: 'vrm',
             selectedVrmPath: '/vrm/Nutachisan.vrm',
@@ -82,6 +84,10 @@ describe('/api/projectionDisplayState', () => {
             characterRotation: { x: 1, y: 2, z: 3 },
             lightingIntensity: 3,
             cameraHorizontalFov: 45,
+            speechBubblePresentation: {
+              ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+              fontSizePx: 28,
+            },
           },
         },
       }),
@@ -101,12 +107,14 @@ describe('/api/projectionDisplayState', () => {
           text_length: number
           meaning_class: string
         } | null
+        speechOutputActive: boolean
         settings: {
           modelType?: string
           characterName?: string
           characterPosition?: { x: number; y: number; z: number; scale: number }
           lightingIntensity?: number
           cameraHorizontalFov?: number
+          speechBubblePresentation?: { fontSizePx: number }
         }
       }
     }
@@ -132,6 +140,10 @@ describe('/api/projectionDisplayState', () => {
     })
     expect(postBody.state.settings.lightingIntensity).toBe(3)
     expect(postBody.state.settings.cameraHorizontalFov).toBe(45)
+    expect(postBody.state.settings.speechBubblePresentation?.fontSizePx).toBe(
+      28
+    )
+    expect(postBody.state.speechOutputActive).toBe(true)
 
     const getRes = createMockRes()
     handler(createMockReq(), getRes)
@@ -221,6 +233,35 @@ describe('/api/projectionDisplayState', () => {
       (postRes._json as { state: { assistantMessageId: string | null } }).state
         .assistantMessageId
     ).toBeNull()
+  })
+
+  it('drops an incomplete or extra-key bubble contract instead of partially applying it', () => {
+    const handler = require('@/pages/api/projectionDisplayState').default
+
+    for (const speechBubblePresentation of [
+      { fontSizePx: 30 },
+      {
+        ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+        arbitraryCss: 'position:fixed',
+      },
+    ]) {
+      const postRes = createMockRes()
+      handler(
+        createMockReq({
+          method: 'POST',
+          body: { settings: { speechBubblePresentation } },
+        }),
+        postRes
+      )
+      expect(postRes._status).toBe(200)
+      expect(
+        (
+          postRes._json as {
+            state: { settings: { speechBubblePresentation?: unknown } }
+          }
+        ).state.settings
+      ).not.toHaveProperty('speechBubblePresentation')
+    }
   })
 
   it('rejects invalid bodies and unsupported methods without mutating state', () => {

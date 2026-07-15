@@ -13,6 +13,10 @@ import {
   isCameraHorizontalFov,
   isLightingIntensity,
 } from '@/features/stores/settingsValidation'
+import {
+  isSpeechBubblePresentationSettings,
+  type SpeechBubblePresentationSettings,
+} from '@/features/projectionVisualBubble/presentation'
 
 type CharacterPosition = {
   x: number
@@ -41,6 +45,7 @@ type ProjectionDisplaySettings = {
   characterRotation?: CharacterRotation
   lightingIntensity?: number
   cameraHorizontalFov?: number
+  speechBubblePresentation?: SpeechBubblePresentationSettings
 }
 
 type ProjectionDisplayState = {
@@ -50,6 +55,7 @@ type ProjectionDisplayState = {
   assistantMessage: string
   assistantMessageId: string | null
   speechOutputSummary: SpeechOutputSummary | null
+  speechOutputActive: boolean
   settings: ProjectionDisplaySettings
 }
 
@@ -71,6 +77,7 @@ let latestDisplayState: ProjectionDisplayState = {
   assistantMessage: '',
   assistantMessageId: null,
   speechOutputSummary: null,
+  speechOutputActive: false,
   settings: {},
 }
 
@@ -151,6 +158,9 @@ const sanitizeSettings = (value: unknown): ProjectionDisplaySettings => {
     ...(isCameraHorizontalFov(value.cameraHorizontalFov) && {
       cameraHorizontalFov: value.cameraHorizontalFov,
     }),
+    ...(isSpeechBubblePresentationSettings(value.speechBubblePresentation) && {
+      speechBubblePresentation: value.speechBubblePresentation,
+    }),
   }
 }
 
@@ -196,6 +206,10 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
     speechOutputSummary: sanitizeSpeechOutputSummary(
       req.body.speechOutputSummary
     ),
+    speechOutputActive:
+      typeof req.body.speechOutputActive === 'boolean'
+        ? req.body.speechOutputActive
+        : false,
     settings: sanitizeSettings(req.body.settings),
   }
 

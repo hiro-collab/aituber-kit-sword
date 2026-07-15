@@ -1,17 +1,27 @@
+import { act, render } from '@testing-library/react'
+import { createElement } from 'react'
+
 import homeStore from '@/features/stores/home'
+import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
+import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
 import {
   applyPassiveDisplayState,
+  isFreshRemoteProjectionDisplayState,
+  ProjectionVisualDisplayStateBridge,
   readOperatorDisplayState,
   type RemoteProjectionDisplayState,
 } from '@/components/projectionVisualDisplayStateBridge'
 
 describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => {
+  const originalFetch = global.fetch
   const originalCameraHorizontalFov =
     settingsStore.getState().cameraHorizontalFov
   const originalLightingIntensity = settingsStore.getState().lightingIntensity
   const originalFixedCharacterPosition =
     settingsStore.getState().fixedCharacterPosition
+  const originalSpeechBubblePresentation =
+    settingsStore.getState().speechBubblePresentation
 
   afterEach(() => {
     const viewer = homeStore.getState().viewer as unknown as {
@@ -23,7 +33,12 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
       cameraHorizontalFov: originalCameraHorizontalFov,
       lightingIntensity: originalLightingIntensity,
       fixedCharacterPosition: originalFixedCharacterPosition,
+      speechBubblePresentation: originalSpeechBubblePresentation,
     })
+    homeStore.setState({ isSpeaking: false })
+    projectionDisplayStore.setState({ speechOutputActive: false })
+    global.fetch = originalFetch
+    jest.useRealTimers()
     jest.restoreAllMocks()
   })
 
@@ -155,4 +170,140 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
       expect(updateLightingIntensity).not.toHaveBeenCalled()
     }
   )
+
+  it('publishes and applies bounded bubble settings and the speech lifecycle class', () => {
+    const next = {
+      ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+      fontSizePx: 28,
+      timingMode: 'speech-synchronized' as const,
+    }
+    settingsStore.setState({ speechBubblePresentation: next })
+    homeStore.setState({ isSpeaking: true })
+
+    expect(readOperatorDisplayState()).toMatchObject({
+      speechOutputActive: true,
+      settings: { speechBubblePresentation: next },
+    })
+
+    applyPassiveDisplayState({
+      speechOutputActive: true,
+      settings: { speechBubblePresentation: next },
+    })
+    expect(settingsStore.getState().speechBubblePresentation).toEqual(next)
+    expect(projectionDisplayStore.getState().speechOutputActive).toBe(true)
+  })
+
+  it('fails closed for incomplete remote bubble settings', () => {
+    settingsStore.setState({
+      speechBubblePresentation: { ...DEFAULT_SPEECH_BUBBLE_PRESENTATION },
+    })
+    applyPassiveDisplayState({
+      settings: {
+        speechBubblePresentation: { fontSizePx: 30 },
+      },
+    } as unknown as RemoteProjectionDisplayState)
+
+    expect(settingsStore.getState().speechBubblePresentation).toEqual(
+      DEFAULT_SPEECH_BUBBLE_PRESENTATION
+    )
+  })
+
+  it('retries an unchanged operator payload after a failed POST', async () => {
+    jest.useFakeTimers()
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false })
+      .mockResolvedValueOnce({ ok: true })
+    global.fetch = fetchMock as unknown as typeof fetch
+    const view = render(
+      createElement(ProjectionVisualDisplayStateBridge, { mode: 'operator' })
+    )
+
+    await act(async () => undefined)
+    act(() => jest.advanceTimersByTime(500))
+    await act(async () => undefined)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    view.unmount()
+    jest.useRealTimers()
+  })
+
+  it('fails stale passive state closed and clears transient speech output', async () => {
+    projectionDisplayStore.setState({ speechOutputActive: true })
+    const updatedAt = new Date(Date.now() - 10000).toISOString()
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ageMs: 10000,
+        state: {
+          sequence: 1,
+          updatedAt,
+          speechOutputActive: true,
+          settings: {},
+        },
+      }),
+    }) as unknown as typeof fetch
+
+    const view = render(
+      createElement(ProjectionVisualDisplayStateBridge, { mode: 'passive' })
+    )
+    await act(async () => undefined)
+
+    expect(projectionDisplayStore.getState().speechOutputActive).toBe(false)
+    view.unmount()
+  })
+
+  it('does not apply a late passive response after unmount', async () => {
+    let resolveFetch: ((value: unknown) => void) | undefined
+    const pending = new Promise((resolve) => {
+      resolveFetch = resolve
+    })
+    global.fetch = jest.fn().mockReturnValue(pending) as unknown as typeof fetch
+    projectionDisplayStore.setState({ speechOutputActive: false, sequence: 0 })
+    const view = render(
+      createElement(ProjectionVisualDisplayStateBridge, { mode: 'passive' })
+    )
+
+    view.unmount()
+    resolveFetch?.({
+      ok: true,
+      json: async () => ({
+        ageMs: 0,
+        state: {
+          sequence: 3,
+          updatedAt: new Date().toISOString(),
+          speechOutputActive: true,
+          settings: {},
+        },
+      }),
+    })
+    await act(async () => undefined)
+
+    expect(projectionDisplayStore.getState()).toMatchObject({
+      speechOutputActive: false,
+      sequence: 0,
+    })
+  })
+
+  it('accepts only bounded current sequence and freshness metadata', () => {
+    const now = Date.now()
+    expect(
+      isFreshRemoteProjectionDisplayState(
+        {
+          ageMs: 100,
+          state: { sequence: 2, updatedAt: new Date(now - 100).toISOString() },
+        },
+        now
+      )
+    ).toBe(true)
+    expect(
+      isFreshRemoteProjectionDisplayState(
+        {
+          ageMs: 6000,
+          state: { sequence: 2, updatedAt: new Date(now - 6000).toISOString() },
+        },
+        now
+      )
+    ).toBe(false)
+  })
 })

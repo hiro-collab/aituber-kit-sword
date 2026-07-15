@@ -7,6 +7,10 @@ import {
   isCameraHorizontalFov,
   isLightingIntensity,
 } from '@/features/stores/settingsValidation'
+import {
+  isSpeechBubblePresentationSettings,
+  type SpeechBubblePresentationSettings,
+} from '@/features/projectionVisualBubble/presentation'
 import { getLatestAssistantMessageEntry } from '@/utils/assistantMessageUtils'
 import {
   readWindowSpeechOutputDisplayState,
@@ -41,6 +45,7 @@ export type RemoteProjectionDisplaySettings = {
   }
   lightingIntensity?: number
   cameraHorizontalFov?: number
+  speechBubblePresentation?: SpeechBubblePresentationSettings
 }
 
 export type RemoteProjectionDisplayState = {
@@ -49,10 +54,45 @@ export type RemoteProjectionDisplayState = {
   assistantMessage?: string
   assistantMessageId?: string | null
   speechOutputSummary?: SpeechOutputSummary | null
+  speechOutputActive?: boolean
   settings?: RemoteProjectionDisplaySettings
 }
 
 const SYNC_INTERVAL_MS = 500
+const MAX_REMOTE_STATE_AGE_MS = 5000
+
+type ProjectionDisplayStateResponse = {
+  state?: RemoteProjectionDisplayState
+  ageMs?: number | null
+}
+
+const clearTransientPassiveSpeechOutput = () => {
+  projectionDisplayStore.setState({ speechOutputActive: false })
+}
+
+export const isFreshRemoteProjectionDisplayState = (
+  payload: ProjectionDisplayStateResponse,
+  now = Date.now()
+) => {
+  const state = payload.state
+  const sequence = state?.sequence
+  const updatedAtMs =
+    typeof state?.updatedAt === 'string' ? Date.parse(state.updatedAt) : NaN
+  const ageMs = payload.ageMs
+
+  return (
+    Boolean(state) &&
+    Number.isSafeInteger(sequence) &&
+    Number(sequence) > 0 &&
+    Number.isFinite(updatedAtMs) &&
+    updatedAtMs <= now + SYNC_INTERVAL_MS &&
+    typeof ageMs === 'number' &&
+    Number.isFinite(ageMs) &&
+    ageMs >= 0 &&
+    ageMs <= MAX_REMOTE_STATE_AGE_MS &&
+    now - updatedAtMs <= MAX_REMOTE_STATE_AGE_MS + SYNC_INTERVAL_MS
+  )
+}
 
 export const readOperatorDisplayState = () => {
   const settings = settingsStore.getState()
@@ -74,6 +114,7 @@ export const readOperatorDisplayState = () => {
       ? currentSpeechDisplayState?.message_id
       : latestAssistantMessage.id,
     speechOutputSummary: readWindowSpeechOutputSummary(),
+    speechOutputActive: homeStore.getState().isSpeaking,
     settings: {
       modelType: settings.modelType,
       selectedVrmPath: settings.selectedVrmPath,
@@ -86,6 +127,7 @@ export const readOperatorDisplayState = () => {
       characterRotation: settings.characterRotation,
       lightingIntensity: settings.lightingIntensity,
       cameraHorizontalFov: settings.cameraHorizontalFov,
+      speechBubblePresentation: settings.speechBubblePresentation,
     },
   }
 }
@@ -102,6 +144,10 @@ export const applyPassiveDisplayState = (
         ? state.assistantMessageId
         : null,
     speechOutputSummary: sanitizeSpeechOutputSummary(state.speechOutputSummary),
+    speechOutputActive:
+      typeof state.speechOutputActive === 'boolean'
+        ? state.speechOutputActive
+        : false,
     sequence: Number(state.sequence || 0),
     updatedAt: state.updatedAt || null,
   })
@@ -138,6 +184,11 @@ export const applyPassiveDisplayState = (
     ...(isCameraHorizontalFov(settings.cameraHorizontalFov) && {
       cameraHorizontalFov: settings.cameraHorizontalFov,
     }),
+    ...(isSpeechBubblePresentationSettings(
+      settings.speechBubblePresentation
+    ) && {
+      speechBubblePresentation: settings.speechBubblePresentation,
+    }),
   })
 }
 
@@ -149,21 +200,31 @@ export const ProjectionVisualDisplayStateBridge = ({
 
     let stopped = false
     let lastPayload = ''
+    let inFlight = false
+    let activeController: AbortController | null = null
 
     const publish = async () => {
+      if (stopped || inFlight) return
       const payload = readOperatorDisplayState()
       const serializedPayload = JSON.stringify(payload)
       if (serializedPayload === lastPayload) return
 
-      lastPayload = serializedPayload
+      inFlight = true
+      const controller = new AbortController()
+      activeController = controller
       try {
-        await fetch('/api/projectionDisplayState', {
+        const response = await fetch('/api/projectionDisplayState', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: serializedPayload,
+          signal: controller.signal,
         })
+        if (!stopped && response.ok) lastPayload = serializedPayload
       } catch {
         // Passive displays keep their last known state when the local bridge is unavailable.
+      } finally {
+        if (activeController === controller) activeController = null
+        inFlight = false
       }
     }
 
@@ -174,6 +235,7 @@ export const ProjectionVisualDisplayStateBridge = ({
 
     return () => {
       stopped = true
+      activeController?.abort()
       window.clearInterval(timer)
     }
   }, [mode])
@@ -183,21 +245,45 @@ export const ProjectionVisualDisplayStateBridge = ({
 
     let stopped = false
     let lastSequence = 0
+    let generation = 0
+    let inFlight = false
+    let activeController: AbortController | null = null
 
     const poll = async () => {
+      if (stopped || inFlight) return
+      inFlight = true
+      const currentGeneration = ++generation
+      const controller = new AbortController()
+      activeController = controller
       try {
         const response = await fetch('/api/projectionDisplayState', {
           cache: 'no-store',
+          signal: controller.signal,
         })
-        if (!response.ok) return
-        const payload = await response.json()
-        const state = payload?.state as RemoteProjectionDisplayState | undefined
+        if (stopped || currentGeneration !== generation) return
+        if (!response.ok) {
+          clearTransientPassiveSpeechOutput()
+          return
+        }
+        const payload =
+          (await response.json()) as ProjectionDisplayStateResponse
+        if (stopped || currentGeneration !== generation) return
+        if (!isFreshRemoteProjectionDisplayState(payload)) {
+          clearTransientPassiveSpeechOutput()
+          return
+        }
+        const state = payload.state
         const sequence = Number(state?.sequence || 0)
         if (!state || sequence <= lastSequence) return
         lastSequence = sequence
         applyPassiveDisplayState(state)
       } catch {
-        // Passive display should fail soft and keep rendering its local state.
+        if (!stopped && currentGeneration === generation) {
+          clearTransientPassiveSpeechOutput()
+        }
+      } finally {
+        if (activeController === controller) activeController = null
+        inFlight = false
       }
     }
 
@@ -208,7 +294,10 @@ export const ProjectionVisualDisplayStateBridge = ({
 
     return () => {
       stopped = true
+      generation += 1
+      activeController?.abort()
       window.clearInterval(timer)
+      clearTransientPassiveSpeechOutput()
     }
   }, [mode])
 

@@ -1,4 +1,5 @@
 import { aiServiceOptions } from '@/components/settings/modelProvider/utils/aiServiceConfigs'
+import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
 
 describe('settingsStore persistence', () => {
   const storageKey = 'aitube-kit-settings'
@@ -214,6 +215,39 @@ describe('settingsStore persistence', () => {
     const settingsStore = loadStore()
 
     expect(settingsStore.getState().lightingIntensity).toBe(2.4)
+  })
+
+  it('rehydrates the complete bounded local speech bubble presentation', () => {
+    const persisted = {
+      ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+      fontSizePx: 30,
+      timingMode: 'reading-time',
+    }
+    setPersistedState({ speechBubblePresentation: persisted })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().speechBubblePresentation).toEqual(persisted)
+  })
+
+  it.each([
+    ['partial', { fontSizePx: 30 }],
+    [
+      'extra key',
+      {
+        ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+        arbitraryCss: 'display:none',
+      },
+    ],
+    ['out of range', { ...DEFAULT_SPEECH_BUBBLE_PRESENTATION, positionX: 2 }],
+  ])('rejects invalid persisted bubble presentation: %s', (_label, value) => {
+    setPersistedState({ speechBubblePresentation: value })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().speechBubblePresentation).toEqual(
+      DEFAULT_SPEECH_BUBBLE_PRESENTATION
+    )
   })
 
   it.each([

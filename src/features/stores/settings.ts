@@ -47,6 +47,11 @@ import {
   isLightingIntensity,
   LIGHTING_INTENSITY_DEFAULT,
 } from './settingsValidation'
+import {
+  DEFAULT_SPEECH_BUBBLE_PRESENTATION,
+  isSpeechBubblePresentationSettings,
+  type SpeechBubblePresentationSettings,
+} from '@/features/projectionVisualBubble/presentation'
 
 export {
   CAMERA_HORIZONTAL_FOV_DEFAULT,
@@ -224,6 +229,7 @@ interface Character {
   }
   cameraHorizontalFov: number
   lightingIntensity: number
+  speechBubblePresentation: SpeechBubblePresentationSettings
   poseAdjustMode: boolean
   selectedPNGTuberPath: string
   pngTuberSensitivity: number
@@ -585,6 +591,7 @@ const getInitialValuesFromEnv = (): SettingsState => ({
     )
     return isLightingIntensity(value) ? value : LIGHTING_INTENSITY_DEFAULT
   })(),
+  speechBubblePresentation: { ...DEFAULT_SPEECH_BUBBLE_PRESENTATION },
   poseAdjustMode: false,
 
   // General
@@ -958,6 +965,13 @@ const mergePersistedSettings = (
   )
     ? persistedLightingIntensity
     : currentState.lightingIntensity
+  const persistedSpeechBubblePresentation =
+    migratedState?.speechBubblePresentation
+  mergedState.speechBubblePresentation = isSpeechBubblePresentationSettings(
+    persistedSpeechBubblePresentation
+  )
+    ? persistedSpeechBubblePresentation
+    : currentState.speechBubblePresentation
   const systemCellAIService = getConfiguredSystemCellAIService()
   if (systemCellAIService) {
     mergedState.selectAIService = systemCellAIService
@@ -1130,6 +1144,7 @@ const settingsStore = create<SettingsState>()(
         characterRotation: state.characterRotation,
         cameraHorizontalFov: state.cameraHorizontalFov,
         lightingIntensity: state.lightingIntensity,
+        speechBubblePresentation: state.speechBubblePresentation,
         modelType: state.modelType,
         selectedPNGTuberPath: state.selectedPNGTuberPath,
         pngTuberSensitivity: state.pngTuberSensitivity,

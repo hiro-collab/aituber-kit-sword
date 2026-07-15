@@ -6,6 +6,7 @@ type ProjectionDisplayState = {
   assistantMessage: string
   assistantMessageId: string | null
   speechOutputSummary: SpeechOutputSummary | null
+  speechOutputActive: boolean
   sequence: number
   updatedAt: string | null
 }
@@ -18,6 +19,7 @@ const projectionDisplayStore = create<ProjectionDisplayStore>()((set) => ({
   assistantMessage: '',
   assistantMessageId: null,
   speechOutputSummary: null,
+  speechOutputActive: false,
   sequence: 0,
   updatedAt: null,
   setDisplayState: (state) => set(state),

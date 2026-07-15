@@ -1138,9 +1138,14 @@ describe('worker-2 projection visual organ contract', () => {
     expect(summaryWriteIndex).toBeGreaterThanOrEqual(0)
     expect(synthesisIndex).toBeGreaterThanOrEqual(0)
     expect(summaryWriteIndex).toBeLessThan(synthesisIndex)
-    expect(bubbleSource).toContain('(current + 1) % pages.length')
+    expect(bubbleSource).toContain('resolveSpeechBubbleTimerDecision')
+    expect(bubbleSource).toContain("decision.action === 'advance'")
+    expect(bubbleSource).not.toContain('(current + 1) % pages.length')
     expect(bubbleSource).toContain('data-text-density={bubbleTextDensity}')
-    expect(bubbleSource).toContain('data-page-read-ms={currentPageReadMs}')
+    expect(bubbleSource).toContain(
+      'data-timing-mode={bubblePresentation.timingMode}'
+    )
+    expect(bubbleSource).toContain('data-safe-area-clamped')
     expect(bubbleSource).toContain("variant !== 'operator'")
     expect(bubbleSource).toContain(
       "variant?: 'operator' | 'passive' | 'stage-output'"
@@ -1154,8 +1159,8 @@ describe('worker-2 projection visual organ contract', () => {
     expect(cssSource).toContain(
       ".projection-visual[data-projection-visual-mode='stage-output']"
     )
-    expect(cssSource).toContain('width: min(66vw, 960px)')
-    expect(cssSource).toContain('font-size: clamp(28px, 2.25vw, 40px)')
+    expect(cssSource).toContain('var(--speech-bubble-font-size, 24px)')
+    expect(cssSource).toContain('.td-assistant-bubble-tail')
     expect(cssSource).toContain(
       ".td-assistant-bubble[data-text-density='compact']"
     )
@@ -1518,7 +1523,8 @@ describe('worker-2 projection visual organ contract', () => {
     )
     expect(bridgeSource).toContain("fetch('/api/projectionDisplayState'")
     expect(bridgeSource).toContain('fixedCharacterPosition: true')
-    expect(bridgeSource).toContain('viewer.restoreCameraPosition()')
+    expect(bridgeSource).toContain('settingsStore.setState')
+    expect(bridgeSource).not.toContain('viewer.restoreCameraPosition()')
     expect(apiSource).toContain('enforceLocalApiRequest')
     expect(apiSource).toContain("sizeLimit: '16kb'")
     expect(apiSource).toContain('MAX_ASSISTANT_MESSAGE_CHARS = 1600')
@@ -1585,7 +1591,7 @@ describe('worker-2 projection visual organ contract', () => {
       'dance_motion_asset_not_configured'
     )
     expect(viewerSource).toContain('Motion Runtime query VRMA unavailable')
-    expect(viewerSource).toContain('Motion Runtime dance asset unavailable')
+    expect(viewerSource).toContain('Motion Runtime VRMA asset unavailable')
     expect(viewerSource).toContain('motion_asset_load_failed')
     expect(viewerSource).not.toContain(
       "Failed to load Motion Runtime VRMA:', error"
