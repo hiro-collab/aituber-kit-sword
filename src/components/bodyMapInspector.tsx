@@ -895,7 +895,7 @@ const drawQuad = (
   }
 }
 
-export const CubeVaultBackground = () => {
+export const BodyMapInspector = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const animationRef = useRef<number | null>(null)
   const lastFrameRef = useRef(0)

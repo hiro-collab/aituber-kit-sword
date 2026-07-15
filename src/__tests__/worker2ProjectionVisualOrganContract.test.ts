@@ -1218,9 +1218,30 @@ describe('worker-2 projection visual organ contract', () => {
     ).toBe('会話内容だけを表示する')
   })
 
+  it('keeps one canonical body-map implementation behind the bounded compatibility route', () => {
+    const pageSource = readSource('src/pages/body-map-inspector.tsx')
+    const compatibilityPageSource = readSource(
+      'src/pages/cube-vault-background.tsx'
+    )
+
+    expect(pageSource).toContain("from '@/components/bodyMapInspector'")
+    expect(pageSource).toContain('<BodyMapInspector />')
+    expect(compatibilityPageSource).toContain(
+      "export { default } from './body-map-inspector'"
+    )
+    expect(compatibilityPageSource).not.toContain('<BodyMapInspector />')
+    expect(
+      fs.existsSync(
+        path.resolve(process.cwd(), 'src/components/cubeVaultBackground.tsx')
+      )
+    ).toBe(false)
+  })
+
   it('keeps normal HUD focused on Thought Core and current provider grouping', () => {
     const source = readSource('src/components/projectionVisualHud.tsx')
-    const cubeVaultSource = readSource('src/components/cubeVaultBackground.tsx')
+    const bodyMapInspectorSource = readSource(
+      'src/components/bodyMapInspector.tsx'
+    )
 
     expect(source).toContain(
       "touchdesigner_control_gui: 'display / projection'"
@@ -1292,8 +1313,8 @@ describe('worker-2 projection visual organ contract', () => {
       "source_class: 'camera_environment_estimate'",
       "proof_ceiling: 'camera_environment_estimate_only'",
       "does_not_prove: [\n              'physical_room_light_state',\n              'home_assistant_light_state',\n            ]",
-    ].forEach((wiring) => expect(cubeVaultSource).toContain(wiring))
-    const roomLightSources = `${source}\n${cubeVaultSource}`
+    ].forEach((wiring) => expect(bodyMapInspectorSource).toContain(wiring))
+    const roomLightSources = `${source}\n${bodyMapInspectorSource}`
     ;[
       "'query:room_light'",
       'state_queries: {\n          room_light',

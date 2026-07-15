@@ -1,15 +1,6 @@
-import Head from 'next/head'
-import { CubeVaultBackground } from '@/components/cubeVaultBackground'
-
-const CubeVaultBackgroundPage = () => (
-  <>
-    <Head>
-      <title>System Cell Background</title>
-    </Head>
-    <main className="h-screen w-screen overflow-hidden bg-[#020611]">
-      <CubeVaultBackground />
-    </main>
-  </>
-)
-
-export default CubeVaultBackgroundPage
+/**
+ * Compatibility route for the local held TouchDesigner scene.
+ * Remove after that scene loads /body-map-inspector and both tracked and local
+ * current-consumer checks report zero references to this route.
+ */
+export { default } from './body-map-inspector'
