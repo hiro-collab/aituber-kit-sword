@@ -1,10 +1,15 @@
 import { act, render, waitFor } from '@testing-library/react'
 import {
+  deriveFluidFireRelayAvatarLighting,
   drawFluidFireRelayFrame,
   FluidFireRelayCanvasLayer,
   resolveProjectionEffectSelection,
 } from '../browser/fluidFireRelayCanvasLayer'
 import { DEFAULT_FLUID_FIRE_RELAY_PARAMETERS } from '../settings'
+import {
+  getAvatarLightingContribution,
+  resetAvatarLightingContribution,
+} from '../avatarLighting'
 
 describe('FluidFireRelayCanvasLayer', () => {
   const originalGetContext = HTMLCanvasElement.prototype.getContext
@@ -25,6 +30,7 @@ describe('FluidFireRelayCanvasLayer', () => {
   } as unknown as CanvasRenderingContext2D
 
   beforeEach(() => {
+    resetAvatarLightingContribution()
     requestCallbacks.clear()
     nextRequestId = 1
     jest.clearAllMocks()
@@ -48,6 +54,7 @@ describe('FluidFireRelayCanvasLayer', () => {
   })
 
   afterEach(() => {
+    resetAvatarLightingContribution()
     jest.restoreAllMocks()
     Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
       configurable: true,
@@ -120,12 +127,17 @@ describe('FluidFireRelayCanvasLayer', () => {
     expect(drawingContext.clearRect).toHaveBeenCalledTimes(1)
     expect(drawingContext.arc).toHaveBeenCalledTimes(18)
     expect(requestCallbacks.size).toBe(1)
+    const lightingContribution = getAvatarLightingContribution()
+    expect(lightingContribution.status).toBe('active')
+    expect(lightingContribution.intensityScale).toBeGreaterThanOrEqual(1)
+    expect(lightingContribution.intensityScale).toBeLessThanOrEqual(1.5)
 
     act(() =>
       canvas.dispatchEvent(new Event('contextlost', { cancelable: true }))
     )
     expect(canvas.dataset.effectStatus).toBe('context-lost')
     expect(requestCallbacks.size).toBe(0)
+    expect(getAvatarLightingContribution().status).toBe('neutral')
 
     act(() => canvas.dispatchEvent(new Event('contextrestored')))
     expect(canvas.dataset.effectStatus).toBe('recovering')
@@ -133,6 +145,7 @@ describe('FluidFireRelayCanvasLayer', () => {
 
     view.unmount()
     expect(requestCallbacks.size).toBe(0)
+    expect(getAvatarLightingContribution().status).toBe('neutral')
   })
 
   it('reports unavailable without scheduling when Canvas 2D is absent', () => {
@@ -225,5 +238,45 @@ describe('FluidFireRelayCanvasLayer', () => {
 
     expect(fullBloomStops).not.toEqual(noBloomStops)
     expect(fullBloomStops[0]).not.toBe(noBloomStops[0])
+  })
+
+  it('derives one bounded avatar-light sample and fails closed on invalid energy', () => {
+    const frameContext = {
+      nowMs: 16,
+      deltaMs: 16,
+      parameters: DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+    }
+    const contribution = deriveFluidFireRelayAvatarLighting(
+      {
+        disposed: false,
+        frameCount: 1,
+        densityEnergy: 2,
+        temperatureEnergy: 3,
+        pressureEnergy: 1,
+        completedPassCount: 4,
+      },
+      frameContext
+    )
+    expect(contribution.status).toBe('active')
+    expect(contribution.intensityScale).toBeCloseTo(1.304)
+    expect(contribution.warmthClass).toBe('warm')
+
+    expect(
+      deriveFluidFireRelayAvatarLighting(
+        {
+          disposed: false,
+          frameCount: 1,
+          densityEnergy: Number.NaN,
+          temperatureEnergy: 1,
+          pressureEnergy: 1,
+          completedPassCount: 4,
+        },
+        frameContext
+      )
+    ).toEqual({
+      status: 'neutral',
+      intensityScale: 1,
+      warmthClass: 'neutral',
+    })
   })
 })

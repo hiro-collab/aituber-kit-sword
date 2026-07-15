@@ -136,6 +136,7 @@ describe('canonical Projection Effects validation', () => {
     expect(fluidFireRelayDefinition.proofStatus).toBe('source-static')
     expect(fluidFireRelayDefinition.capabilities).toEqual([
       { id: 'browserRendererContract', available: true },
+      { id: 'avatarLightingContribution', available: true },
       { id: 'browserRuntimeObserved', available: false },
       { id: 'touchDesignerWriteback', available: false },
     ])

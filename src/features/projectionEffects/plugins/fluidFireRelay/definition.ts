@@ -64,6 +64,7 @@ export const fluidFireRelayDefinition = {
   diagnostics: [{ code: 'sourceStaticOnly', status: 'healthy' }],
   capabilities: [
     { id: 'browserRendererContract', available: true },
+    { id: 'avatarLightingContribution', available: true },
     { id: 'browserRuntimeObserved', available: false },
     { id: 'touchDesignerWriteback', available: false },
   ],

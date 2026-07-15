@@ -18,6 +18,10 @@ import {
   SEMANTIC_MOTION_GROUP_KEY,
 } from '@/features/motionRuntime/motionStimulusReceiver'
 import settingsStore from '@/features/stores/settings'
+import {
+  publishAvatarLightingContribution,
+  resetAvatarLightingContribution,
+} from '@/features/projectionEffects/avatarLighting'
 
 jest.mock('@/lib/VRMAnimation/loadVRMAnimation', () => ({
   loadVRMAnimation: jest.fn(),
@@ -39,6 +43,7 @@ describe('VRM camera fit', () => {
 
   afterEach(() => {
     settingsStore.setState(originalCameraSettings)
+    resetAvatarLightingContribution()
   })
 
   it('converts a stable horizontal projector FOV to the vertical Three.js FOV', () => {
@@ -168,6 +173,59 @@ describe('VRM camera fit', () => {
       expect(controls.target).toEqual(targetBefore)
     }
   )
+
+  it('composes a bounded effect contribution with the operator base light once', () => {
+    const viewer = new Viewer()
+    const directionalLight = (
+      viewer as unknown as { _directionalLight: THREE.DirectionalLight }
+    )._directionalLight
+    const ambientLight = (
+      viewer as unknown as { _ambientLight: THREE.AmbientLight }
+    )._ambientLight
+
+    viewer.updateLightingIntensity(1.5)
+    viewer.updateAvatarLightingContribution({
+      status: 'active',
+      intensityScale: 1.25,
+      warmthClass: 'warm',
+    })
+
+    expect(directionalLight.intensity).toBeCloseTo(1.8 * 1.5 * 1.25)
+    expect(ambientLight.intensity).toBeCloseTo(1.2 * 1.5 * 1.25)
+    expect(directionalLight.color.getHex()).toBe(0xffc6a0)
+    expect(ambientLight.color.getHex()).toBe(0xffc6a0)
+
+    viewer.updateAvatarLightingContribution({
+      status: 'active',
+      intensityScale: 1.25,
+      warmthClass: 'warm',
+      text: 'private',
+    })
+    expect(directionalLight.intensity).toBeCloseTo(1.8 * 1.5)
+    expect(ambientLight.intensity).toBeCloseTo(1.2 * 1.5)
+    expect(directionalLight.color.getHex()).toBe(0xffffff)
+    expect(ambientLight.color.getHex()).toBe(0xffffff)
+  })
+
+  it('subscribes the Viewer to the in-process effect contribution edge', () => {
+    const viewer = new Viewer()
+    const directionalLight = (
+      viewer as unknown as { _directionalLight: THREE.DirectionalLight }
+    )._directionalLight
+    ;(
+      viewer as unknown as { subscribeToAvatarLighting: () => void }
+    ).subscribeToAvatarLighting()
+
+    publishAvatarLightingContribution({
+      status: 'active',
+      intensityScale: 1.2,
+      warmthClass: 'warm',
+    })
+    expect(directionalLight.intensity).toBeCloseTo(1.8 * 1.2)
+    ;(
+      viewer as unknown as { _avatarLightingUnsubscribe?: () => void }
+    )._avatarLightingUnsubscribe?.()
+  })
 
   it('uses the canonical default when raw stored lighting is invalid at construction', () => {
     settingsStore.setState({ lightingIntensity: 99 })

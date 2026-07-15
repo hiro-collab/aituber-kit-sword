@@ -11,6 +11,12 @@ import {
   isFluidFireRelayParameters,
   type FluidFireRelayParameters,
 } from '../settings'
+import {
+  NEUTRAL_AVATAR_LIGHTING_CONTRIBUTION,
+  publishAvatarLightingContribution,
+  resetAvatarLightingContribution,
+  type AvatarLightingContribution,
+} from '../avatarLighting'
 
 const EFFECT_ID = fluidFireRelayDefinition.id
 const MAX_PIXEL_RATIO = 2
@@ -52,10 +58,14 @@ export const FluidFireRelayCanvasLayer = ({
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!enabled || !canvas) return
+    if (!enabled || !canvas) {
+      resetAvatarLightingContribution()
+      return
+    }
 
     let drawingContext = canvas.getContext('2d')
     if (!drawingContext) {
+      resetAvatarLightingContribution()
       canvas.dataset.effectStatus = 'unavailable'
       return
     }
@@ -91,6 +101,9 @@ export const FluidFireRelayCanvasLayer = ({
             snapshot,
             frameContext
           )
+          publishAvatarLightingContribution(
+            deriveFluidFireRelayAvatarLighting(snapshot, frameContext)
+          )
           canvas.dataset.effectFrameCount = String(snapshot.frameCount)
         }),
     })
@@ -124,6 +137,7 @@ export const FluidFireRelayCanvasLayer = ({
     const handleContextLost = (event: Event) => {
       event.preventDefault()
       contextLost = true
+      resetAvatarLightingContribution()
       if (animationFrame !== null) {
         window.cancelAnimationFrame(animationFrame)
         animationFrame = null
@@ -159,6 +173,7 @@ export const FluidFireRelayCanvasLayer = ({
 
     return () => {
       disposed = true
+      resetAvatarLightingContribution()
       if (animationFrame !== null) {
         window.cancelAnimationFrame(animationFrame)
       }
@@ -182,6 +197,45 @@ export const FluidFireRelayCanvasLayer = ({
       style={{ mixBlendMode: 'screen' }}
     />
   )
+}
+
+export function deriveFluidFireRelayAvatarLighting(
+  snapshot: Readonly<FluidFireRelayRendererSnapshot>,
+  frameContext: ProjectionEffectFrameContext
+): Readonly<AvatarLightingContribution> {
+  const temperature = finiteClampedEnergy(snapshot.temperatureEnergy)
+  const density = finiteClampedEnergy(snapshot.densityEnergy)
+  const bloomGain = finiteClampedNumber(
+    frameContext.parameters.bloomGain,
+    0,
+    1.5
+  )
+  if (temperature === null || density === null || bloomGain === null) {
+    return NEUTRAL_AVATAR_LIGHTING_CONTRIBUTION
+  }
+
+  const intensityScale = Math.min(
+    1.5,
+    1 + temperature * 0.08 + density * 0.025 + bloomGain * 0.04
+  )
+  return Object.freeze({
+    status: 'active',
+    intensityScale,
+    warmthClass: temperature > 0.1 ? 'warm' : 'neutral',
+  })
+}
+
+function finiteClampedEnergy(value: unknown): number | null {
+  return finiteClampedNumber(value, 0, MAX_ENERGY)
+}
+
+function finiteClampedNumber(
+  value: unknown,
+  minimum: number,
+  maximum: number
+): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.min(maximum, Math.max(minimum, value))
 }
 
 export function drawFluidFireRelayFrame(

@@ -23,6 +23,13 @@ import {
   type MotionStimulusRuntimeStartRequest,
   type MotionStimulusRuntimeStartResult,
 } from '@/features/motionRuntime/motionStimulusReceiver'
+import {
+  getAvatarLightingContribution,
+  isAvatarLightingContribution,
+  NEUTRAL_AVATAR_LIGHTING_CONTRIBUTION,
+  subscribeToAvatarLightingContribution,
+  type AvatarLightingContribution,
+} from '@/features/projectionEffects/avatarLighting'
 
 export const PROJECTION_VISUAL_IN_PAGE_DIAGNOSTICS_GLOBAL =
   '__projectionVisualInPageDiagnosticsV0'
@@ -38,6 +45,9 @@ const toValidatedVerticalFovDegrees = (
   isCameraHorizontalFov(horizontalFovDegrees)
     ? horizontalToVerticalFovDegrees(horizontalFovDegrees, aspect)
     : null
+
+const AVATAR_LIGHTING_NEUTRAL_COLOR = 0xffffff
+const AVATAR_LIGHTING_WARM_COLOR = 0xffc6a0
 
 export interface ProjectionVisualInPageDiagnosticsV0 {
   schema_version: typeof PROJECTION_VISUAL_IN_PAGE_DIAGNOSTICS_SCHEMA_VERSION
@@ -117,6 +127,10 @@ export class Viewer {
   private _directionalLight?: THREE.DirectionalLight
   private _ambientLight?: THREE.AmbientLight
   private _settingsUnsubscribe?: () => void
+  private _avatarLightingUnsubscribe?: () => void
+  private _lightingIntensity = LIGHTING_INTENSITY_DEFAULT
+  private _avatarLightingContribution: Readonly<AvatarLightingContribution> =
+    NEUTRAL_AVATAR_LIGHTING_CONTRIBUTION
   private _motionRuntimeAssetPath?: string
   private _loadedMotionRuntimeAssetPath?: string
   private _loadedMotionRuntimeModel?: Model
@@ -142,6 +156,7 @@ export class Viewer {
     const lightingIntensity = isLightingIntensity(storedLightingIntensity)
       ? storedLightingIntensity
       : LIGHTING_INTENSITY_DEFAULT
+    this._lightingIntensity = lightingIntensity
     this._directionalLight = new THREE.DirectionalLight(
       0xffffff,
       1.8 * lightingIntensity
@@ -538,6 +553,7 @@ export class Viewer {
     this.restoreCameraPosition()
 
     this.subscribeToSettings()
+    this.subscribeToAvatarLighting()
   }
 
   private subscribeToSettings() {
@@ -557,6 +573,14 @@ export class Viewer {
         this.restoreCameraPosition()
       }
     })
+  }
+
+  private subscribeToAvatarLighting() {
+    this._avatarLightingUnsubscribe?.()
+    this.updateAvatarLightingContribution(getAvatarLightingContribution())
+    this._avatarLightingUnsubscribe = subscribeToAvatarLightingContribution(
+      (contribution) => this.updateAvatarLightingContribution(contribution)
+    )
   }
 
   /**
@@ -753,11 +777,36 @@ export class Viewer {
    */
   public updateLightingIntensity(intensity: number) {
     if (!isLightingIntensity(intensity)) return
+    this._lightingIntensity = intensity
+    this.applyAvatarLighting()
+  }
+
+  public updateAvatarLightingContribution(contribution: unknown) {
+    this._avatarLightingContribution = isAvatarLightingContribution(
+      contribution
+    )
+      ? contribution
+      : NEUTRAL_AVATAR_LIGHTING_CONTRIBUTION
+    this.applyAvatarLighting()
+  }
+
+  private applyAvatarLighting() {
+    const contribution = this._avatarLightingContribution
+    const intensityScale =
+      contribution.status === 'active' ? contribution.intensityScale : 1
+    const color =
+      contribution.status === 'active' && contribution.warmthClass === 'warm'
+        ? AVATAR_LIGHTING_WARM_COLOR
+        : AVATAR_LIGHTING_NEUTRAL_COLOR
     if (this._directionalLight) {
-      this._directionalLight.intensity = 1.8 * intensity
+      this._directionalLight.intensity =
+        1.8 * this._lightingIntensity * intensityScale
+      this._directionalLight.color.setHex(color)
     }
     if (this._ambientLight) {
-      this._ambientLight.intensity = 1.2 * intensity
+      this._ambientLight.intensity =
+        1.2 * this._lightingIntensity * intensityScale
+      this._ambientLight.color.setHex(color)
     }
   }
 
