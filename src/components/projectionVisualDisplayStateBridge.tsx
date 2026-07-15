@@ -11,6 +11,10 @@ import {
   isSpeechBubblePresentationSettings,
   type SpeechBubblePresentationSettings,
 } from '@/features/projectionVisualBubble/presentation'
+import {
+  isProjectionEffectsSettings,
+  type ProjectionEffectsSettings,
+} from '@/features/projectionEffects/settings'
 import { getLatestAssistantMessageEntry } from '@/utils/assistantMessageUtils'
 import {
   readWindowSpeechOutputDisplayState,
@@ -45,6 +49,7 @@ export type RemoteProjectionDisplaySettings = {
   }
   lightingIntensity?: number
   cameraHorizontalFov?: number
+  projectionEffects?: ProjectionEffectsSettings
   speechBubblePresentation?: SpeechBubblePresentationSettings
 }
 
@@ -127,6 +132,7 @@ export const readOperatorDisplayState = () => {
       characterRotation: settings.characterRotation,
       lightingIntensity: settings.lightingIntensity,
       cameraHorizontalFov: settings.cameraHorizontalFov,
+      projectionEffects: settings.projectionEffects,
       speechBubblePresentation: settings.speechBubblePresentation,
     },
   }
@@ -183,6 +189,9 @@ export const applyPassiveDisplayState = (
     }),
     ...(isCameraHorizontalFov(settings.cameraHorizontalFov) && {
       cameraHorizontalFov: settings.cameraHorizontalFov,
+    }),
+    ...(isProjectionEffectsSettings(settings.projectionEffects) && {
+      projectionEffects: settings.projectionEffects,
     }),
     ...(isSpeechBubblePresentationSettings(
       settings.speechBubblePresentation

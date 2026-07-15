@@ -6,26 +6,23 @@ import {
   type FluidFireRelayRendererSnapshot,
 } from '../plugins/fluidFireRelay/renderer'
 import type { ProjectionEffectFrameContext } from '../rendererPlugin'
+import {
+  DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+  isFluidFireRelayParameters,
+  type FluidFireRelayParameters,
+} from '../settings'
 
 const EFFECT_ID = fluidFireRelayDefinition.id
 const MAX_PIXEL_RATIO = 2
 const MAX_ENERGY = 4
 const PLUME_COUNT = 18
 
-const DEFAULT_PARAMETERS = Object.freeze(
-  Object.fromEntries(
-    fluidFireRelayDefinition.parameters.map((parameter) => [
-      parameter.id,
-      parameter.defaultValue,
-    ])
-  )
-)
-
 export function resolveProjectionEffectSelection(
   queryValue: unknown,
-  configuredValue: unknown
+  configuredValue: unknown,
+  allowTestQueryOverride = false
 ): typeof EFFECT_ID | null {
-  if (queryValue !== undefined) {
+  if (allowTestQueryOverride && queryValue !== undefined) {
     return queryValue === EFFECT_ID ? EFFECT_ID : null
   }
   return configuredValue === EFFECT_ID ? EFFECT_ID : null
@@ -33,12 +30,25 @@ export function resolveProjectionEffectSelection(
 
 export interface FluidFireRelayCanvasLayerProps {
   enabled: boolean
+  parameters?: FluidFireRelayParameters
 }
 
 export const FluidFireRelayCanvasLayer = ({
   enabled,
+  parameters,
 }: FluidFireRelayCanvasLayerProps) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const parametersRef = useRef<FluidFireRelayParameters>(
+    isFluidFireRelayParameters(parameters)
+      ? parameters
+      : DEFAULT_FLUID_FIRE_RELAY_PARAMETERS
+  )
+
+  useEffect(() => {
+    parametersRef.current = isFluidFireRelayParameters(parameters)
+      ? parameters
+      : DEFAULT_FLUID_FIRE_RELAY_PARAMETERS
+  }, [parameters])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -104,7 +114,7 @@ export const FluidFireRelayCanvasLayer = ({
       const result = await session.update({
         nowMs,
         deltaMs,
-        parameters: DEFAULT_PARAMETERS,
+        parameters: parametersRef.current,
       })
       if (disposed) return
       canvas.dataset.effectStatus = result.status
@@ -174,7 +184,7 @@ export const FluidFireRelayCanvasLayer = ({
   )
 }
 
-function drawFluidFireRelayFrame(
+export function drawFluidFireRelayFrame(
   context: CanvasRenderingContext2D,
   width: number,
   height: number,
@@ -187,6 +197,15 @@ function drawFluidFireRelayFrame(
     Math.max(0, snapshot.temperatureEnergy)
   )
   const pressure = Math.min(MAX_ENERGY, Math.max(0, snapshot.pressureEnergy))
+  const bloomGain = Math.min(
+    1.5,
+    Math.max(
+      0,
+      typeof frameContext.parameters.bloomGain === 'number'
+        ? frameContext.parameters.bloomGain
+        : 0
+    )
+  )
   const timeSeconds = frameContext.nowMs / 1000
 
   context.clearRect(0, 0, width, height)
@@ -203,8 +222,14 @@ function drawFluidFireRelayFrame(
       Math.max(18, Math.min(width, height) * 0.035) *
       (0.72 + density * 0.18 + phase * 0.35)
     const gradient = context.createRadialGradient(x, y, 0, x, y, radius)
-    const hotAlpha = Math.min(0.62, 0.12 + temperature * 0.18)
-    const coolAlpha = Math.min(0.42, 0.08 + density * 0.12)
+    const hotAlpha = Math.min(
+      0.82,
+      (0.12 + temperature * 0.18) * (0.65 + bloomGain)
+    )
+    const coolAlpha = Math.min(
+      0.56,
+      (0.08 + density * 0.12) * (0.7 + bloomGain * 0.6)
+    )
     gradient.addColorStop(0, `rgba(255, 238, 170, ${hotAlpha})`)
     gradient.addColorStop(0.34, `rgba(255, 92, 40, ${hotAlpha * 0.78})`)
     gradient.addColorStop(0.72, `rgba(52, 126, 255, ${coolAlpha})`)

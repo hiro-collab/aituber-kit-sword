@@ -17,6 +17,10 @@ import {
   isSpeechBubblePresentationSettings,
   type SpeechBubblePresentationSettings,
 } from '@/features/projectionVisualBubble/presentation'
+import {
+  isProjectionEffectsSettings,
+  type ProjectionEffectsSettings,
+} from '@/features/projectionEffects/settings'
 
 type CharacterPosition = {
   x: number
@@ -45,6 +49,7 @@ type ProjectionDisplaySettings = {
   characterRotation?: CharacterRotation
   lightingIntensity?: number
   cameraHorizontalFov?: number
+  projectionEffects?: ProjectionEffectsSettings
   speechBubblePresentation?: SpeechBubblePresentationSettings
 }
 
@@ -157,6 +162,9 @@ const sanitizeSettings = (value: unknown): ProjectionDisplaySettings => {
     }),
     ...(isCameraHorizontalFov(value.cameraHorizontalFov) && {
       cameraHorizontalFov: value.cameraHorizontalFov,
+    }),
+    ...(isProjectionEffectsSettings(value.projectionEffects) && {
+      projectionEffects: value.projectionEffects,
     }),
     ...(isSpeechBubblePresentationSettings(value.speechBubblePresentation) && {
       speechBubblePresentation: value.speechBubblePresentation,

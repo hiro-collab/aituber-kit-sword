@@ -2,20 +2,27 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { ProjectionVisualCalibrationPanel } from '@/components/projectionVisualCalibrationPanel'
 import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
+import {
+  DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+  DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+} from '@/features/projectionEffects/settings'
 import settingsStore from '@/features/stores/settings'
 
 describe('ProjectionVisualCalibrationPanel', () => {
   const initialCameraHorizontalFov =
     settingsStore.getState().cameraHorizontalFov
   const initialLightingIntensity = settingsStore.getState().lightingIntensity
+  const initialProjectionEffects = settingsStore.getState().projectionEffects
   const initialSpeechBubblePresentation =
     settingsStore.getState().speechBubblePresentation
 
   afterEach(() => {
     cleanup()
+    jest.restoreAllMocks()
     settingsStore.setState({
       cameraHorizontalFov: initialCameraHorizontalFov,
       lightingIntensity: initialLightingIntensity,
+      projectionEffects: initialProjectionEffects,
       speechBubblePresentation: initialSpeechBubblePresentation,
     })
   })
@@ -97,6 +104,70 @@ describe('ProjectionVisualCalibrationPanel', () => {
     expect(settingsStore.getState().lightingIntensity).toBe(1.7)
   })
 
+  it('updates the bounded projection effect selection and parameters through the same owner', () => {
+    settingsStore.setState({
+      projectionEffects: { ...DEFAULT_PROJECTION_EFFECTS_SETTINGS },
+    })
+    render(<ProjectionVisualCalibrationPanel enabled />)
+    fireEvent.click(screen.getByText('投影調整'))
+
+    fireEvent.change(screen.getByLabelText('投影エフェクト'), {
+      target: { value: 'fluidFireRelay' },
+    })
+    fireEvent.change(screen.getByLabelText('投影エフェクト 密度'), {
+      target: { value: '1.2' },
+    })
+
+    expect(settingsStore.getState().projectionEffects).toEqual({
+      selectedEffect: 'fluidFireRelay',
+      fluidFireRelay: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        densityGain: 1.2,
+      },
+    })
+  })
+
+  it('does not publish a redundant projection effect update for the same value', () => {
+    settingsStore.setState({
+      projectionEffects: { ...DEFAULT_PROJECTION_EFFECTS_SETTINGS },
+    })
+    render(<ProjectionVisualCalibrationPanel enabled />)
+    fireEvent.click(screen.getByText('投影調整'))
+    const setState = jest.spyOn(settingsStore, 'setState')
+
+    fireEvent.change(screen.getByLabelText('投影エフェクト 密度'), {
+      target: {
+        value: String(DEFAULT_FLUID_FIRE_RELAY_PARAMETERS.densityGain),
+      },
+    })
+
+    expect(setState).not.toHaveBeenCalled()
+    setState.mockRestore()
+  })
+
+  it('restores projection effect selection and parameters to the opening snapshot', () => {
+    const opening = {
+      selectedEffect: 'fluidFireRelay' as const,
+      fluidFireRelay: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        bloomGain: 1.1,
+      },
+    }
+    settingsStore.setState({ projectionEffects: opening })
+    render(<ProjectionVisualCalibrationPanel enabled />)
+    fireEvent.click(screen.getByText('投影調整'))
+    fireEvent.change(screen.getByLabelText('投影エフェクト'), {
+      target: { value: 'none' },
+    })
+    fireEvent.change(screen.getByLabelText('投影エフェクト 発光'), {
+      target: { value: '0.2' },
+    })
+
+    fireEvent.click(screen.getByText('開いた時の値に戻す'))
+
+    expect(settingsStore.getState().projectionEffects).toEqual(opening)
+  })
+
   it('supports exact presets and fails closed for invalid numeric input', () => {
     settingsStore.setState({ cameraHorizontalFov: 35 })
     render(<ProjectionVisualCalibrationPanel enabled />)
@@ -129,6 +200,9 @@ describe('ProjectionVisualCalibrationPanel', () => {
     fireEvent.click(screen.getByText('既定値へ戻す'))
     expect(settingsStore.getState().cameraHorizontalFov).toBe(35)
     expect(settingsStore.getState().lightingIntensity).toBe(1)
+    expect(settingsStore.getState().projectionEffects).toEqual(
+      DEFAULT_PROJECTION_EFFECTS_SETTINGS
+    )
   })
 
   it('updates bounded bubble layout and timing through the same operator settings owner', () => {

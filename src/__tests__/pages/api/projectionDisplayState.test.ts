@@ -4,6 +4,7 @@
 
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
+import { DEFAULT_FLUID_FIRE_RELAY_PARAMETERS } from '@/features/projectionEffects/settings'
 
 function createMockReq(
   overrides: Partial<NextApiRequest> = {}
@@ -84,6 +85,13 @@ describe('/api/projectionDisplayState', () => {
             characterRotation: { x: 1, y: 2, z: 3 },
             lightingIntensity: 3,
             cameraHorizontalFov: 45,
+            projectionEffects: {
+              selectedEffect: 'fluidFireRelay',
+              fluidFireRelay: {
+                ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+                relayMix: 0.8,
+              },
+            },
             speechBubblePresentation: {
               ...DEFAULT_SPEECH_BUBBLE_PRESENTATION,
               fontSizePx: 28,
@@ -114,6 +122,10 @@ describe('/api/projectionDisplayState', () => {
           characterPosition?: { x: number; y: number; z: number; scale: number }
           lightingIntensity?: number
           cameraHorizontalFov?: number
+          projectionEffects?: {
+            selectedEffect: string
+            fluidFireRelay: { relayMix: number }
+          }
           speechBubblePresentation?: { fontSizePx: number }
         }
       }
@@ -140,6 +152,10 @@ describe('/api/projectionDisplayState', () => {
     })
     expect(postBody.state.settings.lightingIntensity).toBe(3)
     expect(postBody.state.settings.cameraHorizontalFov).toBe(45)
+    expect(postBody.state.settings.projectionEffects).toMatchObject({
+      selectedEffect: 'fluidFireRelay',
+      fluidFireRelay: { relayMix: 0.8 },
+    })
     expect(postBody.state.settings.speechBubblePresentation?.fontSizePx).toBe(
       28
     )
@@ -233,6 +249,35 @@ describe('/api/projectionDisplayState', () => {
       (postRes._json as { state: { assistantMessageId: string | null } }).state
         .assistantMessageId
     ).toBeNull()
+  })
+
+  it('drops projection effect settings with unknown or private-bearing fields', () => {
+    const handler = require('@/pages/api/projectionDisplayState').default
+    const postRes = createMockRes()
+
+    handler(
+      createMockReq({
+        method: 'POST',
+        body: {
+          settings: {
+            projectionEffects: {
+              selectedEffect: 'fluidFireRelay',
+              fluidFireRelay: DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+              rawShader: 'private://payload',
+            },
+          },
+        },
+      }),
+      postRes
+    )
+
+    expect(
+      (
+        postRes._json as {
+          state: { settings: { projectionEffects?: unknown } }
+        }
+      ).state.settings
+    ).not.toHaveProperty('projectionEffects')
   })
 
   it('drops an incomplete or extra-key bubble contract instead of partially applying it', () => {

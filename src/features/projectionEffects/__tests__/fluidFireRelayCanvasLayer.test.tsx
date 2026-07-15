@@ -1,8 +1,10 @@
 import { act, render, waitFor } from '@testing-library/react'
 import {
+  drawFluidFireRelayFrame,
   FluidFireRelayCanvasLayer,
   resolveProjectionEffectSelection,
 } from '../browser/fluidFireRelayCanvasLayer'
+import { DEFAULT_FLUID_FIRE_RELAY_PARAMETERS } from '../settings'
 
 describe('FluidFireRelayCanvasLayer', () => {
   const originalGetContext = HTMLCanvasElement.prototype.getContext
@@ -54,20 +56,22 @@ describe('FluidFireRelayCanvasLayer', () => {
   })
 
   it('fails closed for unknown, array, URL, and disabled selections', () => {
-    expect(resolveProjectionEffectSelection('fluidFireRelay', null)).toBe(
-      'fluidFireRelay'
-    )
+    expect(resolveProjectionEffectSelection('fluidFireRelay', null)).toBeNull()
     expect(resolveProjectionEffectSelection(undefined, 'fluidFireRelay')).toBe(
       'fluidFireRelay'
     )
     expect(
       resolveProjectionEffectSelection(['fluidFireRelay'], 'fluidFireRelay')
-    ).toBeNull()
-    expect(resolveProjectionEffectSelection(null, 'fluidFireRelay')).toBeNull()
-    expect(resolveProjectionEffectSelection({}, 'fluidFireRelay')).toBeNull()
-    expect(
-      resolveProjectionEffectSelection('unknown', 'fluidFireRelay')
-    ).toBeNull()
+    ).toBe('fluidFireRelay')
+    expect(resolveProjectionEffectSelection(null, 'fluidFireRelay')).toBe(
+      'fluidFireRelay'
+    )
+    expect(resolveProjectionEffectSelection({}, 'fluidFireRelay')).toBe(
+      'fluidFireRelay'
+    )
+    expect(resolveProjectionEffectSelection('unknown', 'fluidFireRelay')).toBe(
+      'fluidFireRelay'
+    )
     expect(
       resolveProjectionEffectSelection(' fluidFireRelay ', undefined)
     ).toBeNull()
@@ -77,6 +81,22 @@ describe('FluidFireRelayCanvasLayer', () => {
     expect(
       resolveProjectionEffectSelection('https://example.test/effect', null)
     ).toBeNull()
+
+    expect(
+      resolveProjectionEffectSelection('fluidFireRelay', 'none', true)
+    ).toBe('fluidFireRelay')
+    for (const malformed of [
+      ['fluidFireRelay'],
+      null,
+      {},
+      'unknown',
+      ' fluidFireRelay ',
+      'https://example.test/effect',
+    ]) {
+      expect(
+        resolveProjectionEffectSelection(malformed, 'fluidFireRelay', true)
+      ).toBeNull()
+    }
     expect(
       render(<FluidFireRelayCanvasLayer enabled={false} />).container
     ).toBeEmptyDOMElement()
@@ -126,5 +146,84 @@ describe('FluidFireRelayCanvasLayer', () => {
       'unavailable'
     )
     expect(window.requestAnimationFrame).not.toHaveBeenCalled()
+  })
+
+  it('applies a valid parameter update on the next frame without restarting the layer', async () => {
+    const view = render(
+      <FluidFireRelayCanvasLayer
+        enabled
+        parameters={{
+          ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+          temperatureGain: 0,
+        }}
+      />
+    )
+    const canvas = view.getByTestId('fluid-fire-relay-layer')
+    await waitFor(() => expect(canvas.dataset.effectStatus).toBe('started'))
+
+    const firstFrame = [...requestCallbacks.entries()][0]
+    requestCallbacks.delete(firstFrame[0])
+    await act(async () => firstFrame[1](16))
+    const firstColorStops = gradient.addColorStop.mock.calls.map((call) =>
+      String(call[1])
+    )
+
+    view.rerender(
+      <FluidFireRelayCanvasLayer
+        enabled
+        parameters={{
+          ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+          temperatureGain: 2,
+        }}
+      />
+    )
+    const secondFrame = [...requestCallbacks.entries()][0]
+    requestCallbacks.delete(secondFrame[0])
+    await act(async () => secondFrame[1](32))
+    const secondColorStops = gradient.addColorStop.mock.calls
+      .slice(firstColorStops.length)
+      .map((call) => String(call[1]))
+
+    expect(secondColorStops).not.toEqual(firstColorStops)
+    expect(canvas.dataset.effectFrameCount).toBe('2')
+    expect(window.requestAnimationFrame).toHaveBeenCalledTimes(3)
+  })
+
+  it('uses bloom gain in the rendered frame instead of exposing a no-op control', () => {
+    const snapshot = {
+      disposed: false,
+      frameCount: 1,
+      densityEnergy: 1,
+      temperatureEnergy: 1,
+      pressureEnergy: 1,
+      completedPassCount: 4,
+    }
+    drawFluidFireRelayFrame(drawingContext, 1920, 1080, snapshot, {
+      nowMs: 16,
+      deltaMs: 16,
+      parameters: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        bloomGain: 0,
+      },
+    })
+    const noBloomStops = gradient.addColorStop.mock.calls.map((call) =>
+      String(call[1])
+    )
+    gradient.addColorStop.mockClear()
+
+    drawFluidFireRelayFrame(drawingContext, 1920, 1080, snapshot, {
+      nowMs: 16,
+      deltaMs: 16,
+      parameters: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        bloomGain: 1.5,
+      },
+    })
+    const fullBloomStops = gradient.addColorStop.mock.calls.map((call) =>
+      String(call[1])
+    )
+
+    expect(fullBloomStops).not.toEqual(noBloomStops)
+    expect(fullBloomStops[0]).not.toBe(noBloomStops[0])
   })
 })

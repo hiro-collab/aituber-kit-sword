@@ -19,6 +19,15 @@ import {
   resolveSpeechBubbleTailAngle,
   type SpeechBubblePresentationSettings,
 } from '@/features/projectionVisualBubble/presentation'
+import { fluidFireRelayDefinition } from '@/features/projectionEffects/plugins/fluidFireRelay/definition'
+import {
+  DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+  isFluidFireRelayParameters,
+  isProjectionEffectsSettings,
+  resolveProjectionEffectsSettings,
+  type FluidFireRelayParameters,
+  type ProjectionEffectsSettings,
+} from '@/features/projectionEffects/settings'
 
 type ProjectionVisualCalibrationPanelProps = {
   enabled: boolean
@@ -27,6 +36,7 @@ type ProjectionVisualCalibrationPanelProps = {
 type CalibrationSnapshot = {
   cameraHorizontalFov: number
   lightingIntensity: number
+  projectionEffects: ProjectionEffectsSettings
   speechBubblePresentation: SpeechBubblePresentationSettings
 }
 
@@ -45,6 +55,42 @@ const applyLightingIntensity = (value: number) => {
   if (!isLightingIntensity(value)) return false
   settingsStore.setState({ lightingIntensity: value })
   return true
+}
+
+const copyProjectionEffects = (
+  value: ProjectionEffectsSettings
+): ProjectionEffectsSettings => ({
+  selectedEffect: value.selectedEffect,
+  fluidFireRelay: { ...value.fluidFireRelay },
+})
+
+const applyProjectionEffects = (value: ProjectionEffectsSettings) => {
+  if (!isProjectionEffectsSettings(value)) return false
+  const current = resolveProjectionEffectsSettings(
+    settingsStore.getState().projectionEffects
+  )
+  if (
+    current.selectedEffect === value.selectedEffect &&
+    Object.keys(current.fluidFireRelay).every(
+      (key) =>
+        current.fluidFireRelay[key as keyof FluidFireRelayParameters] ===
+        value.fluidFireRelay[key as keyof FluidFireRelayParameters]
+    )
+  ) {
+    return true
+  }
+  settingsStore.setState({ projectionEffects: copyProjectionEffects(value) })
+  return true
+}
+
+const EFFECT_PARAMETER_LABELS: Readonly<
+  Record<keyof FluidFireRelayParameters, string>
+> = {
+  densityGain: '密度',
+  temperatureGain: '温度 / 色',
+  velocityDissipation: '流れの持続',
+  relayMix: 'リレー混合',
+  bloomGain: '発光',
 }
 
 const applySpeechBubblePresentation = (
@@ -67,6 +113,9 @@ export function ProjectionVisualCalibrationPanel({
   const lightingIntensity = isLightingIntensity(storedLightingIntensity)
     ? storedLightingIntensity
     : LIGHTING_INTENSITY_DEFAULT
+  const projectionEffects = resolveProjectionEffectsSettings(
+    settingsStore((s) => s.projectionEffects)
+  )
   const speechBubblePresentation = resolveSpeechBubblePresentationSettings(
     settingsStore((s) => s.speechBubblePresentation)
   )
@@ -81,6 +130,7 @@ export function ProjectionVisualCalibrationPanel({
   const openSnapshotRef = useRef<CalibrationSnapshot>({
     cameraHorizontalFov,
     lightingIntensity,
+    projectionEffects: copyProjectionEffects(projectionEffects),
     speechBubblePresentation,
   })
 
@@ -102,6 +152,7 @@ export function ProjectionVisualCalibrationPanel({
     openSnapshotRef.current = {
       cameraHorizontalFov,
       lightingIntensity,
+      projectionEffects: copyProjectionEffects(projectionEffects),
       speechBubblePresentation: { ...speechBubblePresentation },
     }
     setIsOpen(true)
@@ -122,6 +173,7 @@ export function ProjectionVisualCalibrationPanel({
   const restoreOpenSnapshot = () => {
     applyCameraHorizontalFov(openSnapshotRef.current.cameraHorizontalFov)
     applyLightingIntensity(openSnapshotRef.current.lightingIntensity)
+    applyProjectionEffects(openSnapshotRef.current.projectionEffects)
     settingsStore.setState({
       speechBubblePresentation: {
         ...openSnapshotRef.current.speechBubblePresentation,
@@ -132,6 +184,7 @@ export function ProjectionVisualCalibrationPanel({
   const restoreDefaults = () => {
     applyCameraHorizontalFov(CAMERA_HORIZONTAL_FOV_DEFAULT)
     applyLightingIntensity(LIGHTING_INTENSITY_DEFAULT)
+    applyProjectionEffects(DEFAULT_PROJECTION_EFFECTS_SETTINGS)
     settingsStore.setState({
       speechBubblePresentation: { ...DEFAULT_SPEECH_BUBBLE_PRESENTATION },
     })
@@ -306,6 +359,65 @@ export function ProjectionVisualCalibrationPanel({
               }}
               className="w-24 rounded-lg border border-cyan-100/30 bg-slate-900 px-3 py-2 text-right"
             />
+
+            <label className="mt-4 block text-sm font-bold">
+              Projection Effect
+              <select
+                aria-label="投影エフェクト"
+                value={projectionEffects.selectedEffect}
+                onChange={(event) =>
+                  applyProjectionEffects({
+                    ...projectionEffects,
+                    selectedEffect:
+                      event.target.value === 'fluidFireRelay'
+                        ? 'fluidFireRelay'
+                        : 'none',
+                  })
+                }
+                className="mt-2 w-full rounded-lg border border-cyan-100/30 bg-slate-900 px-3 py-2"
+              >
+                <option value="none">なし</option>
+                <option value="fluidFireRelay">Fluid / Fire Relay</option>
+              </select>
+            </label>
+
+            <div
+              className="mt-4 grid gap-3"
+              data-testid="fluid-fire-relay-calibration"
+            >
+              {fluidFireRelayDefinition.parameters.map((definition) => {
+                const parameterId =
+                  definition.id as keyof FluidFireRelayParameters
+                const value = projectionEffects.fluidFireRelay[parameterId]
+                return (
+                  <label key={parameterId} className="text-xs font-bold">
+                    {EFFECT_PARAMETER_LABELS[parameterId]}: {value.toFixed(3)}
+                    <input
+                      aria-label={`投影エフェクト ${EFFECT_PARAMETER_LABELS[parameterId]}`}
+                      type="range"
+                      min={definition.minimum}
+                      max={definition.maximum}
+                      step={
+                        parameterId === 'velocityDissipation' ? 0.001 : 0.01
+                      }
+                      value={value}
+                      onChange={(event) => {
+                        const candidate = {
+                          ...projectionEffects.fluidFireRelay,
+                          [parameterId]: Number(event.target.value),
+                        }
+                        if (!isFluidFireRelayParameters(candidate)) return
+                        applyProjectionEffects({
+                          ...projectionEffects,
+                          fluidFireRelay: candidate,
+                        })
+                      }}
+                      className="input-range mt-2 w-full"
+                    />
+                  </label>
+                )
+              })}
+            </div>
           </section>
 
           <section className="mb-4 rounded-xl border border-cyan-100/20 p-3">

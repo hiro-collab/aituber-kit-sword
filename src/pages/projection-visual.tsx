@@ -45,6 +45,7 @@ import {
   FluidFireRelayCanvasLayer,
   resolveProjectionEffectSelection,
 } from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
+import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
 import '@/lib/i18n'
 
 const projectionVisualAIService = ((): 'thought-core' | null => {
@@ -60,9 +61,6 @@ const projectionVisualAIService = ((): 'thought-core' | null => {
 })()
 const shouldForceContinuousMicForProjectionVisual =
   process.env.NEXT_PUBLIC_PROJECTION_VISUAL_CONTINUOUS_MIC === 'true'
-const configuredProjectionEffectId =
-  process.env.NEXT_PUBLIC_PROJECTION_EFFECT_ID || ''
-
 const ProjectionVisual = () => {
   const [
     danceLifecycleAcceptancePredicate,
@@ -100,6 +98,9 @@ const ProjectionVisual = () => {
   } = resolveProjectionVisualQueryState(routeQuery)
   const messageReceiverEnabled = settingsStore((s) => s.messageReceiverEnabled)
   const modelType = settingsStore((s) => s.modelType)
+  const projectionEffects = resolveProjectionEffectsSettings(
+    settingsStore((s) => s.projectionEffects)
+  )
   const { isLive2DEnabled } = useLive2DEnabled()
   const controlOwner = useBrowserControlOwner({
     label: 'Projection Visual',
@@ -119,7 +120,8 @@ const ProjectionVisual = () => {
     : 'operator'
   const projectionEffectId = resolveProjectionEffectSelection(
     'projectionEffect' in routeQuery ? routeQuery.projectionEffect : undefined,
-    configuredProjectionEffectId
+    projectionEffects.selectedEffect,
+    projectionVisualTestMode !== undefined
   )
 
   const characterPresets = useMemo(
@@ -235,6 +237,7 @@ const ProjectionVisual = () => {
       <ProjectionVisualDisplayStateBridge mode={displayStateBridgeMode} />
       <FluidFireRelayCanvasLayer
         enabled={projectionEffectId === 'fluidFireRelay'}
+        parameters={projectionEffects.fluidFireRelay}
       />
       {shouldRenderHud && (
         <ProjectionVisualHud

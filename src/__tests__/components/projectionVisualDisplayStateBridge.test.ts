@@ -3,6 +3,10 @@ import { createElement } from 'react'
 
 import homeStore from '@/features/stores/home'
 import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
+import {
+  DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+  DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+} from '@/features/projectionEffects/settings'
 import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
 import {
@@ -18,6 +22,7 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
   const originalCameraHorizontalFov =
     settingsStore.getState().cameraHorizontalFov
   const originalLightingIntensity = settingsStore.getState().lightingIntensity
+  const originalProjectionEffects = settingsStore.getState().projectionEffects
   const originalFixedCharacterPosition =
     settingsStore.getState().fixedCharacterPosition
   const originalSpeechBubblePresentation =
@@ -32,6 +37,7 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
     settingsStore.setState({
       cameraHorizontalFov: originalCameraHorizontalFov,
       lightingIntensity: originalLightingIntensity,
+      projectionEffects: originalProjectionEffects,
       fixedCharacterPosition: originalFixedCharacterPosition,
       speechBubblePresentation: originalSpeechBubblePresentation,
     })
@@ -46,6 +52,43 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
     settingsStore.setState({ cameraHorizontalFov: 45 })
 
     expect(readOperatorDisplayState().settings.cameraHorizontalFov).toBe(45)
+  })
+
+  it('publishes and applies one bounded operator-owned projection effect contract', () => {
+    const next = {
+      selectedEffect: 'fluidFireRelay' as const,
+      fluidFireRelay: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        temperatureGain: 1.3,
+      },
+    }
+    settingsStore.setState({ projectionEffects: next })
+
+    expect(readOperatorDisplayState().settings.projectionEffects).toEqual(next)
+
+    settingsStore.setState({
+      projectionEffects: { ...DEFAULT_PROJECTION_EFFECTS_SETTINGS },
+    })
+    applyPassiveDisplayState({ settings: { projectionEffects: next } })
+    expect(settingsStore.getState().projectionEffects).toEqual(next)
+  })
+
+  it('fails closed for an extra-key remote projection effect contract', () => {
+    settingsStore.setState({
+      projectionEffects: { ...DEFAULT_PROJECTION_EFFECTS_SETTINGS },
+    })
+    applyPassiveDisplayState({
+      settings: {
+        projectionEffects: {
+          ...DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+          privateShader: 'raw',
+        },
+      },
+    } as unknown as RemoteProjectionDisplayState)
+
+    expect(settingsStore.getState().projectionEffects).toEqual(
+      DEFAULT_PROJECTION_EFFECTS_SETTINGS
+    )
   })
 
   it('applies one valid remote FOV to passive settings and the viewer', () => {

@@ -1,5 +1,9 @@
 import { aiServiceOptions } from '@/components/settings/modelProvider/utils/aiServiceConfigs'
 import { DEFAULT_SPEECH_BUBBLE_PRESENTATION } from '@/features/projectionVisualBubble/presentation'
+import {
+  DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+  DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+} from '@/features/projectionEffects/settings'
 
 describe('settingsStore persistence', () => {
   const storageKey = 'aitube-kit-settings'
@@ -17,6 +21,7 @@ describe('settingsStore persistence', () => {
     'NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE',
     'NEXT_PUBLIC_CAMERA_HORIZONTAL_FOV',
     'NEXT_PUBLIC_LIGHTING_INTENSITY',
+    'NEXT_PUBLIC_PROJECTION_EFFECT_ID',
   ] as const
   const originalEnv = Object.fromEntries(
     managedEnvNames.map((name) => [name, process.env[name]])
@@ -215,6 +220,82 @@ describe('settingsStore persistence', () => {
     const settingsStore = loadStore()
 
     expect(settingsStore.getState().lightingIntensity).toBe(2.4)
+  })
+
+  it('rehydrates the complete bounded local projection effect settings', () => {
+    const persisted = {
+      selectedEffect: 'fluidFireRelay',
+      fluidFireRelay: {
+        ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+        densityGain: 1.2,
+      },
+    }
+    setPersistedState({ projectionEffects: persisted })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().projectionEffects).toEqual(persisted)
+  })
+
+  it.each([
+    [
+      'unknown effect',
+      { ...DEFAULT_PROJECTION_EFFECTS_SETTINGS, selectedEffect: 'url' },
+    ],
+    [
+      'extra key',
+      { ...DEFAULT_PROJECTION_EFFECTS_SETTINGS, arbitraryShader: 'raw' },
+    ],
+    [
+      'incomplete parameters',
+      {
+        selectedEffect: 'fluidFireRelay',
+        fluidFireRelay: { densityGain: 1 },
+      },
+    ],
+    [
+      'out of range',
+      {
+        selectedEffect: 'fluidFireRelay',
+        fluidFireRelay: {
+          ...DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
+          bloomGain: 99,
+        },
+      },
+    ],
+  ])(
+    'rejects invalid persisted projection effect settings: %s',
+    (_label, value) => {
+      setPersistedState({ projectionEffects: value })
+
+      const settingsStore = loadStore()
+
+      expect(settingsStore.getState().projectionEffects).toEqual(
+        DEFAULT_PROJECTION_EFFECTS_SETTINGS
+      )
+    }
+  )
+
+  it('uses the bounded environment selection only as the initial local default', () => {
+    process.env.NEXT_PUBLIC_PROJECTION_EFFECT_ID = 'fluidFireRelay'
+    setPersistedState({ characterName: 'effect-env-default' })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().projectionEffects.selectedEffect).toBe(
+      'fluidFireRelay'
+    )
+  })
+
+  it('fails an unknown environment effect selection closed to none', () => {
+    process.env.NEXT_PUBLIC_PROJECTION_EFFECT_ID = 'https://example.test/raw'
+    setPersistedState({ characterName: 'invalid-effect-env' })
+
+    const settingsStore = loadStore()
+
+    expect(settingsStore.getState().projectionEffects).toEqual(
+      DEFAULT_PROJECTION_EFFECTS_SETTINGS
+    )
   })
 
   it('rehydrates the complete bounded local speech bubble presentation', () => {

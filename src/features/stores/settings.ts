@@ -52,6 +52,11 @@ import {
   isSpeechBubblePresentationSettings,
   type SpeechBubblePresentationSettings,
 } from '@/features/projectionVisualBubble/presentation'
+import {
+  DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+  isProjectionEffectsSettings,
+  type ProjectionEffectsSettings,
+} from '@/features/projectionEffects/settings'
 
 export {
   CAMERA_HORIZONTAL_FOV_DEFAULT,
@@ -229,6 +234,7 @@ interface Character {
   }
   cameraHorizontalFov: number
   lightingIntensity: number
+  projectionEffects: ProjectionEffectsSettings
   speechBubblePresentation: SpeechBubblePresentationSettings
   poseAdjustMode: boolean
   selectedPNGTuberPath: string
@@ -591,6 +597,16 @@ const getInitialValuesFromEnv = (): SettingsState => ({
     )
     return isLightingIntensity(value) ? value : LIGHTING_INTENSITY_DEFAULT
   })(),
+  projectionEffects: {
+    ...DEFAULT_PROJECTION_EFFECTS_SETTINGS,
+    selectedEffect:
+      process.env.NEXT_PUBLIC_PROJECTION_EFFECT_ID === 'fluidFireRelay'
+        ? 'fluidFireRelay'
+        : 'none',
+    fluidFireRelay: {
+      ...DEFAULT_PROJECTION_EFFECTS_SETTINGS.fluidFireRelay,
+    },
+  },
   speechBubblePresentation: { ...DEFAULT_SPEECH_BUBBLE_PRESENTATION },
   poseAdjustMode: false,
 
@@ -965,6 +981,12 @@ const mergePersistedSettings = (
   )
     ? persistedLightingIntensity
     : currentState.lightingIntensity
+  const persistedProjectionEffects = migratedState?.projectionEffects
+  mergedState.projectionEffects = isProjectionEffectsSettings(
+    persistedProjectionEffects
+  )
+    ? persistedProjectionEffects
+    : currentState.projectionEffects
   const persistedSpeechBubblePresentation =
     migratedState?.speechBubblePresentation
   mergedState.speechBubblePresentation = isSpeechBubblePresentationSettings(
@@ -1144,6 +1166,7 @@ const settingsStore = create<SettingsState>()(
         characterRotation: state.characterRotation,
         cameraHorizontalFov: state.cameraHorizontalFov,
         lightingIntensity: state.lightingIntensity,
+        projectionEffects: state.projectionEffects,
         speechBubblePresentation: state.speechBubblePresentation,
         modelType: state.modelType,
         selectedPNGTuberPath: state.selectedPNGTuberPath,
