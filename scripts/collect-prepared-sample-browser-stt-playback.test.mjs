@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
@@ -12,6 +13,10 @@ import {
   BROWSER_PLAYBACK_GAIN_DB,
   BROWSER_PLAYBACK_GAIN_LINEAR,
   INTEGRATED_ATTEMPT_COUNT,
+  EXTERNAL_OPERATOR_SURFACE_PROBE_ATTEMPTS,
+  EXTERNAL_OPERATOR_SURFACE_PROBE_DELAY_MS,
+  OPERATOR_OWNER_INSPECTION_TIMEOUT_MS,
+  OPERATOR_OWNER_TERMINATION_STEP_MS,
   PRESENTATION_TIMEOUT_MS,
   RECOGNITION_DRAIN_TIMEOUT_MS,
   ROUTE_CANCEL_SETTLE_MS,
@@ -22,6 +27,7 @@ import {
   classifyFixedAudioEndpointSelection,
   createPublicChildEnvironment,
   createRuntimeAdapter,
+  inspectOperatorServerOwner,
   openCanonicalPresentationPages,
   releaseBrowserRoutedPlayback,
   requireBrowserAudioAvailability,
@@ -262,6 +268,7 @@ const createFakeAdapter = ({
   localeError = null,
   playerRemainsAlive = false,
   externalRevalidateError = null,
+  externalRevalidateErrorAt = null,
   acceptedCompletionError = null,
   finalDelta = 1,
 } = {}) => {
@@ -269,6 +276,7 @@ const createFakeAdapter = ({
   let resultCount = 0
   let finalCount = 0
   let attempts = 0
+  let externalRevalidateCount = 0
   return {
     events,
     async acquireLock() {
@@ -302,8 +310,13 @@ const createFakeAdapter = ({
       events.push('fill-private-text')
     },
     async revalidateExternalServer() {
+      externalRevalidateCount += 1
       events.push('external-server-revalidated')
-      if (externalRevalidateError) {
+      if (
+        externalRevalidateError &&
+        (externalRevalidateErrorAt === null ||
+          externalRevalidateCount === externalRevalidateErrorAt)
+      ) {
         throw new ControllerError(externalRevalidateError)
       }
     },
@@ -402,6 +415,18 @@ test('runs exactly five attempts and starts playback only after listening', asyn
   assert.equal(result.content_match_stability_class, 'stable_positive')
   assert.equal(JSON.stringify(result).includes(privateExpectedText), false)
 
+  const serverStartIndex = adapter.events.indexOf('server-start')
+  const browserLaunchIndex = adapter.events.indexOf('browser-launch')
+  const audioInputIndex = adapter.events.indexOf('audio-input-live')
+  const initialRevalidationIndexes = adapter.events
+    .map((event, index) => [event, index])
+    .filter(([event]) => event === 'external-server-revalidated')
+    .map(([, index]) => index)
+  assert.ok(serverStartIndex < initialRevalidationIndexes[0])
+  assert.ok(initialRevalidationIndexes[0] < browserLaunchIndex)
+  assert.ok(browserLaunchIndex < initialRevalidationIndexes[1])
+  assert.ok(initialRevalidationIndexes[1] < audioInputIndex)
+
   const listeningIndexes = adapter.events
     .map((event, index) => [event, index])
     .filter(([event]) => event === 'attempt_listening')
@@ -456,7 +481,7 @@ test('runs exactly five attempts and starts playback only after listening', asyn
     adapter.events.filter(
       (event) => event === 'external-server-revalidated'
     ).length,
-    ATTEMPT_COUNT
+    ATTEMPT_COUNT + 2
   )
   assert.deepEqual(adapter.events.slice(-5), [
     'recognition-stop',
@@ -692,6 +717,23 @@ test('rejects external owner drift before private expected-text use', async () =
   assert.equal(adapter.events.includes('playback-start'), false)
 })
 
+test('rejects an owner swap after browser handshake and before audio permission work', async () => {
+  const adapter = createFakeAdapter({
+    externalRevalidateError: 'operator_server_collision',
+    externalRevalidateErrorAt: 2,
+  })
+  const result = await runPreparedSampleController({
+    adapter,
+    expectedText: privateExpectedText,
+  })
+
+  assert.equal(result.controller_status, 'error')
+  assert.equal(result.blocker_class, 'operator_server_collision')
+  assert.equal(adapter.events.includes('browser-launch'), true)
+  assert.equal(adapter.events.includes('audio-input-live'), false)
+  assert.equal(adapter.events.includes('fill-private-text'), false)
+})
+
 test('reports lock collision without starting server or browser', async () => {
   const adapter = createFakeAdapter({ acquireError: 'controller_lock_held' })
   const result = await runPreparedSampleController({
@@ -740,6 +782,7 @@ test('attaches only to the exact existing operator surface', async () => {
       inspectOwner: async () => identity,
       probe: async () => false,
       operatorUrl,
+      probeAttempts: 1,
     }),
     (error) =>
       error instanceof ControllerError &&
@@ -756,6 +799,181 @@ test('attaches only to the exact existing operator surface', async () => {
       error instanceof ControllerError &&
       error.resultClass === 'operator_server_collision'
   )
+})
+
+test('waits for a cold exact external operator surface without changing ownership', async () => {
+  const operatorUrl =
+    'http://127.0.0.1:3000/operator/prepared-sample-stt'
+  const identity = { pid: 42, startTicks: '638000000000000000' }
+  const probeResults = [false, false, true]
+  let ownerInspectionCount = 0
+  let retrySleepCount = 0
+
+  assert.deepEqual(
+    await resolveOperatorServerMode({
+      canBind: async () => false,
+      inspectOwner: async () => {
+        ownerInspectionCount += 1
+        return identity
+      },
+      probe: async () => probeResults.shift() ?? false,
+      operatorUrl,
+      probeAttempts: 3,
+      probeDelayMs: 1,
+      sleepForRetry: async () => {
+        retrySleepCount += 1
+      },
+    }),
+    { serverMode: 'attach_external', externalServerIdentity: identity }
+  )
+  assert.equal(ownerInspectionCount, 4)
+  assert.equal(retrySleepCount, 2)
+})
+
+test('fails closed if an external operator owner changes while its surface is cold', async () => {
+  const identities = [
+    { pid: 42, startTicks: '638000000000000000' },
+    { pid: 43, startTicks: '638000000000000100' },
+  ]
+  let retrySleepCount = 0
+
+  await assert.rejects(
+    resolveOperatorServerMode({
+      canBind: async () => false,
+      inspectOwner: async () => identities.shift() ?? null,
+      probe: async () => false,
+      operatorUrl:
+        'http://127.0.0.1:3000/operator/prepared-sample-stt',
+      probeAttempts: 3,
+      sleepForRetry: async () => {
+        retrySleepCount += 1
+      },
+    }),
+    (error) =>
+      error instanceof ControllerError &&
+      error.resultClass === 'operator_server_collision'
+  )
+  assert.equal(retrySleepCount, 0)
+})
+
+test('stops cold-surface retry work when probe, inspection, or delay observes abort', async () => {
+  const identity = { pid: 42, startTicks: '638000000000000000' }
+  for (const abortAt of ['probe', 'inspection', 'delay']) {
+    const controller = new AbortController()
+    const timeoutError = new ControllerError('whole_route_timeout')
+    let probeCount = 0
+    let inspectCount = 0
+    let sleepCount = 0
+    await assert.rejects(
+      resolveOperatorServerMode({
+        canBind: async () => false,
+        inspectOwner: async (signal) => {
+          assert.equal(signal, controller.signal)
+          inspectCount += 1
+          if (abortAt === 'inspection' && inspectCount === 2) {
+            controller.abort(timeoutError)
+          }
+          return identity
+        },
+        probe: async (_url, signal) => {
+          assert.equal(signal, controller.signal)
+          probeCount += 1
+          if (abortAt === 'probe') controller.abort(timeoutError)
+          return false
+        },
+        operatorUrl:
+          'http://127.0.0.1:3000/operator/prepared-sample-stt',
+        signal: controller.signal,
+        probeAttempts: 3,
+        probeDelayMs: 1,
+        sleepForRetry: async (_delayMs, signal) => {
+          assert.equal(signal, controller.signal)
+          sleepCount += 1
+          if (abortAt === 'delay') controller.abort(timeoutError)
+        },
+      }),
+      (error) => error === timeoutError,
+      abortAt
+    )
+    assert.equal(probeCount, 1, abortAt)
+    assert.equal(inspectCount, 1 + (abortAt === 'probe' ? 0 : 1), abortAt)
+    assert.equal(sleepCount, abortAt === 'delay' ? 1 : 0, abortAt)
+  }
+})
+
+test('waits for the exact owner helper to exit after cancellation', async () => {
+  const controller = new AbortController()
+  const timeoutError = new ControllerError('whole_route_timeout')
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.killCalls = []
+  child.kill = (signal = 'SIGTERM') => {
+    child.killCalls.push(signal)
+    setImmediate(() => child.emit('close', null))
+    return true
+  }
+  const inspection = inspectOperatorServerOwner(controller.signal, {
+    spawnOwnerHelper: () => child,
+    inspectionTimeoutMs: 50,
+    terminationStepMs: 10,
+  })
+  controller.abort(timeoutError)
+  await assert.rejects(inspection, (error) => error === timeoutError)
+  assert.deepEqual(child.killCalls, ['SIGTERM'])
+})
+
+test('reports cleanup incomplete if an exact owner helper cannot be terminated', async () => {
+  const controller = new AbortController()
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.killCalls = []
+  child.kill = (signal = 'SIGTERM') => {
+    child.killCalls.push(signal)
+    return true
+  }
+  const inspection = inspectOperatorServerOwner(controller.signal, {
+    spawnOwnerHelper: () => child,
+    inspectionTimeoutMs: 50,
+    terminationStepMs: 5,
+  })
+  controller.abort(new ControllerError('whole_route_timeout'))
+  await assert.rejects(
+    inspection,
+    (error) =>
+      error instanceof ControllerError &&
+      error.resultClass === 'cleanup_incomplete'
+  )
+  assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL'])
+})
+
+test('does not treat kill errors as close-confirmed owner-helper termination', async () => {
+  for (const stopClass of ['aborted', 'timed_out']) {
+    const controller = stopClass === 'aborted' ? new AbortController() : null
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.killCalls = []
+    child.kill = (signal = 'SIGTERM') => {
+      child.killCalls.push(signal)
+      setImmediate(() => child.emit('error', new Error('fixed-test-error')))
+      return false
+    }
+    const inspection = inspectOperatorServerOwner(controller?.signal ?? null, {
+      spawnOwnerHelper: () => child,
+      inspectionTimeoutMs: 5,
+      terminationStepMs: 5,
+    })
+    if (controller) {
+      controller.abort(new ControllerError('whole_route_timeout'))
+    }
+    await assert.rejects(
+      inspection,
+      (error) =>
+        error instanceof ControllerError &&
+        error.resultClass === 'cleanup_incomplete',
+      stopClass
+    )
+    assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL'], stopClass)
+  }
 })
 
 test('rejects an external operator owner swap after SSR probing', async () => {
@@ -1078,6 +1296,25 @@ test('waits for cooperative cancellation before route-timeout cleanup', async ()
     'temp-delete',
     'release-lock',
   ])
+})
+
+test('preserves cleanup incomplete when a timed-out route cannot terminate its exact helper', async () => {
+  const adapter = createFakeAdapter({
+    startServerBarrier: new Promise((_, reject) =>
+      setTimeout(() => reject(new ControllerError('cleanup_incomplete')), 10)
+    ),
+  })
+  const result = await runPreparedSampleController({
+    adapter,
+    expectedText: privateExpectedText,
+    routeTimeoutMs: 5,
+    routeCancelSettleMs: 20,
+  })
+
+  assert.equal(result.controller_status, 'error')
+  assert.equal(result.blocker_class, 'cleanup_incomplete')
+  assert.equal(result.cleanup_class, 'cleanup_incomplete')
+  assert.equal(result.controller_stop_signal, 'stopped_on_cleanup_incomplete')
 })
 
 test('quarantines a non-cooperative route after bounded cancellation settlement', async () => {
@@ -1984,6 +2221,10 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
   assert.ok(RECOGNITION_DRAIN_TIMEOUT_MS < ATTEMPT_TIMEOUT_MS)
   assert.equal(ROUTE_CANCEL_SETTLE_MS, 2_000)
   assert.equal(ROUTE_TIMEOUT_MS, 90_000)
+  assert.equal(EXTERNAL_OPERATOR_SURFACE_PROBE_ATTEMPTS, 8)
+  assert.equal(EXTERNAL_OPERATOR_SURFACE_PROBE_DELAY_MS, 250)
+  assert.equal(OPERATOR_OWNER_INSPECTION_TIMEOUT_MS, 2_500)
+  assert.equal(OPERATOR_OWNER_TERMINATION_STEP_MS, 250)
 
   const source = await readFile(
     fileURLToPath(
@@ -1991,7 +2232,7 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
     ),
     'utf8'
   )
-  assert.match(source, /--use-fake-ui-for-media-stream/)
+  assert.doesNotMatch(source, /--use-fake-ui-for-media-stream/)
   assert.match(source, /--disable-features=ChromeWideEchoCancellation/)
   assert.match(source, /args:\s*resolveBrowserLaunchArgs\(audioRouteClass\)/)
   assert.doesNotMatch(source, /--use-fake-device-for-media-stream/)
@@ -2004,6 +2245,10 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
   assert.match(source, /buildOperatorServerOwnerInspectionScript/)
   assert.match(source, /node_modules\\\\next\\\\dist\\\\server\\\\lib\\\\start-server/)
   assert.match(source, /revalidateExternalServer/)
+  assert.match(
+    source,
+    /openCanonicalPresentationPages\([\s\S]{0,1200}revalidateExternalServer\(\{ signal \}\)[\s\S]{0,500}grantPermissions\(\['microphone'\],/
+  )
   assert.match(source, /getSettings\?\.\(\)\.deviceId/)
   assert.match(source, /__preparedSampleSttAudioInputDeviceId/)
   assert.match(source, /explicitDeviceSelected/)
@@ -2047,13 +2292,11 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
 
 test('disables wide echo cancellation only for the fixed virtual-cable route', () => {
   assert.deepEqual(resolveBrowserLaunchArgs(AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT), [
-    '--use-fake-ui-for-media-stream',
     '--disable-popup-blocking',
   ])
   assert.deepEqual(
     resolveBrowserLaunchArgs(AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR),
     [
-      '--use-fake-ui-for-media-stream',
       '--disable-popup-blocking',
       '--disable-features=ChromeWideEchoCancellation',
     ]

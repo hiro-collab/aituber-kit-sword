@@ -18,6 +18,10 @@ export const ROUTE_TIMEOUT_MS = 90_000
 export const PRESENTATION_TIMEOUT_MS = 75_000
 export const ROUTE_CANCEL_SETTLE_MS = 2_000
 export const OPERATOR_PORT = 3000
+export const EXTERNAL_OPERATOR_SURFACE_PROBE_ATTEMPTS = 8
+export const EXTERNAL_OPERATOR_SURFACE_PROBE_DELAY_MS = 250
+export const OPERATOR_OWNER_INSPECTION_TIMEOUT_MS = 2_500
+export const OPERATOR_OWNER_TERMINATION_STEP_MS = 250
 export const AUDIO_ROUTE_CLASS_SYSTEM_DEFAULT = 'system_default'
 export const AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR =
   'installed_virtual_cable_pair_v1'
@@ -25,7 +29,6 @@ export const BROWSER_PLAYBACK_GAIN_DB = 12
 export const BROWSER_PLAYBACK_GAIN_LINEAR = 10 ** (BROWSER_PLAYBACK_GAIN_DB / 20)
 export const MAX_PREPARED_SAMPLE_AUDIO_BYTES = 32 * 1024 * 1024
 export const resolveBrowserLaunchArgs = (audioRouteClass) => [
-  '--use-fake-ui-for-media-stream',
   '--disable-popup-blocking',
   ...(audioRouteClass === AUDIO_ROUTE_CLASS_INSTALLED_VIRTUAL_CABLE_PAIR
     ? ['--disable-features=ChromeWideEchoCancellation']
@@ -629,6 +632,13 @@ const withRouteTimeout = async (
       cancelSettleMs
     )
     if (!settlement) throw new ControllerError('cleanup_incomplete')
+    if (
+      settlement.class === 'operation_failed' &&
+      settlement.error instanceof ControllerError &&
+      settlement.error.resultClass === 'cleanup_incomplete'
+    ) {
+      throw settlement.error
+    }
     throw timeoutError
   } finally {
     clearTimeout(timer)
@@ -669,12 +679,20 @@ export const runPreparedSampleController = async ({
     await adapter.acquireLock()
     result = await withRouteTimeout(async (signal) => {
       await runRouteStep(signal, () => adapter.startServer({ signal }))
+      await runRouteStep(signal, () =>
+        adapter.revalidateExternalServer({ signal })
+      )
       await runRouteStep(signal, () => adapter.launchBrowser({ signal }))
-      await runRouteStep(signal, () => adapter.requireLiveAudioInput())
+      await runRouteStep(signal, () =>
+        adapter.revalidateExternalServer({ signal })
+      )
+      await runRouteStep(signal, () =>
+        adapter.requireLiveAudioInput({ signal })
+      )
 
       for (let attempt = 0; attempt < attemptCount; attempt += 1) {
         await runRouteStep(signal, () =>
-          adapter.revalidateExternalServer()
+          adapter.revalidateExternalServer({ signal })
         )
         await runRouteStep(signal, () => adapter.fillExpectedText(expectedText))
         await runRouteStep(signal, () => adapter.startAttempt())
@@ -858,9 +876,31 @@ export const runPreparedSampleController = async ({
   return result
 }
 
-const requestOperatorSurface = (url) =>
-  new Promise((resolve) => {
-    const request = http.get(url, (response) => {
+const requestOperatorSurface = (url, signal = null) =>
+  new Promise((resolve, reject) => {
+    if (signal) throwIfRouteAborted(signal)
+    let settled = false
+    let request = null
+    const finish = (value, error = null) => {
+      if (settled) return
+      settled = true
+      if (signal) signal.removeEventListener('abort', abortRequest)
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const abortRequest = () => {
+      request?.destroy()
+      try {
+        throwIfRouteAborted(signal)
+      } catch (error) {
+        finish(false, error)
+      }
+    }
+    request = http.get(url, (response) => {
+      if (settled) {
+        response.destroy()
+        return
+      }
       const chunks = []
       let size = 0
       const contentType = String(response.headers['content-type'] || '')
@@ -869,14 +909,14 @@ const requestOperatorSurface = (url) =>
         size += chunk.length
         if (size > MAX_OPERATOR_RESPONSE_BYTES) {
           request.destroy()
-          resolve(false)
+          finish(false)
           return
         }
         chunks.push(chunk)
       })
       response.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8')
-        resolve(
+        finish(
           response.statusCode === 200 &&
             contentType.includes('text/html') &&
             poweredBy.toLowerCase().includes('next.js') &&
@@ -886,11 +926,21 @@ const requestOperatorSurface = (url) =>
         )
       })
     })
-    request.on('error', () => resolve(false))
+    request.on('error', () => {
+      if (signal?.aborted) {
+        abortRequest()
+        return
+      }
+      finish(false)
+    })
     request.setTimeout(1_000, () => {
       request.destroy()
-      resolve(false)
+      finish(false)
     })
+    if (signal) {
+      signal.addEventListener('abort', abortRequest, { once: true })
+      if (signal.aborted) abortRequest()
+    }
   })
 
 export const resolveOperatorServerMode = async ({
@@ -898,18 +948,56 @@ export const resolveOperatorServerMode = async ({
   inspectOwner = inspectOperatorServerOwner,
   probe = requestOperatorSurface,
   operatorUrl,
+  signal = null,
+  probeAttempts = EXTERNAL_OPERATOR_SURFACE_PROBE_ATTEMPTS,
+  probeDelayMs = EXTERNAL_OPERATOR_SURFACE_PROBE_DELAY_MS,
+  sleepForRetry = async (delayMs, retrySignal) => {
+    try {
+      await sleep(
+        delayMs,
+        undefined,
+        retrySignal ? { signal: retrySignal } : undefined
+      )
+    } catch (error) {
+      if (retrySignal?.aborted) throwIfRouteAborted(retrySignal)
+      throw error
+    }
+  },
 }) => {
-  if (await canBind()) {
+  if (await canBind(signal)) {
+    if (signal) throwIfRouteAborted(signal)
     return { serverMode: 'start_owned', externalServerIdentity: null }
   }
-  const initialIdentity = await inspectOwner()
+  if (signal) throwIfRouteAborted(signal)
+  const initialIdentity = await inspectOwner(signal)
+  if (signal) throwIfRouteAborted(signal)
   if (!initialIdentity) {
     throw new ControllerError('operator_server_collision')
   }
-  if (!(await probe(operatorUrl))) {
+  let surfaceReady = false
+  for (let attempt = 0; attempt < probeAttempts; attempt += 1) {
+    if (signal) throwIfRouteAborted(signal)
+    if (await probe(operatorUrl, signal)) {
+      if (signal) throwIfRouteAborted(signal)
+      surfaceReady = true
+      break
+    }
+    if (signal) throwIfRouteAborted(signal)
+    const currentIdentity = await inspectOwner(signal)
+    if (signal) throwIfRouteAborted(signal)
+    if (!sameOperatorServerIdentity(initialIdentity, currentIdentity)) {
+      throw new ControllerError('operator_server_collision')
+    }
+    if (attempt + 1 < probeAttempts) {
+      await sleepForRetry(probeDelayMs, signal)
+      if (signal) throwIfRouteAborted(signal)
+    }
+  }
+  if (!surfaceReady) {
     throw new ControllerError('operator_server_collision')
   }
-  const confirmedIdentity = await inspectOwner()
+  const confirmedIdentity = await inspectOwner(signal)
+  if (signal) throwIfRouteAborted(signal)
   if (!sameOperatorServerIdentity(initialIdentity, confirmedIdentity)) {
     throw new ControllerError('operator_server_collision')
   }
@@ -1008,8 +1096,16 @@ export const buildOperatorServerOwnerInspectionScript = (
       "} catch {'unowned'}",
     ].join(';')
 
-const inspectOperatorServerOwner = () =>
-  new Promise((resolve) => {
+export const inspectOperatorServerOwner = (
+  signal = null,
+  {
+    spawnOwnerHelper = spawn,
+    inspectionTimeoutMs = OPERATOR_OWNER_INSPECTION_TIMEOUT_MS,
+    terminationStepMs = OPERATOR_OWNER_TERMINATION_STEP_MS,
+  } = {}
+) =>
+  new Promise((resolve, reject) => {
+    if (signal) throwIfRouteAborted(signal)
     const windowsPowerShell = path.join(
       process.env.SystemRoot || 'C:\\Windows',
       'System32',
@@ -1020,32 +1116,89 @@ const inspectOperatorServerOwner = () =>
     const script = buildOperatorServerOwnerInspectionScript()
     const environment = createPublicChildEnvironment()
     environment.SWORD_EXPECTED_AIT_ROOT = process.cwd()
-    let timer = null
-    const child = spawn(
+    let inspectionTimer = null
+    let gracefulTimer = null
+    let forceTimer = null
+    const child = spawnOwnerHelper(
       windowsPowerShell,
       ['-NoProfile', '-NonInteractive', '-Command', script],
       { env: environment, stdio: ['ignore', 'pipe', 'ignore'] }
     )
     let output = ''
     let settled = false
-    const finish = (value) => {
+    let stopClass = null
+    let stopError = null
+    const finish = (value, error = null) => {
       if (settled) return
       settled = true
-      if (timer) clearTimeout(timer)
+      if (inspectionTimer) clearTimeout(inspectionTimer)
+      if (gracefulTimer) clearTimeout(gracefulTimer)
+      if (forceTimer) clearTimeout(forceTimer)
+      if (signal) signal.removeEventListener('abort', abortInspection)
       delete environment.SWORD_EXPECTED_AIT_ROOT
-      resolve(value)
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const abortFailure = () => {
+      try {
+        throwIfRouteAborted(signal)
+      } catch (error) {
+        return error
+      }
+      return new ControllerError('whole_route_timeout')
+    }
+    const stopHelper = (reasonClass, reasonError = null) => {
+      if (settled || stopClass) return
+      stopClass = reasonClass
+      stopError = reasonError
+      if (inspectionTimer) clearTimeout(inspectionTimer)
+      try {
+        child.kill()
+      } catch {
+        finish(null, new ControllerError('cleanup_incomplete'))
+        return
+      }
+      gracefulTimer = setTimeout(() => {
+        if (settled) return
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          finish(null, new ControllerError('cleanup_incomplete'))
+          return
+        }
+        forceTimer = setTimeout(() => {
+          finish(null, new ControllerError('cleanup_incomplete'))
+        }, terminationStepMs)
+      }, terminationStepMs)
+    }
+    const abortInspection = () => {
+      stopHelper('aborted', abortFailure())
     }
     child.stdout.on('data', (chunk) => {
       if (output.length < 32) output += chunk.toString('utf8')
     })
-    child.once('error', () => finish(false))
-    child.once('close', (code) =>
+    child.on('error', () => {
+      if (stopClass) return
+      finish(null)
+    })
+    child.once('close', (code) => {
+      if (stopClass === 'aborted') {
+        finish(null, stopError)
+        return
+      }
+      if (stopClass === 'timed_out') {
+        finish(null)
+        return
+      }
       finish(code === 0 ? parseOperatorServerIdentity(output) : null)
-    )
-    timer = setTimeout(() => {
-      child.kill()
-      finish(false)
-    }, 3_000)
+    })
+    inspectionTimer = setTimeout(() => {
+      stopHelper('timed_out')
+    }, inspectionTimeoutMs)
+    if (signal) {
+      signal.addEventListener('abort', abortInspection, { once: true })
+      if (signal.aborted) abortInspection()
+    }
   })
 
 const waitForServer = async (
@@ -1060,8 +1213,14 @@ const waitForServer = async (
     if (child.exitCode !== null) {
       throw new ControllerError('operator_server_start_failed')
     }
-    if (await requestOperatorSurface(url)) return
-    await sleep(300)
+    if (await requestOperatorSurface(url, signal)) return
+    if (signal) throwIfRouteAborted(signal)
+    try {
+      await sleep(300, undefined, signal ? { signal } : undefined)
+    } catch (error) {
+      if (signal?.aborted) throwIfRouteAborted(signal)
+      throw error
+    }
   }
   throw new ControllerError('operator_server_start_failed')
 }
@@ -1178,6 +1337,7 @@ export const createRuntimeAdapter = ({
       const resolution = await resolveOperatorServerMode({
         operatorUrl,
         inspectOwner,
+        signal,
       })
       serverMode = resolution.serverMode
       externalServerIdentity = resolution.externalServerIdentity
@@ -1208,9 +1368,11 @@ export const createRuntimeAdapter = ({
       serverChild = stopped.serverChild
       externalServerIdentity = null
     },
-    async revalidateExternalServer() {
+    async revalidateExternalServer({ signal = null } = {}) {
       if (serverMode !== 'attach_external') return
-      const currentIdentity = await inspectOwner()
+      if (signal) throwIfRouteAborted(signal)
+      const currentIdentity = await inspectOwner(signal)
+      if (signal) throwIfRouteAborted(signal)
       if (!sameOperatorServerIdentity(externalServerIdentity, currentIdentity)) {
         throw new ControllerError('operator_server_collision')
       }
@@ -1227,10 +1389,6 @@ export const createRuntimeAdapter = ({
           timeout: 30_000,
           args: resolveBrowserLaunchArgs(audioRouteClass),
           env: createPublicChildEnvironment(),
-        })
-        if (signal) throwIfRouteAborted(signal)
-        await context.grantPermissions(['microphone'], {
-          origin: 'http://127.0.0.1:3000',
         })
         if (signal) throwIfRouteAborted(signal)
         await context.addInitScript((expectedLocale) => {
@@ -1265,6 +1423,11 @@ export const createRuntimeAdapter = ({
         })
         projectionPage = pages.projectionPage
         page = pages.operatorPage
+        if (signal) throwIfRouteAborted(signal)
+        await this.revalidateExternalServer({ signal })
+        await context.grantPermissions(['microphone'], {
+          origin: 'http://127.0.0.1:3000',
+        })
         if (signal) throwIfRouteAborted(signal)
         await page.getByTestId('prepared-sample-stt-status').waitFor({
           state: 'visible',
@@ -1326,8 +1489,11 @@ export const createRuntimeAdapter = ({
         throw new ControllerError('browser_launch_failed')
       }
     },
-    async requireLiveAudioInput() {
+    async requireLiveAudioInput({ signal = null } = {}) {
+      await this.revalidateExternalServer({ signal })
+      if (signal) throwIfRouteAborted(signal)
       const result = await page.evaluate(selectBrowserAudioRoute, audioRouteClass)
+      if (signal) throwIfRouteAborted(signal)
       if (result.cleanupIncomplete) {
         throw new ControllerError('cleanup_incomplete')
       }
