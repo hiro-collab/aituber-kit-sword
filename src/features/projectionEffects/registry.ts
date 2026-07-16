@@ -14,6 +14,7 @@ import type {
   ProjectionEffectRenderer,
   ProjectionEffectRendererPlugin,
   ProjectionEffectSession,
+  ProjectionEffectStopContext,
 } from './rendererPlugin'
 import { fluidFireRelayPlugin } from './plugins/fluidFireRelay/renderer'
 
@@ -76,6 +77,11 @@ class RegisteredProjectionEffectSession implements ProjectionEffectSession {
   private lifecycleValue: ProjectionEffectLifecycleState = 'registered'
   private operationTail: Promise<void> = Promise.resolve()
   private readonly renderer: ProjectionEffectRenderer
+  private readonly abortController = new AbortController()
+  private terminationPromise: Promise<ProjectionEffectRenderResult> | null =
+    null
+  private terminationComplete = false
+  private terminationResult: ProjectionEffectRenderResult | null = null
 
   private constructor(plugin: RegisteredProjectionEffectPlugin) {
     this.definition = plugin.definition
@@ -98,7 +104,7 @@ class RegisteredProjectionEffectSession implements ProjectionEffectSession {
 
   start(): Promise<ProjectionEffectRenderResult> {
     return this.enqueue(async () => {
-      if (this.lifecycleValue === 'disposed') return this.disposedResult()
+      if (this.isTerminatingOrDisposed()) return this.disposedResult()
       if (
         this.definition.sourceMappings.some((mapping) =>
           isFailClosedMappingStatus(mapping.status)
@@ -116,7 +122,7 @@ class RegisteredProjectionEffectSession implements ProjectionEffectSession {
     context: ProjectionEffectFrameContext
   ): Promise<ProjectionEffectRenderResult> {
     return this.enqueue(async () => {
-      if (this.lifecycleValue === 'disposed') return this.disposedResult()
+      if (this.isTerminatingOrDisposed()) return this.disposedResult()
       if (this.lifecycleValue !== 'running') {
         return this.result('skipped-not-running')
       }
@@ -129,26 +135,57 @@ class RegisteredProjectionEffectSession implements ProjectionEffectSession {
         return this.result('invalid-parameters', parameterErrors.length)
       }
       try {
-        await this.renderer.render(context)
+        await this.renderer.render({
+          ...context,
+          signal: this.abortController.signal,
+        })
         return this.isDisposed()
           ? this.disposedResult()
           : this.result('rendered')
       } catch {
+        if (this.isTerminatingOrDisposed()) return this.disposedResult()
         this.lifecycleValue = 'suspended'
         return this.result('render-failed')
       }
     })
   }
 
+  stop(
+    context: ProjectionEffectStopContext
+  ): Promise<ProjectionEffectRenderResult> {
+    return this.enqueue(async () => {
+      if (this.isTerminatingOrDisposed()) return this.disposedResult()
+      if (!hasValidStopContext(context)) return this.result('invalid-timing')
+      try {
+        if (this.renderer.stop) {
+          await this.renderer.stop({
+            ...context,
+            signal: this.abortController.signal,
+          })
+        } else {
+          await this.renderer.reset()
+        }
+        if (this.isDisposed()) return this.disposedResult()
+        this.lifecycleValue = 'ready'
+        return this.result('stopped')
+      } catch {
+        if (this.isTerminatingOrDisposed()) return this.disposedResult()
+        this.lifecycleValue = 'suspended'
+        return this.result('stop-failed')
+      }
+    })
+  }
+
   reset(): Promise<ProjectionEffectRenderResult> {
     return this.enqueue(async () => {
-      if (this.lifecycleValue === 'disposed') return this.disposedResult()
+      if (this.isTerminatingOrDisposed()) return this.disposedResult()
       try {
         await this.renderer.reset()
         if (this.isDisposed()) return this.disposedResult()
         this.lifecycleValue = 'ready'
         return this.result('reset')
       } catch {
+        if (this.isTerminatingOrDisposed()) return this.disposedResult()
         this.lifecycleValue = 'suspended'
         return this.result('reset-failed')
       }
@@ -156,16 +193,15 @@ class RegisteredProjectionEffectSession implements ProjectionEffectSession {
   }
 
   dispose(): Promise<ProjectionEffectRenderResult> {
-    return this.enqueue(async () => {
-      if (this.lifecycleValue === 'disposed') return this.disposedResult()
-      this.lifecycleValue = 'disposed'
-      try {
-        await this.renderer.dispose()
-        return this.result('disposed')
-      } catch {
-        return this.result('dispose-failed')
-      }
-    })
+    if (this.terminationComplete) return Promise.resolve(this.disposedResult())
+    return this.beginTermination()
+  }
+
+  terminate(): Promise<ProjectionEffectRenderResult> {
+    if (this.terminationComplete && this.terminationResult) {
+      return Promise.resolve(this.terminationResult)
+    }
+    return this.beginTermination()
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -188,8 +224,33 @@ class RegisteredProjectionEffectSession implements ProjectionEffectSession {
     return this.result('ignored-disposed')
   }
 
+  private beginTermination(): Promise<ProjectionEffectRenderResult> {
+    if (this.terminationPromise) return this.terminationPromise
+    const pendingOperations = this.operationTail
+    this.lifecycleValue = 'disposed'
+    this.abortController.abort()
+    this.terminationPromise = pendingOperations
+      .then(() => this.renderer.dispose())
+      .then(
+        () => this.result('disposed'),
+        () => this.result('dispose-failed')
+      )
+      .then((result) => {
+        this.terminationResult = result
+        return result
+      })
+      .finally(() => {
+        this.terminationComplete = true
+      })
+    return this.terminationPromise
+  }
+
   private isDisposed(): boolean {
     return this.lifecycleValue === 'disposed'
+  }
+
+  private isTerminatingOrDisposed(): boolean {
+    return this.terminationPromise !== null || this.isDisposed()
   }
 }
 
@@ -197,6 +258,16 @@ function hasValidFrameTiming(context: ProjectionEffectFrameContext): boolean {
   return (
     isFiniteBoundedNumber(context.nowMs, MAX_FRAME_CLOCK_MS) &&
     isFiniteBoundedNumber(context.deltaMs, MAX_FRAME_DELTA_MS)
+  )
+}
+
+function hasValidStopContext(context: ProjectionEffectStopContext): boolean {
+  return (
+    (context.mode === 'fade' || context.mode === 'immediate') &&
+    Number.isInteger(context.fadeMs) &&
+    context.fadeMs >= 0 &&
+    context.fadeMs <= 1_000 &&
+    (context.mode === 'fade' || context.fadeMs === 0)
   )
 }
 
