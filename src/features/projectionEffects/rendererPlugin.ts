@@ -7,10 +7,12 @@ export interface ProjectionEffectFrameContext {
   nowMs: number
   deltaMs: number
   parameters: Readonly<Record<string, unknown>>
+  signal?: AbortSignal
 }
 
 export type ProjectionEffectRenderStatus =
   | 'started'
+  | 'stopped'
   | 'reset'
   | 'disposed'
   | 'rendered'
@@ -20,6 +22,7 @@ export type ProjectionEffectRenderStatus =
   | 'invalid-parameters'
   | 'invalid-timing'
   | 'render-failed'
+  | 'stop-failed'
   | 'reset-failed'
   | 'dispose-failed'
 
@@ -31,8 +34,15 @@ export interface ProjectionEffectRenderResult {
 
 export interface ProjectionEffectRenderer {
   render(context: ProjectionEffectFrameContext): Promise<void> | void
+  stop?(context: ProjectionEffectStopContext): Promise<void> | void
   reset(): Promise<void> | void
   dispose(): Promise<void> | void
+}
+
+export interface ProjectionEffectStopContext {
+  mode: 'fade' | 'immediate'
+  fadeMs: number
+  signal?: AbortSignal
 }
 
 export interface ProjectionEffectRendererPlugin {
@@ -47,6 +57,10 @@ export interface ProjectionEffectSession {
   update(
     context: ProjectionEffectFrameContext
   ): Promise<ProjectionEffectRenderResult>
+  stop(
+    context: ProjectionEffectStopContext
+  ): Promise<ProjectionEffectRenderResult>
   reset(): Promise<ProjectionEffectRenderResult>
   dispose(): Promise<ProjectionEffectRenderResult>
+  terminate(): Promise<ProjectionEffectRenderResult>
 }
