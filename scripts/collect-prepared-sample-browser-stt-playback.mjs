@@ -1036,25 +1036,54 @@ export const createPublicChildEnvironment = (source = process.env) => {
   return childEnvironment
 }
 
+const MAX_DOTNET_TICKS = 3_155_378_975_999_999_999n
+
+const isValidCreationTicks = (value) =>
+  typeof value === 'string' &&
+  /^\d{1,19}$/.test(value) &&
+  BigInt(value) > 0n &&
+  BigInt(value) <= MAX_DOTNET_TICKS
+
 const sameOperatorServerIdentity = (expected, actual) =>
   Boolean(
     expected &&
       actual &&
       Number.isSafeInteger(expected.pid) &&
       expected.pid > 0 &&
-      typeof expected.startTicks === 'string' &&
-      /^\d{1,19}$/.test(expected.startTicks) &&
-      expected.pid === actual.pid &&
-      expected.startTicks === actual.startTicks
+      isValidCreationTicks(expected.startTicks) &&
+      Number.isSafeInteger(expected.anchorPid) &&
+      expected.anchorPid > 0 &&
+      isValidCreationTicks(expected.anchorStartTicks) &&
+      Number.isSafeInteger(actual.pid) &&
+      actual.pid > 0 &&
+      isValidCreationTicks(actual.startTicks) &&
+      Number.isSafeInteger(actual.anchorPid) &&
+      actual.anchorPid > 0 &&
+      isValidCreationTicks(actual.anchorStartTicks) &&
+      expected.anchorPid === actual.anchorPid &&
+      expected.anchorStartTicks === actual.anchorStartTicks
   )
 
 const parseOperatorServerIdentity = (output) => {
-  const match = /^owned:(\d{1,10}):(\d{1,19})$/.exec(output.trim())
+  const match = /^owned:(\d{1,10}):(\d{1,19}):(\d{1,10}):(\d{1,19})$/.exec(
+    output.trim()
+  )
   if (!match) return null
   const pid = Number(match[1])
   const startTicks = match[2]
-  if (!Number.isSafeInteger(pid) || pid < 1) return null
-  return Object.freeze({ pid, startTicks })
+  const anchorPid = Number(match[3])
+  const anchorStartTicks = match[4]
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid < 1 ||
+    !Number.isSafeInteger(anchorPid) ||
+    anchorPid < 1 ||
+    !isValidCreationTicks(startTicks) ||
+    !isValidCreationTicks(anchorStartTicks)
+  ) {
+    return null
+  }
+  return Object.freeze({ pid, startTicks, anchorPid, anchorStartTicks })
 }
 
 export const buildOperatorServerOwnerInspectionScript = (
@@ -1078,6 +1107,17 @@ export const buildOperatorServerOwnerInspectionScript = (
       `    $portValue=[regex]::Matches($candidate,'(?:^|\\s)(?:-p|--port)\\s+${port}(?=\\s|$)')`,
       "    return $moduleOwned -and $hostFlags.Count -eq 1 -and $hostValue.Count -eq 1 -and $portFlags.Count -eq 1 -and $portValue.Count -eq 1",
       '  }',
+      '  function Test-ExactNextChildCommand([string]$candidate) {',
+      "    $tokenMatches=[regex]::Matches($candidate,'(?:\"([^\"]+)\"|(\\S+))')",
+      "    $tokens=@($tokenMatches | ForEach-Object { if($_.Groups[1].Success){$_.Groups[1].Value}else{$_.Groups[2].Value} })",
+      "    $expectedModule=[IO.Path]::GetFullPath((Join-Path $root 'node_modules\\next\\dist\\server\\lib\\start-server.js'))",
+      '    $moduleIndexes=@(for($index=0;$index -lt $tokens.Count;$index++){try{$tokenPath=[IO.Path]::GetFullPath([string]$tokens[$index])}catch{continue};if([string]::Equals($tokenPath,$expectedModule,[StringComparison]::OrdinalIgnoreCase)){$index}})',
+      '    if($moduleIndexes.Count -ne 1){return $false}',
+      '    if($tokens.Count -eq 1){return $moduleIndexes[0] -eq 0}',
+      '    if($tokens.Count -ne 2 -or $moduleIndexes[0] -ne 1){return $false}',
+      "    $nodeName=[IO.Path]::GetFileName([string]$tokens[0])",
+      "    return $nodeName -in @('node','node.exe')",
+      '  }',
       `  $listeners=@(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Where-Object { $_.LocalAddress -in @('127.0.0.1','::1') })`,
       '  $owners=@($listeners | ForEach-Object { [int]$_.OwningProcess } | Sort-Object -Unique)',
       "  if($owners.Count -ne 1){'unowned';exit 0}",
@@ -1090,9 +1130,11 @@ export const buildOperatorServerOwnerInspectionScript = (
       "  $parentCommand=if($null -ne $parent){([string]$parent.CommandLine).Replace('/','\\')}else{''}",
       `  $directOwned=($name -in @('node','node.exe')) -and $command.Contains($root + '\\') -and (Test-ExactNextDevCommand $command)`,
       `  $parentOwned=($parentName -in @('node','node.exe')) -and $parentCommand.Contains($root + '\\') -and (Test-ExactNextDevCommand $parentCommand)`,
-      "  $sealedChild=($name -in @('node','node.exe')) -and $command.Contains($root + '\\node_modules\\next\\dist\\server\\lib\\start-server') -and ($null -ne $parent) -and ([int]$process.ParentProcessId -eq [int]$parent.ProcessId) -and $parentOwned",
+      "  $sealedChild=($name -in @('node','node.exe')) -and (Test-ExactNextChildCommand $command) -and ($null -ne $parent) -and ([int]$process.ParentProcessId -eq [int]$parent.ProcessId) -and $parentOwned",
       '  $owned=$directOwned -or $sealedChild',
-      "  if($owned){'owned:{0}:{1}' -f $owners[0],$ticks}else{'unowned'}",
+      '  $anchor=if($directOwned){$process}elseif($sealedChild){$parent}else{$null}',
+      '  $anchorTicks=if($null -ne $anchor){[Int64]$anchor.CreationDate.ToUniversalTime().Ticks}else{0}',
+      "  if($owned -and $null -ne $anchor){'owned:{0}:{1}:{2}:{3}' -f $owners[0],$ticks,[int]$anchor.ProcessId,$anchorTicks}else{'unowned'}",
       "} catch {'unowned'}",
     ].join(';')
 

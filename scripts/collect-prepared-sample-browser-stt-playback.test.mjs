@@ -232,6 +232,36 @@ const listenerFixture = (owningProcess) => ({
   owningProcess,
 })
 
+const operatorIdentity = ({
+  pid,
+  startTicks = '638000000000000000',
+  anchorPid = pid,
+  anchorStartTicks = startTicks,
+}) => ({ pid, startTicks, anchorPid, anchorStartTicks })
+
+const ownedIdentityOutput = (pid, anchorPid = pid) => {
+  const ticks = toDotNetTicks(fixtureStart)
+  return `owned:${pid}:${ticks}:${anchorPid}:${ticks}`
+}
+
+const inspectEncodedIdentity = async (output) => {
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.kill = () => true
+  const inspection = inspectOperatorServerOwner(null, {
+    spawnOwnerHelper: () => {
+      setImmediate(() => {
+        child.stdout.emit('data', Buffer.from(output))
+        child.emit('close', 0)
+      })
+      return child
+    },
+    inspectionTimeoutMs: 50,
+    terminationStepMs: 5,
+  })
+  return inspection
+}
+
 const nextDevCommand = ({
   root = fixtureAitRoot,
   host = '127.0.0.1',
@@ -757,7 +787,7 @@ test('reports lock collision without starting server or browser', async () => {
 test('attaches only to the exact existing operator surface', async () => {
   const operatorUrl =
     'http://127.0.0.1:3000/operator/prepared-sample-stt'
-  const identity = { pid: 42, startTicks: '638000000000000000' }
+  const identity = operatorIdentity({ pid: 42 })
   assert.deepEqual(
     await resolveOperatorServerMode({
       canBind: async () => true,
@@ -804,7 +834,7 @@ test('attaches only to the exact existing operator surface', async () => {
 test('waits for a cold exact external operator surface without changing ownership', async () => {
   const operatorUrl =
     'http://127.0.0.1:3000/operator/prepared-sample-stt'
-  const identity = { pid: 42, startTicks: '638000000000000000' }
+  const identity = operatorIdentity({ pid: 42 })
   const probeResults = [false, false, true]
   let ownerInspectionCount = 0
   let retrySleepCount = 0
@@ -830,10 +860,85 @@ test('waits for a cold exact external operator surface without changing ownershi
   assert.equal(retrySleepCount, 2)
 })
 
+test('accepts a cold direct-owner to sealed-listener handoff under one stable Next lineage', async () => {
+  const directIdentity = operatorIdentity({ pid: 42 })
+  const sealedIdentityA = operatorIdentity({
+    pid: 43,
+    startTicks: '638000000000000100',
+    anchorPid: 42,
+    anchorStartTicks: directIdentity.anchorStartTicks,
+  })
+  const sealedIdentityB = operatorIdentity({
+    pid: 44,
+    startTicks: '638000000000000200',
+    anchorPid: 42,
+    anchorStartTicks: directIdentity.anchorStartTicks,
+  })
+  const identities = [
+    directIdentity,
+    sealedIdentityA,
+    sealedIdentityB,
+    sealedIdentityB,
+  ]
+  const probeResults = [false, false, true]
+
+  const resolution = await resolveOperatorServerMode({
+    canBind: async () => false,
+    inspectOwner: async () => identities.shift(),
+    probe: async () => probeResults.shift(),
+    operatorUrl: 'http://127.0.0.1:3000/operator/prepared-sample-stt',
+    probeAttempts: 3,
+    probeDelayMs: 1,
+    sleepForRetry: async () => {},
+  })
+
+  assert.deepEqual(resolution, {
+    serverMode: 'attach_external',
+    externalServerIdentity: directIdentity,
+  })
+})
+
+test('rejects a listener handoff when the exact Next lineage anchor changes', async () => {
+  const initial = operatorIdentity({ pid: 42 })
+  const changedAnchors = [
+    operatorIdentity({
+      pid: 43,
+      startTicks: '638000000000000100',
+      anchorPid: 41,
+      anchorStartTicks: initial.anchorStartTicks,
+    }),
+    operatorIdentity({
+      pid: 43,
+      startTicks: '638000000000000100',
+      anchorPid: initial.anchorPid,
+      anchorStartTicks: '638000000000000200',
+    }),
+  ]
+
+  for (const changedAnchor of changedAnchors) {
+    const identities = [initial, changedAnchor]
+    await assert.rejects(
+      resolveOperatorServerMode({
+        canBind: async () => false,
+        inspectOwner: async () => identities.shift(),
+        probe: async () => true,
+        operatorUrl: 'http://127.0.0.1:3000/operator/prepared-sample-stt',
+      }),
+      (error) =>
+        error instanceof ControllerError &&
+        error.resultClass === 'operator_server_collision'
+    )
+  }
+})
+
 test('fails closed if an external operator owner changes while its surface is cold', async () => {
   const identities = [
-    { pid: 42, startTicks: '638000000000000000' },
-    { pid: 43, startTicks: '638000000000000100' },
+    operatorIdentity({ pid: 42 }),
+    operatorIdentity({
+      pid: 43,
+      startTicks: '638000000000000100',
+      anchorStartTicks: '638000000000000100',
+    }),
   ]
   let retrySleepCount = 0
 
@@ -857,7 +962,7 @@ test('fails closed if an external operator owner changes while its surface is co
 })
 
 test('stops cold-surface retry work when probe, inspection, or delay observes abort', async () => {
-  const identity = { pid: 42, startTicks: '638000000000000000' }
+  const identity = operatorIdentity({ pid: 42 })
   for (const abortAt of ['probe', 'inspection', 'delay']) {
     const controller = new AbortController()
     const timeoutError = new ControllerError('whole_route_timeout')
@@ -978,8 +1083,12 @@ test('does not treat kill errors as close-confirmed owner-helper termination', a
 
 test('rejects an external operator owner swap after SSR probing', async () => {
   const identities = [
-    { pid: 42, startTicks: '638000000000000000' },
-    { pid: 43, startTicks: '638000000000000100' },
+    operatorIdentity({ pid: 42 }),
+    operatorIdentity({
+      pid: 43,
+      startTicks: '638000000000000100',
+      anchorStartTicks: '638000000000000100',
+    }),
   ]
   await assert.rejects(
     resolveOperatorServerMode({
@@ -1002,6 +1111,7 @@ test('accepts only a direct Next dev owner or its sealed listener child', () => 
   assert.match(script, /\$directOwned=/)
   assert.match(script, /\$parentOwned=/)
   assert.match(script, /\$sealedChild=/)
+  assert.match(script, /Test-ExactNextChildCommand/)
   assert.match(script, /node_modules\\next\\dist\\server\\lib\\start-server/)
   assert.match(script, /GetFullPath/)
   assert.match(script, /\$moduleOwned=/)
@@ -1010,10 +1120,11 @@ test('accepts only a direct Next dev owner or its sealed listener child', () => 
   assert.match(script, /hostFlags\.Count -eq 1/)
   assert.match(script, /portFlags\.Count -eq 1/)
   assert.match(script, /\$owned=\$directOwned -or \$sealedChild/)
+  assert.match(script, /\$anchor=if\(\$directOwned\)/)
+  assert.match(script, /\$anchorTicks=/)
 })
 
 test('classifies direct and sealed-child Next ownership behaviorally', () => {
-  const expectedTicks = toDotNetTicks(fixtureStart)
   const directOwner = processFixture({
     processId: 99,
     commandLine: nextDevCommand(),
@@ -1023,7 +1134,7 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       listeners: [listenerFixture(99)],
       processes: [directOwner],
     }),
-    `owned:99:${expectedTicks}`
+    ownedIdentityOutput(99)
   )
 
   const exactParent = processFixture({
@@ -1048,7 +1159,7 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
         processFixture({ processId: 99, commandLine: quotedCanonicalCommand }),
       ],
     }),
-    `owned:99:${expectedTicks}`
+    ownedIdentityOutput(99)
   )
   assert.equal(
     runOwnerInspectionFixture({
@@ -1058,7 +1169,7 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
         processFixture({ processId: 55, commandLine: quotedCanonicalCommand }),
       ],
     }),
-    `owned:99:${expectedTicks}`
+    ownedIdentityOutput(99, 55)
   )
 
   assert.equal(
@@ -1066,7 +1177,22 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       listeners: [listenerFixture(99)],
       processes: [exactChild, exactParent],
     }),
-    `owned:99:${expectedTicks}`
+    ownedIdentityOutput(99, 55)
+  )
+
+  assert.equal(
+    runOwnerInspectionFixture({
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          parentProcessId: 55,
+          commandLine: `"C:\\Program Files\\nodejs\\node.exe" ${nextChildCommand()}`,
+        }),
+        exactParent,
+      ],
+    }),
+    ownedIdentityOutput(99, 55)
   )
 
   const canonicalParent = processFixture({
@@ -1081,7 +1207,7 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       listeners: [listenerFixture(99)],
       processes: [exactChild, canonicalParent],
     }),
-    `owned:99:${expectedTicks}`
+    ownedIdentityOutput(99, 55)
   )
 
   assert.equal(
@@ -1097,7 +1223,7 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
         }),
       ],
     }),
-    `owned:99:${expectedTicks}`
+    ownedIdentityOutput(99)
   )
 
   const rejectedCases = [
@@ -1155,6 +1281,42 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
           processId: 99,
           parentProcessId: 55,
           commandLine: nextChildCommand({ module: 'other.js' }),
+        }),
+        exactParent,
+      ],
+    },
+    {
+      name: 'child module suffix decoy',
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          parentProcessId: 55,
+          commandLine: nextChildCommand({ module: 'start-server-evil.js' }),
+        }),
+        exactParent,
+      ],
+    },
+    {
+      name: 'child module prefix decoy',
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          parentProcessId: 55,
+          commandLine: nextChildCommand({ module: 'evil-start-server.js' }),
+        }),
+        exactParent,
+      ],
+    },
+    {
+      name: 'canonical child path as unrelated argument',
+      listeners: [listenerFixture(99)],
+      processes: [
+        processFixture({
+          processId: 99,
+          parentProcessId: 55,
+          commandLine: `${fixtureAitRoot}\\unrelated.js ${nextChildCommand()}`,
         }),
         exactParent,
       ],
@@ -1273,6 +1435,30 @@ test('classifies direct and sealed-child Next ownership behaviorally', () => {
       'unowned',
       `sealed child: ${fixture.name}`
     )
+  }
+})
+
+test('parses only positive bounded complete operator lineage identities', async () => {
+  const ticks = toDotNetTicks(fixtureStart)
+  assert.deepEqual(
+    await inspectEncodedIdentity(`owned:99:${ticks}:55:${ticks}`),
+    operatorIdentity({
+      pid: 99,
+      startTicks: ticks,
+      anchorPid: 55,
+      anchorStartTicks: ticks,
+    })
+  )
+
+  for (const output of [
+    `owned:99:${ticks}`,
+    `owned:99:0:55:${ticks}`,
+    `owned:99:${ticks}:55:0`,
+    'owned:99:3155378976000000000:55:638000000000000000',
+    'owned:99:638000000000000000:55:3155378976000000000',
+    `owned:99:${ticks}:55:not-a-tick`,
+  ]) {
+    assert.equal(await inspectEncodedIdentity(output), null, output)
   }
 })
 
