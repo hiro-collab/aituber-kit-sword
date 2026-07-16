@@ -2409,7 +2409,7 @@ test('locks route bounds and forbids fake audio-device substitution', async () =
   assert.equal(ROUTE_TIMEOUT_MS, 90_000)
   assert.equal(EXTERNAL_OPERATOR_SURFACE_PROBE_ATTEMPTS, 8)
   assert.equal(EXTERNAL_OPERATOR_SURFACE_PROBE_DELAY_MS, 250)
-  assert.equal(OPERATOR_OWNER_INSPECTION_TIMEOUT_MS, 2_500)
+  assert.equal(OPERATOR_OWNER_INSPECTION_TIMEOUT_MS, 10_000)
   assert.equal(OPERATOR_OWNER_TERMINATION_STEP_MS, 250)
 
   const source = await readFile(
