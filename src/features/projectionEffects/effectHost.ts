@@ -97,6 +97,14 @@ export interface ProjectionEffectHostOptions {
   sfxCues?: readonly ProjectionEffectSfxCue[]
   nowMs?: () => number
   normalFadeMs?: number
+  defaultLifetimeMs?: number
+  effectLifetimeMs?: Readonly<Record<string, number>>
+  scheduler?: ProjectionEffectHostScheduler
+}
+
+export interface ProjectionEffectHostScheduler {
+  schedule(callback: () => void, delayMs: number): unknown
+  cancel(handle: unknown): void
 }
 
 interface ActiveProjectionEffect {
@@ -145,6 +153,10 @@ const SFX_REJECT_CLEANUP_TIMEOUT_MS = 250
 const SFX_STOP_TIMEOUT_MS = 1_000
 const VISUAL_STOP_TIMEOUT_MS = 1_500
 const VISUAL_DISPOSE_TIMEOUT_MS = 750
+const MIN_EFFECT_LIFETIME_MS = 500
+const MAX_EFFECT_LIFETIME_MS = 30_000
+
+export const DEFAULT_PROJECTION_EFFECT_LIFETIME_MS = 8_000
 
 export const DEFAULT_PROJECTION_EFFECT_QUALITY_POLICY: ProjectionEffectQualityPolicy =
   Object.freeze({
@@ -161,10 +173,20 @@ export class ProjectionEffectHost {
   private readonly sfxCues = new Map<string, ProjectionEffectSfxCue>()
   private readonly nowMs: () => number
   private readonly normalFadeMs: number
+  private readonly defaultLifetimeMs: number
+  private readonly effectLifetimeMs = new Map<string, number>()
+  private readonly scheduler: ProjectionEffectHostScheduler
   private readonly emergencyLatches = new Set<string>()
   private operationTail: Promise<void> = Promise.resolve()
   private active: ActiveProjectionEffect | null = null
   private pendingTerminal: PendingProjectionEffectTerminal | null = null
+  private lifetimeTimer: {
+    handle: unknown
+    generation: number
+    effectId: string
+    session: ProjectionEffectSession
+  } | null = null
+  private lifetimeGeneration = 0
   private qualityPolicyValue: ProjectionEffectQualityPolicy
 
   constructor(options: ProjectionEffectHostOptions) {
@@ -173,6 +195,15 @@ export class ProjectionEffectHost {
     this.sfxPlayer = options.sfxPlayer
     this.nowMs = options.nowMs ?? monotonicNow
     this.normalFadeMs = boundedFadeMs(options.normalFadeMs ?? 180)
+    this.defaultLifetimeMs = boundedLifetimeMs(
+      options.defaultLifetimeMs ?? DEFAULT_PROJECTION_EFFECT_LIFETIME_MS
+    )
+    this.scheduler = options.scheduler ?? DEFAULT_PROJECTION_EFFECT_SCHEDULER
+    for (const [effectId, lifetimeMs] of Object.entries(
+      options.effectLifetimeMs ?? {}
+    )) {
+      this.effectLifetimeMs.set(effectId, boundedLifetimeMs(lifetimeMs))
+    }
     this.qualityPolicyValue = normalizeProjectionEffectQualityPolicy(
       options.qualityPolicy
     )
@@ -490,6 +521,7 @@ export class ProjectionEffectHost {
     if (!this.capabilities.selfObservationAvailable) {
       partialReasons.push('self-adjustment-unavailable')
     }
+    this.scheduleFiniteStop(command.effectId, session)
     return this.result('started', command.commandId, {
       replacedEffectId,
       visualStatus: visualResult.status,
@@ -592,14 +624,54 @@ export class ProjectionEffectHost {
     if (!this.registry.has(effectId)) {
       return this.result('unknown-effect', commandId)
     }
+
+    const pending = this.pendingTerminal
+    if (
+      pending?.session.definition.id === effectId &&
+      !(await this.tryFinalizePendingTerminal())
+    ) {
+      return this.result('blocked-terminal-cleanup', commandId, {
+        visualStatus: 'dispose-failed',
+        partialReasons: ['visual-dispose-failed'],
+      })
+    }
+
+    let sfxStatus: ProjectionEffectSfxStatus | null = null
+    if (this.active?.effectId === effectId) {
+      const stopped = await this.stopActive('emergency')
+      sfxStatus = stopped.sfxStatus
+      if (!stopped.terminal) {
+        return this.result('blocked-terminal-cleanup', commandId, {
+          visualStatus: stopped.visualStatus,
+          sfxStatus: stopped.sfxStatus,
+          partialReasons: stopped.partialReasons,
+        })
+      }
+      if (
+        stopped.partialReasons.includes('visual-stop-failed') ||
+        stopped.partialReasons.includes('visual-dispose-failed') ||
+        stopped.partialReasons.includes('sfx-stop-failed')
+      ) {
+        return this.result('stop-failed', commandId, {
+          visualStatus: stopped.visualStatus,
+          sfxStatus: stopped.sfxStatus,
+          partialReasons: stopped.partialReasons,
+        })
+      }
+    }
+
     this.emergencyLatches.delete(effectId)
-    return this.result('reset', commandId)
+    return this.result('reset', commandId, {
+      visualStatus: 'reset',
+      sfxStatus,
+    })
   }
 
   private async stopActive(
     mode: ProjectionEffectStopMode
   ): Promise<StopOutcome> {
     const active = this.active
+    if (active) this.cancelFiniteStop(active.session)
     if (!active) {
       return {
         visualStatus: 'stopped',
@@ -813,6 +885,46 @@ export class ProjectionEffectHost {
     return terminal
   }
 
+  private scheduleFiniteStop(
+    effectId: string,
+    session: ProjectionEffectSession
+  ): void {
+    this.cancelFiniteStop()
+    const generation = this.lifetimeGeneration
+    const lifetimeMs =
+      this.effectLifetimeMs.get(effectId) ?? this.defaultLifetimeMs
+    const handle = this.scheduler.schedule(() => {
+      void this.enqueue(async () => {
+        const timer = this.lifetimeTimer
+        if (
+          !timer ||
+          timer.generation !== generation ||
+          timer.effectId !== effectId ||
+          timer.session !== session
+        ) {
+          return
+        }
+        this.lifetimeTimer = null
+        if (
+          this.active?.effectId !== effectId ||
+          this.active.session !== session
+        ) {
+          return
+        }
+        await this.stopActive('normal')
+      })
+    }, lifetimeMs)
+    this.lifetimeTimer = { handle, generation, effectId, session }
+  }
+
+  private cancelFiniteStop(session?: ProjectionEffectSession): void {
+    const timer = this.lifetimeTimer
+    if (!timer || (session && timer.session !== session)) return
+    this.lifetimeTimer = null
+    this.lifetimeGeneration += 1
+    this.scheduler.cancel(timer.handle)
+  }
+
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operationTail.then(operation)
     this.operationTail = result.then(
@@ -909,6 +1021,16 @@ function boundedFadeMs(value: number): number {
   return Math.round(clamp(finiteOr(value, 180), 80, 600))
 }
 
+function boundedLifetimeMs(value: number): number {
+  return Math.round(
+    clamp(
+      finiteOr(value, DEFAULT_PROJECTION_EFFECT_LIFETIME_MS),
+      MIN_EFFECT_LIFETIME_MS,
+      MAX_EFFECT_LIFETIME_MS
+    )
+  )
+}
+
 function finiteOr(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
@@ -922,6 +1044,22 @@ function monotonicNow(): number {
     typeof performance.now === 'function'
     ? performance.now()
     : Date.now()
+}
+
+const DEFAULT_PROJECTION_EFFECT_SCHEDULER: ProjectionEffectHostScheduler = {
+  schedule: (callback, delayMs) => {
+    const handle = setTimeout(callback, delayMs)
+    if (
+      typeof handle === 'object' &&
+      handle !== null &&
+      'unref' in handle &&
+      typeof handle.unref === 'function'
+    ) {
+      handle.unref()
+    }
+    return handle
+  },
+  cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 }
 
 function completesWithin(

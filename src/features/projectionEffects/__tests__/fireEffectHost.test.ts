@@ -389,6 +389,111 @@ describe('generic Projection Effect host lifecycle', () => {
     ).resolves.toEqual(expect.objectContaining({ status: 'started' }))
   })
 
+  it('joins active visual and SFX termination before reset succeeds', async () => {
+    const sfx = mockSfxPlayer()
+    const renderer = new FireParticleRenderer({ waitFrame: async () => {} })
+    const host = createHost({ sfx, renderer })
+    await host.dispatch(startCommand())
+
+    await expect(host.dispatch(resetCommand())).resolves.toEqual(
+      expect.objectContaining({
+        status: 'reset',
+        activeEffectId: null,
+        visualStatus: 'reset',
+        sfxStatus: 'stopped',
+      })
+    )
+    expect(renderer.snapshot()).toEqual(
+      expect.objectContaining({
+        disposed: true,
+        particleCount: 0,
+        lastStopMode: 'immediate',
+      })
+    )
+    expect(sfx.terminate).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels finite auto-end during reset and permits no later renderer work', async () => {
+    jest.useFakeTimers()
+    try {
+      const renderer = new FireParticleRenderer({ waitFrame: async () => {} })
+      const host = createHost({ renderer, defaultLifetimeMs: 500 })
+      await host.dispatch(startCommand())
+      await expect(host.dispatch(resetCommand())).resolves.toEqual(
+        expect.objectContaining({ status: 'reset', activeEffectId: null })
+      )
+      const resetSnapshot = renderer.snapshot()
+
+      await jest.advanceTimersByTimeAsync(5_000)
+      expect(renderer.snapshot()).toEqual(resetSnapshot)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('owns finite auto-end and clears the active effect at its deadline', async () => {
+    jest.useFakeTimers()
+    try {
+      const renderer = new FireParticleRenderer({ waitFrame: async () => {} })
+      const host = createHost({ renderer, defaultLifetimeMs: 500 })
+      await host.dispatch(startCommand())
+
+      await jest.advanceTimersByTimeAsync(500)
+      expect(host.activeEffectId).toBeNull()
+      expect(renderer.snapshot()).toEqual(
+        expect.objectContaining({
+          disposed: true,
+          particleCount: 0,
+          lastStopMode: 'fade',
+        })
+      )
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('preserves the emergency latch when reset cannot finish cleanup', async () => {
+    const renderer: ProjectionEffectRenderer = {
+      render: jest.fn(),
+      stop: jest.fn(async () => {
+        throw new Error('private stop failure')
+      }),
+      reset: jest.fn(),
+      dispose: jest.fn(async () => {
+        throw new Error('private dispose failure')
+      }),
+    }
+    const registry = new ProjectionEffectRegistry()
+    registry.register({
+      definition: fireEffectDefinition,
+      createRenderer: () => renderer,
+    })
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      nowMs: incrementingClock(),
+    })
+    await host.dispatch(startCommand())
+    await expect(host.dispatch(stopCommand('emergency'))).resolves.toEqual(
+      expect.objectContaining({ status: 'stop-failed' })
+    )
+
+    const reset = await host.dispatch(resetCommand())
+    expect(reset).toEqual(
+      expect.objectContaining({
+        status: 'blocked-terminal-cleanup',
+        activeEffectId: FIRE_EFFECT_ID,
+        partialReasons: expect.arrayContaining(['visual-dispose-failed']),
+      })
+    )
+    expect(JSON.stringify(reset)).not.toContain('private')
+    await expect(
+      host.dispatch(startCommand({ commandId: 'fire.start.stillLatched' }))
+    ).resolves.toEqual(
+      expect.objectContaining({ status: 'blocked-emergency-stop' })
+    )
+  })
+
   it('does not allocate emergency latches for unknown effect ids', async () => {
     const registry = new ProjectionEffectRegistry()
     registry.register(createFireParticlePlugin({ waitFrame: async () => {} }))
@@ -1278,6 +1383,7 @@ function createHost(
     sfx?: ReturnType<typeof mockSfxPlayer>
     renderer?: FireParticleRenderer
     nowMs?: () => number
+    defaultLifetimeMs?: number
   } = {}
 ): ProjectionEffectHost {
   const registry = new ProjectionEffectRegistry()
@@ -1297,6 +1403,7 @@ function createHost(
     sfxPlayer: overrides.sfx ?? mockSfxPlayer(),
     sfxCues: [fireEffectSfxCue],
     nowMs: overrides.nowMs ?? incrementingClock(),
+    defaultLifetimeMs: overrides.defaultLifetimeMs,
   })
 }
 
