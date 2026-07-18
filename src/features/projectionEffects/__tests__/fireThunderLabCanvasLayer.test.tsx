@@ -26,6 +26,7 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
   beforeEach(() => {
     requestCallbacks.clear()
     nextRequestId = 1
+    installCanvasContextMocks()
     jest
       .spyOn(window, 'requestAnimationFrame')
       .mockImplementation((callback) => {
@@ -129,6 +130,8 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
   })
 
   it('mounts exactly two canvases and leaves no RAF or renderer after unmount', async () => {
+    let nowMs = 1_000
+    jest.spyOn(performance, 'now').mockImplementation(() => nowMs)
     const fireSurfaces: ReturnType<typeof mockFireSurface>[] = []
     const controllerRef = createRef<FireThunderLabController>()
     const view = render(
@@ -147,6 +150,12 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
     expect(
       view.getByTestId('fire-thunder-lab-layer').querySelectorAll('canvas')
     ).toHaveLength(2)
+    expect(
+      view.getByTestId('projection-effect-webgl2-canvas')
+    ).toBeInTheDocument()
+    expect(
+      view.getByTestId('projection-effect-canvas2d-canvas')
+    ).toBeInTheDocument()
 
     await act(async () => {
       await controllerRef.current?.start(FIRE_EFFECT_ID)
@@ -162,8 +171,13 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
     )
     expect(requestCallbacks.size).toBe(1)
     const frame = [...requestCallbacks.entries()][0]
+    const initialDrawCount = fireSurfaces[0].draw.mock.calls.length
     requestCallbacks.delete(frame[0])
+    nowMs += 20
     await act(async () => frame[1](16))
+    expect(fireSurfaces[0].draw.mock.calls.length).toBeGreaterThan(
+      initialDrawCount
+    )
     expect(requestCallbacks.size).toBe(1)
 
     view.unmount()
@@ -174,6 +188,66 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
     const drawCount = fireSurfaces[0].draw.mock.calls.length
     await Promise.resolve()
     expect(fireSurfaces[0].draw).toHaveBeenCalledTimes(drawCount)
+  })
+
+  it('clears pooled surfaces on stop, reset, and emergency without late draws', async () => {
+    const fireSurfaces: ReturnType<typeof mockFireSurface>[] = []
+    const thunderSurfaces: ReturnType<typeof mockThunderSurface>[] = []
+    const controllerRef = createRef<FireThunderLabController>()
+    render(
+      <FireThunderLabCanvasLayer
+        ref={controllerRef}
+        createFireSurface={() => {
+          const surface = mockFireSurface()
+          fireSurfaces.push(surface)
+          return surface
+        }}
+        createThunderSurface={() => {
+          const surface = mockThunderSurface()
+          thunderSurfaces.push(surface)
+          return surface
+        }}
+        webgl2Available
+        waitFrame={async () => {}}
+      />
+    )
+
+    await act(async () => {
+      await controllerRef.current?.start(FIRE_EFFECT_ID)
+    })
+    const staleFireFrame = [...requestCallbacks.values()][0]
+    await act(async () => {
+      await controllerRef.current?.stop()
+    })
+    expect(requestCallbacks.size).toBe(0)
+    expect(fireSurfaces[0].dispose).toHaveBeenCalledTimes(1)
+    const stoppedFireDrawCount = fireSurfaces[0].draw.mock.calls.length
+    await act(async () => staleFireFrame(32))
+    expect(fireSurfaces[0].draw).toHaveBeenCalledTimes(stoppedFireDrawCount)
+    expect(requestCallbacks.size).toBe(0)
+
+    await act(async () => {
+      await controllerRef.current?.start(THUNDER_BALL_EFFECT_ID)
+    })
+    await act(async () => {
+      await controllerRef.current?.emergencyStop()
+    })
+    expect(requestCallbacks.size).toBe(0)
+    expect(thunderSurfaces[0].dispose).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      await controllerRef.current?.reset()
+      await controllerRef.current?.start(THUNDER_BALL_EFFECT_ID)
+    })
+    const staleThunderFrame = [...requestCallbacks.values()][0]
+    await act(async () => {
+      await controllerRef.current?.reset()
+    })
+    expect(requestCallbacks.size).toBe(0)
+    expect(thunderSurfaces[1].dispose).toHaveBeenCalledTimes(1)
+    const resetThunderDrawCount = thunderSurfaces[1].draw.mock.calls.length
+    await act(async () => staleThunderFrame(48))
+    expect(thunderSurfaces[1].draw).toHaveBeenCalledTimes(resetThunderDrawCount)
+    expect(requestCallbacks.size).toBe(0)
   })
 
   it('returns Thunder to idle at finite auto-end without a later draw', async () => {
@@ -287,4 +361,23 @@ function incrementingClock(): () => number {
     nowMs += 17
     return nowMs
   }
+}
+
+function installCanvasContextMocks(): void {
+  const webgl2Context = {
+    COLOR_BUFFER_BIT: 0x4000,
+    clearColor: jest.fn(),
+    clear: jest.fn(),
+  }
+  const canvas2dContext = {
+    setTransform: jest.fn(),
+    clearRect: jest.fn(),
+  }
+  jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((
+    contextId: string
+  ) => {
+    if (contextId === 'webgl2') return webgl2Context
+    if (contextId === '2d') return canvas2dContext
+    return null
+  }) as typeof HTMLCanvasElement.prototype.getContext)
 }

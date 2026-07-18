@@ -21,6 +21,14 @@ import type {
   ThunderBallRibbon,
   ThunderBallSurface,
 } from '../plugins/thunderBall/renderer'
+import {
+  FireThunderPooledSurfaces,
+  compositorOperationCompleted,
+} from './fireThunderPooledSurfaces'
+import {
+  ProjectionEffectCompositor,
+  type ProjectionEffectCompositorController,
+} from './projectionEffectCompositor'
 
 export interface FireThunderLabController {
   start(
@@ -107,18 +115,16 @@ export const FireThunderLabCanvasLayer = forwardRef<
   },
   forwardedRef
 ) {
-  const fireCanvasRef = useRef<HTMLCanvasElement | null>(null)
-  const thunderCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const compositorRef = useRef<ProjectionEffectCompositorController | null>(
+    null
+  )
   const hostRef = useRef<ReturnType<typeof createFireThunderLabHost> | null>(
     null
   )
-  const animationFrameRef = useRef<number | null>(null)
   const lastEffectIdRef = useRef<FireThunderLabEffectId | null>(null)
   const mountedRef = useRef(false)
   const reducedMotionRef = useRef(reducedMotion)
   const onStatusChangeRef = useRef(onStatusChange)
-  const scheduleFrameRef = useRef<(() => void) | null>(null)
-  const cancelFrameRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     reducedMotionRef.current = reducedMotion
@@ -129,14 +135,18 @@ export const FireThunderLabCanvasLayer = forwardRef<
   }, [onStatusChange])
 
   useEffect(() => {
-    const fireCanvas = fireCanvasRef.current
-    const thunderCanvas = thunderCanvasRef.current
-    if (!fireCanvas || !thunderCanvas) return
+    const compositor = compositorRef.current
+    if (!compositor) return
 
     mountedRef.current = true
+    const pooledSurfaces = new FireThunderPooledSurfaces({
+      compositor,
+      createFireSurface,
+      createThunderSurface,
+    })
     const host = createFireThunderLabHost({
-      createFireSurface: () => createFireSurface(fireCanvas),
-      createThunderSurface: () => createThunderSurface(thunderCanvas),
+      createFireSurface: () => pooledSurfaces.createFireSurface(),
+      createThunderSurface: () => pooledSurfaces.createThunderSurface(),
       webgl2Available:
         webgl2Available ??
         typeof globalThis.WebGL2RenderingContext !== 'undefined',
@@ -144,40 +154,10 @@ export const FireThunderLabCanvasLayer = forwardRef<
     })
     hostRef.current = host
 
-    const cancelFrame = () => {
-      if (animationFrameRef.current === null) return
-      window.cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-    const scheduleFrame = () => {
-      if (
-        !mountedRef.current ||
-        host.activeEffectId === null ||
-        animationFrameRef.current !== null
-      ) {
-        return
-      }
-      animationFrameRef.current = window.requestAnimationFrame(async () => {
-        animationFrameRef.current = null
-        const result = await host.renderFrame()
-        if (!mountedRef.current) return
-        if (
-          result.status !== 'frame-rendered' &&
-          result.status !== 'frame-skipped'
-        ) {
-          onStatusChangeRef.current?.(result)
-        }
-        if (host.activeEffectId !== null) scheduleFrame()
-      })
-    }
-    cancelFrameRef.current = cancelFrame
-    scheduleFrameRef.current = scheduleFrame
-
     return () => {
       mountedRef.current = false
-      cancelFrame()
-      scheduleFrameRef.current = null
-      cancelFrameRef.current = null
+      compositor.stopFrameLoop()
+      pooledSurfaces.disposeActive()
       hostRef.current = null
       const effectId = lastEffectIdRef.current
       if (effectId) {
@@ -192,7 +172,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
     const host = hostRef.current
     const effectId = lastEffectIdRef.current
     if (!host || !effectId || !mountedRef.current) return null
-    cancelFrameRef.current?.()
+    compositorRef.current?.stopFrameLoop()
     const result = await host.dispatch(stopCommand(effectId, mode))
     if (mountedRef.current) onStatusChangeRef.current?.(result)
     return result
@@ -202,7 +182,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
     const host = hostRef.current
     const effectId = lastEffectIdRef.current
     if (!host || !effectId || !mountedRef.current) return null
-    cancelFrameRef.current?.()
+    compositorRef.current?.stopFrameLoop()
     const result = await host.dispatch(resetCommand(effectId))
     if (mountedRef.current) onStatusChangeRef.current?.(result)
     return result
@@ -213,7 +193,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
     () => ({
       async start(effectId) {
         const host = hostRef.current
-        if (!host || !mountedRef.current) return null
+        const compositor = compositorRef.current
+        if (!host || !compositor || !mountedRef.current) return null
+        if (host.activeEffectId !== null) compositor.stopFrameLoop()
         lastEffectIdRef.current = effectId
         const parameters =
           effectId === THUNDER_BALL_EFFECT_ID
@@ -225,7 +207,26 @@ export const FireThunderLabCanvasLayer = forwardRef<
         const result = await host.dispatch(startCommand(effectId, parameters))
         if (!mountedRef.current) return result
         onStatusChangeRef.current?.(result)
-        if (result.status === 'started') scheduleFrameRef.current?.()
+        if (result.status === 'started') {
+          const loopStatus = compositor.startFrameLoop(async () => {
+            const frameResult = await host.renderFrame()
+            if (!mountedRef.current) return
+            if (
+              frameResult.status !== 'frame-rendered' &&
+              frameResult.status !== 'frame-skipped'
+            ) {
+              onStatusChangeRef.current?.(frameResult)
+            }
+            if (host.activeEffectId === null) compositor.stopFrameLoop()
+          })
+          if (!compositorOperationCompleted(loopStatus)) {
+            const cleanup = await host.dispatch(
+              stopCommand(effectId, 'emergency')
+            )
+            if (mountedRef.current) onStatusChangeRef.current?.(cleanup)
+            return cleanup
+          }
+        }
         return result
       },
       async stop() {
@@ -247,18 +248,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
       className="pointer-events-none absolute inset-0"
       data-testid="fire-thunder-lab-layer"
     >
-      <canvas
-        ref={fireCanvasRef}
-        className="absolute inset-0 h-full w-full"
-        data-testid="fire-thunder-lab-fire-canvas"
-        style={{ mixBlendMode: 'screen' }}
-      />
-      <canvas
-        ref={thunderCanvasRef}
-        className="absolute inset-0 h-full w-full"
-        data-testid="fire-thunder-lab-thunder-canvas"
-        style={{ mixBlendMode: 'screen' }}
-      />
+      <ProjectionEffectCompositor ref={compositorRef} />
     </div>
   )
 })
