@@ -10,7 +10,7 @@ import {
   FIRE_PARTICLE_VERTEX_SHADER,
 } from './shaders'
 
-interface FireParticle {
+export interface FireParticle {
   x: number
   y: number
   velocityX: number
@@ -40,8 +40,11 @@ export interface FireParticleSurface {
 }
 
 export interface FireParticleRendererSnapshot {
+  averageParticleSize: number
+  averageParticleHeat: number
   disposed: boolean
   frameCount: number
+  horizontalSpan: number
   particleCount: number
   oldestParticleAgeMs: number
   maximumParticleLifeMs: number
@@ -64,6 +67,7 @@ const EMPTY_DRAW_CONFIG: FireParticleDrawConfig = {
 
 const FIRE_FADE_WAIT_GRACE_MS = 50
 const FIRE_BROWSER_FRAME_TIMEOUT_MS = 100
+const INITIAL_FIRE_RANDOM_STATE = 0x2f6e2b1
 
 export class FireParticleRenderer implements ProjectionEffectRenderer {
   private readonly particles: FireParticle[] = []
@@ -73,7 +77,7 @@ export class FireParticleRenderer implements ProjectionEffectRenderer {
   private disposed = false
   private frameCount = 0
   private emissionCarry = 0
-  private randomState = 0x2f6e2b1
+  private randomState = INITIAL_FIRE_RANDOM_STATE
   private lastStopMode: ProjectionEffectStopContext['mode'] | null = null
   private lastDrawConfig = EMPTY_DRAW_CONFIG
 
@@ -173,6 +177,7 @@ export class FireParticleRenderer implements ProjectionEffectRenderer {
     if (this.disposed) return
     this.frameCount = 0
     this.emissionCarry = 0
+    this.randomState = INITIAL_FIRE_RANDOM_STATE
     this.lastStopMode = null
     this.clearParticles()
   }
@@ -195,10 +200,39 @@ export class FireParticleRenderer implements ProjectionEffectRenderer {
   }
 
   snapshot(): FireParticleRendererSnapshot {
+    const horizontalBounds = this.particles.reduce(
+      (bounds, particle) => ({
+        minimum: Math.min(bounds.minimum, particle.x),
+        maximum: Math.max(bounds.maximum, particle.x),
+      }),
+      {
+        minimum: Number.POSITIVE_INFINITY,
+        maximum: Number.NEGATIVE_INFINITY,
+      }
+    )
+    const particleCount = this.particles.length
     return {
+      averageParticleSize:
+        particleCount === 0
+          ? 0
+          : this.particles.reduce(
+              (total, particle) => total + particle.size,
+              0
+            ) / particleCount,
+      averageParticleHeat:
+        particleCount === 0
+          ? 0
+          : this.particles.reduce(
+              (total, particle) => total + particle.heat,
+              0
+            ) / particleCount,
       disposed: this.disposed,
       frameCount: this.frameCount,
-      particleCount: this.particles.length,
+      horizontalSpan:
+        particleCount === 0
+          ? 0
+          : horizontalBounds.maximum - horizontalBounds.minimum,
+      particleCount,
       oldestParticleAgeMs: this.particles.reduce(
         (oldest, particle) => Math.max(oldest, particle.ageMs),
         0
@@ -223,14 +257,16 @@ export class FireParticleRenderer implements ProjectionEffectRenderer {
     lifetimeMs: number,
     upwardSpeed: number
   ): FireParticle {
-    const spread = (this.nextRandom() - 0.5) * 0.18
+    const spread = (this.nextRandom() - 0.5) * 0.34
     const lifeVariance = 0.72 + this.nextRandom() * 0.56
+    const verticalVariance = 0.68 + this.nextRandom() * 0.7
+    const sizeVariance = 0.7 + this.nextRandom() * 0.85
     return {
       x: numberParameter(context, 'emitterX') + spread,
       y: numberParameter(context, 'emitterY'),
-      velocityX: spread * 0.48,
-      velocityY: upwardSpeed * (0.72 + this.nextRandom() * 0.4),
-      size: numberParameter(context, 'pointSize') * (0.65 + this.nextRandom()),
+      velocityX: spread * (0.28 + this.nextRandom() * 0.3),
+      velocityY: upwardSpeed * verticalVariance,
+      size: numberParameter(context, 'pointSize') * sizeVariance,
       heat: Math.min(
         1,
         numberParameter(context, 'temperature') *
@@ -349,6 +385,7 @@ export class FireWebGl2Surface implements FireParticleSurface {
     bindAttribute(gl, 2, 1, stride, 3)
     bindAttribute(gl, 3, 1, stride, 4)
     bindAttribute(gl, 4, 1, stride, 5)
+    bindAttribute(gl, 5, 1, stride, 6)
     gl.uniform1f(this.bloomGain, config.postProcessing ? config.bloomGain : 0)
     gl.uniform1f(this.masterIntensity, config.masterIntensity)
     gl.drawArrays(gl.POINTS, 0, particles.length)

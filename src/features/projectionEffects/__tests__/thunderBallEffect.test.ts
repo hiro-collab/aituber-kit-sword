@@ -143,8 +143,12 @@ describe('Thunder Ball source/static effect contract', () => {
     expect(frame?.config).toEqual(
       expect.objectContaining({
         bloomGain: 0.35,
+        centerX: 0,
+        centerY: 0,
         lineWidth: 3,
         masterIntensity: 0.72,
+        orbPulse: 0.68,
+        orbRadius: 0.42,
         postProcessing: false,
         reducedMotion: true,
       })
@@ -162,6 +166,33 @@ describe('Thunder Ball source/static effect contract', () => {
           Math.abs(dx * (point.y - start.y) - dy * (point.x - start.x)) < 1e-10
       )
     ).toBe(true)
+  })
+
+  it('keeps the cinematic orb pulse bounded around the commanded center', () => {
+    const frames: ThunderBallFrame[] = []
+    const renderer = new ThunderBallRenderer({
+      surface: mockSurface((frame) => frames.push(frame)),
+    })
+    renderer.render(
+      frameContext(
+        {
+          centerX: 0.25,
+          centerY: -0.2,
+          orbRadius: 0.54,
+        },
+        1000
+      )
+    )
+
+    expect(frames.at(-1)?.config).toEqual(
+      expect.objectContaining({
+        centerX: 0.25,
+        centerY: -0.2,
+        orbRadius: 0.54,
+      })
+    )
+    expect(frames.at(-1)?.config.orbPulse).toBeGreaterThanOrEqual(0.52)
+    expect(frames.at(-1)?.config.orbPulse).toBeLessThanOrEqual(0.84)
   })
 
   it('stops, resets deterministically, and disposes its surface exactly once', async () => {

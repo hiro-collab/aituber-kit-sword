@@ -18,6 +18,7 @@ import {
 import { THUNDER_BALL_EFFECT_ID } from '../plugins/thunderBall/definition'
 import type {
   ThunderBallFrame,
+  ThunderBallRibbon,
   ThunderBallSurface,
 } from '../plugins/thunderBall/renderer'
 
@@ -40,6 +41,57 @@ export interface FireThunderLabCanvasLayerProps {
 }
 
 const MAX_PIXEL_RATIO = 2
+
+export const FIRE_THUNDER_LAB_VISUAL_PARAMETERS = {
+  fire: {
+    emitterX: 0,
+    emitterY: -0.52,
+    particleBudget: 2_400,
+    emissionRate: 420,
+    lifetimeMs: 1_800,
+    upwardSpeed: 0.78,
+    noiseStrength: 0.52,
+    dissipation: 0.974,
+    pointSize: 72,
+    temperature: 0.93,
+    masterIntensity: 1,
+    bloomGain: 0.92,
+    internalResolutionScale: 0.9,
+    updateRateHz: 60,
+    postProcessing: true,
+  },
+  thunderBall: {
+    centerX: 0,
+    centerY: -0.04,
+    orbRadius: 0.48,
+    anchorCount: 32,
+    sparkBudget: 28,
+    emissionRate: 16,
+    lifetimeMs: 1_200,
+    segmentCount: 24,
+    orbitSpeed: 0.85,
+    wrinkleStrength: 0.22,
+    lineWidth: 4.6,
+    masterIntensity: 1,
+    bloomGain: 1.15,
+    internalResolutionScale: 1,
+    updateRateHz: 60,
+    postProcessing: true,
+  },
+} as const
+
+export interface ThunderLabVisualPlan {
+  bloomBlur: number
+  centerX: number
+  centerY: number
+  coreRadius: number
+  glowLineWidth: number
+  haloRadius: number
+  lineWidth: number
+  masterAlpha: number
+  orbRadius: number
+  pulse: number
+}
 
 export const FireThunderLabCanvasLayer = forwardRef<
   FireThunderLabController,
@@ -165,8 +217,11 @@ export const FireThunderLabCanvasLayer = forwardRef<
         lastEffectIdRef.current = effectId
         const parameters =
           effectId === THUNDER_BALL_EFFECT_ID
-            ? { reducedMotion: reducedMotionRef.current }
-            : {}
+            ? {
+                ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
+                reducedMotion: reducedMotionRef.current,
+              }
+            : FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire
         const result = await host.dispatch(startCommand(effectId, parameters))
         if (!mountedRef.current) return result
         onStatusChangeRef.current?.(result)
@@ -232,30 +287,33 @@ class ThunderCanvas2dLabSurface implements ThunderBallSurface {
     if (this.canvas.height !== targetHeight) this.canvas.height = targetHeight
 
     const { context } = this
+    const plan = buildThunderLabVisualPlan(frame, width, height)
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
     context.clearRect(0, 0, width, height)
     context.save()
     context.globalCompositeOperation = 'screen'
-    context.globalAlpha = frame.config.masterIntensity
+    drawThunderOrb(context, plan)
+
+    context.globalAlpha = plan.masterAlpha * 0.28
     context.lineCap = 'round'
     context.lineJoin = 'round'
-    context.lineWidth = frame.config.lineWidth
-    context.strokeStyle = '#d8f4ff'
+    context.lineWidth = plan.glowLineWidth
+    context.strokeStyle = '#3c74ff'
     context.shadowColor = '#4d8dff'
-    context.shadowBlur = frame.config.postProcessing
-      ? 12 * frame.config.bloomGain
-      : 0
+    context.shadowBlur = plan.bloomBlur
 
     for (const ribbon of frame.ribbons) {
-      if (ribbon.points.length < 2) continue
-      context.beginPath()
-      ribbon.points.forEach((point, index) => {
-        const x = ((point.x + 1) * width) / 2
-        const y = ((1 - point.y) * height) / 2
-        if (index === 0) context.moveTo(x, y)
-        else context.lineTo(x, y)
-      })
-      context.stroke()
+      strokeRibbon(context, ribbon, width, height)
+    }
+
+    context.globalAlpha = plan.masterAlpha
+    context.lineWidth = plan.lineWidth
+    context.strokeStyle = '#e8fbff'
+    context.shadowColor = '#bce9ff'
+    context.shadowBlur = plan.bloomBlur * 0.48
+
+    for (const ribbon of frame.ribbons) {
+      strokeRibbon(context, ribbon, width, height)
     }
     context.restore()
   }
@@ -271,6 +329,96 @@ class ThunderCanvas2dLabSurface implements ThunderBallSurface {
     this.clear()
     this.disposed = true
   }
+}
+
+export function buildThunderLabVisualPlan(
+  frame: Readonly<ThunderBallFrame>,
+  width: number,
+  height: number
+): ThunderLabVisualPlan {
+  const safeWidth = Math.max(1, width)
+  const safeHeight = Math.max(1, height)
+  const visualUnit = Math.min(safeWidth, safeHeight) / 2
+  const pulse = clamp(frame.config.orbPulse, 0, 1)
+  const orbRadius = Math.max(8, frame.config.orbRadius * visualUnit)
+  const bloomGain = Math.max(0, frame.config.bloomGain)
+  const lineWidth = Math.max(1, frame.config.lineWidth)
+  return {
+    bloomBlur: frame.config.postProcessing ? Math.max(8, 18 * bloomGain) : 0,
+    centerX: ((clamp(frame.config.centerX, -1, 1) + 1) * safeWidth) / 2,
+    centerY: ((1 - clamp(frame.config.centerY, -1, 1)) * safeHeight) / 2,
+    coreRadius: orbRadius * (0.1 + pulse * 0.055),
+    glowLineWidth: lineWidth * 3.2,
+    haloRadius: orbRadius * (0.72 + pulse * 0.2),
+    lineWidth,
+    masterAlpha: clamp(frame.config.masterIntensity, 0, 1),
+    orbRadius,
+    pulse,
+  }
+}
+
+function drawThunderOrb(
+  context: CanvasRenderingContext2D,
+  plan: Readonly<ThunderLabVisualPlan>
+): void {
+  const halo = context.createRadialGradient(
+    plan.centerX,
+    plan.centerY,
+    0,
+    plan.centerX,
+    plan.centerY,
+    plan.haloRadius
+  )
+  halo.addColorStop(0, 'rgba(238, 253, 255, 0.98)')
+  halo.addColorStop(0.11, 'rgba(142, 227, 255, 0.9)')
+  halo.addColorStop(0.38, 'rgba(51, 103, 255, 0.45)')
+  halo.addColorStop(1, 'rgba(30, 64, 175, 0)')
+  context.globalAlpha = plan.masterAlpha
+  context.fillStyle = halo
+  context.beginPath()
+  context.arc(plan.centerX, plan.centerY, plan.haloRadius, 0, Math.PI * 2)
+  context.fill()
+
+  context.shadowColor = '#bce9ff'
+  context.shadowBlur = plan.bloomBlur
+  context.fillStyle = '#f5feff'
+  context.beginPath()
+  context.arc(plan.centerX, plan.centerY, plan.coreRadius, 0, Math.PI * 2)
+  context.fill()
+
+  context.globalAlpha = plan.masterAlpha * 0.74
+  context.strokeStyle = '#79b8ff'
+  context.lineWidth = Math.max(1.5, plan.lineWidth * 0.52)
+  context.beginPath()
+  context.arc(
+    plan.centerX,
+    plan.centerY,
+    plan.orbRadius * (0.34 + plan.pulse * 0.08),
+    0,
+    Math.PI * 2
+  )
+  context.stroke()
+}
+
+function strokeRibbon(
+  context: CanvasRenderingContext2D,
+  ribbon: Readonly<ThunderBallRibbon>,
+  width: number,
+  height: number
+): void {
+  if (ribbon.points.length < 2) return
+  context.beginPath()
+  ribbon.points.forEach((point, index) => {
+    const x = ((point.x + 1) * width) / 2
+    const y = ((1 - point.y) * height) / 2
+    if (index === 0) context.moveTo(x, y)
+    else context.lineTo(x, y)
+  })
+  context.stroke()
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value))
 }
 
 function defaultFireSurface(canvas: HTMLCanvasElement): FireParticleSurface {

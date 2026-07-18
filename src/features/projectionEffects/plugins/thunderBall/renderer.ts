@@ -30,9 +30,13 @@ export interface ThunderBallRibbon {
 
 export interface ThunderBallDrawConfig {
   bloomGain: number
+  centerX: number
+  centerY: number
   lineWidth: number
   masterIntensity: number
   internalResolutionScale: number
+  orbPulse: number
+  orbRadius: number
   postProcessing: boolean
   reducedMotion: boolean
 }
@@ -68,9 +72,13 @@ export interface ThunderBallRendererOptions {
 
 const EMPTY_DRAW_CONFIG: ThunderBallDrawConfig = {
   bloomGain: 0,
+  centerX: 0,
+  centerY: 0,
   lineWidth: 1,
   masterIntensity: 0,
   internalResolutionScale: 1,
+  orbPulse: 0,
+  orbRadius: 0,
   postProcessing: false,
   reducedMotion: false,
 }
@@ -133,10 +141,13 @@ export class ThunderBallRenderer implements ProjectionEffectRenderer {
     const ribbons = this.sparks.map((spark) =>
       this.buildSparkRibbon(context, spark, reducedMotion)
     )
+    const orbRadius = numberParameter(context, 'orbRadius')
     const config: ThunderBallDrawConfig = {
       bloomGain: reducedMotion
         ? Math.min(0.35, numberParameter(context, 'bloomGain'))
         : numberParameter(context, 'bloomGain'),
+      centerX: center.x,
+      centerY: center.y,
       lineWidth: reducedMotion
         ? Math.min(3, numberParameter(context, 'lineWidth'))
         : numberParameter(context, 'lineWidth'),
@@ -147,6 +158,10 @@ export class ThunderBallRenderer implements ProjectionEffectRenderer {
         context,
         'internalResolutionScale'
       ),
+      orbPulse: reducedMotion
+        ? 0.68
+        : 0.68 + Math.sin(context.nowMs * 0.012) * 0.16,
+      orbRadius,
       postProcessing:
         booleanParameter(context, 'postProcessing') && !reducedMotion,
       reducedMotion,

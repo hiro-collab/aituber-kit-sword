@@ -1,6 +1,7 @@
 import { act, render, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
 import {
+  FIRE_THUNDER_LAB_VISUAL_PARAMETERS,
   FireThunderLabCanvasLayer,
   type FireThunderLabController,
 } from '../browser/fireThunderLabCanvasLayer'
@@ -53,6 +54,10 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
     expect(view.getByRole('button', { name: 'Stop' })).toBeEnabled()
     expect(view.getByRole('button', { name: 'Reset' })).toBeEnabled()
     expect(view.getByRole('button', { name: 'Emergency Stop' })).toBeEnabled()
+    expect(view.getByTestId('fire-thunder-lab-stage')).toBeInTheDocument()
+    expect(
+      view.getByRole('checkbox', { name: 'Reduced motion (Thunder)' })
+    ).toBeEnabled()
     expect(view.getByTestId('fire-thunder-lab-status')).toHaveTextContent(
       'idle'
     )
@@ -146,6 +151,15 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
     await act(async () => {
       await controllerRef.current?.start(FIRE_EFFECT_ID)
     })
+    expect(fireSurfaces[0].draw).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({
+        bloomGain: FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.bloomGain,
+        masterIntensity:
+          FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.masterIntensity,
+        postProcessing: true,
+      })
+    )
     expect(requestCallbacks.size).toBe(1)
     const frame = [...requestCallbacks.entries()][0]
     requestCallbacks.delete(frame[0])

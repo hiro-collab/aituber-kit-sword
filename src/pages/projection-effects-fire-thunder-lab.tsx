@@ -45,7 +45,18 @@ const FireThunderLabPage = () => {
       <Head>
         <title>Fire + Thunder Projection Lab</title>
       </Head>
-      <main className="relative h-screen w-screen overflow-hidden bg-[radial-gradient(circle_at_center,_#102448_0%,_#030712_48%,_#000_100%)] text-white">
+      <main
+        className="relative h-screen w-screen overflow-hidden bg-[radial-gradient(circle_at_50%_58%,_#172554_0%,_#071126_36%,_#020617_68%,_#000_100%)] text-white"
+        data-testid="fire-thunder-lab-stage"
+      >
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_78%,_rgba(249,115,22,0.12)_0%,_transparent_40%),radial-gradient(circle_at_50%_48%,_rgba(59,130,246,0.16)_0%,_transparent_42%)]"
+        />
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-[12%] bottom-[8%] h-px bg-gradient-to-r from-transparent via-cyan-200/30 to-transparent shadow-[0_0_45px_rgba(56,189,248,0.28)]"
+        />
         <FireThunderLabCanvasLayer
           ref={controllerRef}
           onStatusChange={(result) =>
@@ -57,7 +68,7 @@ const FireThunderLabPage = () => {
         <section className="pointer-events-auto absolute left-1/2 top-6 z-10 w-[min(94vw,760px)] -translate-x-1/2 rounded-2xl border border-cyan-200/25 bg-slate-950/72 p-4 shadow-2xl shadow-blue-950/60 backdrop-blur">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="mr-auto text-lg font-semibold tracking-wide text-cyan-100">
-              Fire + Thunder Lab
+              Elemental Projection Studio
             </h1>
             <output
               aria-live="polite"
@@ -117,12 +128,13 @@ const FireThunderLabPage = () => {
               onChange={(event) => setReducedMotion(event.target.checked)}
               type="checkbox"
             />
-            Reduced motion
+            Reduced motion (Thunder)
           </label>
         </section>
 
         <p className="absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-full border border-white/10 bg-black/45 px-4 py-2 text-center text-xs text-slate-300 backdrop-blur">
-          Fire auto-ends in 8 seconds · Thunder auto-ends in 5 seconds
+          Fire rises for 8 seconds · Thunder charges for 5 seconds · every
+          effect returns to idle
         </p>
       </main>
     </>
