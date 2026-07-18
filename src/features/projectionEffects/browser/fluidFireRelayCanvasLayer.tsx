@@ -1,11 +1,14 @@
 import { useEffect, useRef } from 'react'
-import { ProjectionEffectRegistry } from '../registry'
+import { createRoot } from 'react-dom/client'
 import { fluidFireRelayDefinition } from '../plugins/fluidFireRelay/definition'
-import {
-  FluidFireRelayRenderer,
-  type FluidFireRelayRendererSnapshot,
+import type {
+  FluidFireRelayFrameObserver,
+  FluidFireRelayRendererSnapshot,
 } from '../plugins/fluidFireRelay/renderer'
-import type { ProjectionEffectFrameContext } from '../rendererPlugin'
+import type {
+  ProjectionEffectFrameContext,
+  ProjectionEffectSession,
+} from '../rendererPlugin'
 import {
   DEFAULT_FLUID_FIRE_RELAY_PARAMETERS,
   isFluidFireRelayParameters,
@@ -13,10 +16,14 @@ import {
 } from '../settings'
 import {
   NEUTRAL_AVATAR_LIGHTING_CONTRIBUTION,
-  publishAvatarLightingContribution,
   resetAvatarLightingContribution,
   type AvatarLightingContribution,
 } from '../avatarLighting'
+import {
+  ProjectionEffectCompositor,
+  type ProjectionEffectCompositorController,
+} from './projectionEffectCompositor'
+import { createFluidFireRelayPooledRuntime } from './fluidFireRelayPooledRuntime'
 
 const EFFECT_ID = fluidFireRelayDefinition.id
 const MAX_PIXEL_RATIO = 2
@@ -37,13 +44,19 @@ export function resolveProjectionEffectSelection(
 export interface FluidFireRelayCanvasLayerProps {
   enabled: boolean
   parameters?: FluidFireRelayParameters
+  createSession?(observer: FluidFireRelayFrameObserver): ProjectionEffectSession
 }
 
 export const FluidFireRelayCanvasLayer = ({
   enabled,
   parameters,
+  createSession,
 }: FluidFireRelayCanvasLayerProps) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const layerRef = useRef<HTMLDivElement | null>(null)
+  const enabledRef = useRef(enabled)
+  const createSessionRef = useRef(createSession)
+  const reconcileRef = useRef<(() => void) | null>(null)
+  const dependencyEffectInitializedRef = useRef(false)
   const parametersRef = useRef<FluidFireRelayParameters>(
     isFluidFireRelayParameters(parameters)
       ? parameters
@@ -57,145 +70,174 @@ export const FluidFireRelayCanvasLayer = ({
   }, [parameters])
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!enabled || !canvas) {
-      resetAvatarLightingContribution()
-      return
+    const layer = layerRef.current
+    if (!layer) return
+
+    let mounted = true
+    let compositorUnmounted = false
+    let startTimer: ReturnType<typeof setTimeout> | null = null
+    let compositor: ProjectionEffectCompositorController | null = null
+    let lifecycleTail: Promise<void> = Promise.resolve()
+    let lifecycleRevision = 0
+    let lifecycleQuarantined = false
+    let runtime: ReturnType<typeof createFluidFireRelayPooledRuntime> | null =
+      null
+    const compositorHost = document.createElement('div')
+    compositorHost.dataset.fluidRelayCompositorHost = 'true'
+    layer.appendChild(compositorHost)
+    const compositorRoot = createRoot(compositorHost)
+
+    const unmountCompositor = () => {
+      if (compositorUnmounted) return
+      compositorUnmounted = true
+      compositorRoot.unmount()
+      compositorHost.remove()
     }
 
-    let drawingContext = canvas.getContext('2d')
-    if (!drawingContext) {
-      resetAvatarLightingContribution()
-      canvas.dataset.effectStatus = 'unavailable'
-      return
-    }
-
-    let disposed = false
-    let contextLost = false
-    let animationFrame: number | null = null
-    let previousFrameMs: number | null = null
-    let pixelRatio = 1
-
-    const resize = () => {
-      const width = Math.max(1, canvas.clientWidth || window.innerWidth)
-      const height = Math.max(1, canvas.clientHeight || window.innerHeight)
-      pixelRatio = Math.min(
-        MAX_PIXEL_RATIO,
-        Math.max(1, window.devicePixelRatio || 1)
-      )
-      canvas.width = Math.ceil(width * pixelRatio)
-      canvas.height = Math.ceil(height * pixelRatio)
-      drawingContext?.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
-    }
-
-    const registry = new ProjectionEffectRegistry()
-    registry.register({
-      definition: fluidFireRelayDefinition,
-      createRenderer: () =>
-        new FluidFireRelayRenderer((snapshot, frameContext) => {
-          if (!drawingContext || disposed || contextLost) return
+    const reconcile = async (revision: number): Promise<void> => {
+      const activeRuntime = runtime
+      if (activeRuntime) {
+        runtime = null
+        const stopped = await activeRuntime.dispose()
+        if (
+          stopped === 'cleanup-unproved' ||
+          stopped === 'runtime-quarantined'
+        ) {
+          lifecycleQuarantined = true
+          layer.dataset.effectStatus = 'runtime-quarantined'
+        }
+      }
+      if (
+        revision !== lifecycleRevision ||
+        !mounted ||
+        !enabledRef.current ||
+        !compositor ||
+        lifecycleQuarantined
+      ) {
+        resetAvatarLightingContribution()
+        return
+      }
+      const nextRuntime = createFluidFireRelayPooledRuntime({
+        compositor,
+        getParameters: () => parametersRef.current,
+        drawFrame: ({ canvas, context }, snapshot, frameContext) => {
+          const width = Math.max(1, canvas.clientWidth || window.innerWidth)
+          const height = Math.max(1, canvas.clientHeight || window.innerHeight)
+          const pixelRatio = Math.min(
+            MAX_PIXEL_RATIO,
+            Math.max(1, window.devicePixelRatio || 1)
+          )
+          const targetWidth = Math.ceil(width * pixelRatio)
+          const targetHeight = Math.ceil(height * pixelRatio)
+          if (canvas.width !== targetWidth) canvas.width = targetWidth
+          if (canvas.height !== targetHeight) canvas.height = targetHeight
+          context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
           drawFluidFireRelayFrame(
-            drawingContext,
-            canvas.width / pixelRatio,
-            canvas.height / pixelRatio,
+            context,
+            width,
+            height,
             snapshot,
             frameContext
           )
-          publishAvatarLightingContribution(
-            deriveFluidFireRelayAvatarLighting(snapshot, frameContext)
-          )
-          canvas.dataset.effectFrameCount = String(snapshot.frameCount)
-        }),
-    })
-    const session = registry.createSession(EFFECT_ID)
-
-    const scheduleFrame = () => {
-      if (disposed || contextLost || animationFrame !== null) return
-      animationFrame = window.requestAnimationFrame((nowMs) => {
-        animationFrame = null
-        void runFrame(nowMs)
+          layer.dataset.effectFrameCount = String(snapshot.frameCount)
+          return deriveFluidFireRelayAvatarLighting(snapshot, frameContext)
+        },
+        onStatusChange: (status) => {
+          if (mounted) layer.dataset.effectStatus = status
+        },
+        createSession: createSessionRef.current,
       })
-    }
-
-    const runFrame = async (nowMs: number) => {
-      if (disposed || contextLost) return
-      const deltaMs = Math.min(
-        100,
-        Math.max(0, previousFrameMs === null ? 16 : nowMs - previousFrameMs)
-      )
-      previousFrameMs = nowMs
-      const result = await session.update({
-        nowMs,
-        deltaMs,
-        parameters: parametersRef.current,
-      })
-      if (disposed) return
-      canvas.dataset.effectStatus = result.status
-      scheduleFrame()
-    }
-
-    const handleContextLost = (event: Event) => {
-      event.preventDefault()
-      contextLost = true
-      resetAvatarLightingContribution()
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame)
-        animationFrame = null
+      runtime = nextRuntime
+      const started = await nextRuntime.start()
+      if (started === 'cleanup-unproved' || started === 'runtime-quarantined') {
+        lifecycleQuarantined = true
+        layer.dataset.effectStatus = 'runtime-quarantined'
+      } else if (mounted && started !== 'completed') {
+        layer.dataset.effectStatus = started
       }
-      canvas.dataset.effectStatus = 'context-lost'
     }
 
-    const handleContextRestored = () => {
-      if (disposed) return
-      drawingContext = canvas.getContext('2d')
-      if (!drawingContext) {
-        canvas.dataset.effectStatus = 'unavailable'
+    const enqueueReconcile = () => {
+      lifecycleRevision += 1
+      const revision = lifecycleRevision
+      lifecycleTail = lifecycleTail
+        .then(() => reconcile(revision))
+        .catch(() => {
+          lifecycleQuarantined = true
+          layer.dataset.effectStatus = 'runtime-quarantined'
+          resetAvatarLightingContribution()
+        })
+    }
+    reconcileRef.current = enqueueReconcile
+
+    const startRuntimeWhenReady = () => {
+      startTimer = null
+      if (!mounted || !compositor) return
+      if (compositor.snapshot().state === 'unavailable') {
+        layer.dataset.effectStatus = 'surface-unavailable'
         return
       }
-      contextLost = false
-      previousFrameMs = null
-      resize()
-      canvas.dataset.effectStatus = 'recovering'
-      scheduleFrame()
+      enqueueReconcile()
     }
 
-    resize()
-    canvas.dataset.effectStatus = 'starting'
-    canvas.addEventListener('contextlost', handleContextLost)
-    canvas.addEventListener('contextrestored', handleContextRestored)
-    window.addEventListener('resize', resize)
-
-    void session.start().then((result) => {
-      if (disposed) return
-      canvas.dataset.effectStatus = result.status
-      scheduleFrame()
-    })
+    layer.dataset.effectStatus = enabledRef.current ? 'starting' : 'disabled'
+    compositorRoot.render(
+      <ProjectionEffectCompositor
+        ref={(nextCompositor) => {
+          if (!nextCompositor || startTimer !== null) return
+          compositor = nextCompositor
+          if (!mounted) {
+            queueMicrotask(unmountCompositor)
+            return
+          }
+          startTimer = setTimeout(startRuntimeWhenReady, 0)
+        }}
+      />
+    )
 
     return () => {
-      disposed = true
+      mounted = false
+      enabledRef.current = false
+      reconcileRef.current = null
       resetAvatarLightingContribution()
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame)
+      if (startTimer !== null) {
+        clearTimeout(startTimer)
+        startTimer = null
       }
-      canvas.removeEventListener('contextlost', handleContextLost)
-      canvas.removeEventListener('contextrestored', handleContextRestored)
-      window.removeEventListener('resize', resize)
-      void session.dispose()
+      lifecycleRevision += 1
+      const activeRuntime = runtime
+      runtime = null
+      const directDisposal = activeRuntime
+        ? activeRuntime.dispose().then(() => undefined)
+        : Promise.resolve()
+      lifecycleTail = Promise.all([lifecycleTail, directDisposal]).then(
+        () => undefined
+      )
+      void lifecycleTail.then(unmountCompositor, unmountCompositor)
     }
-  }, [enabled])
+  }, [])
 
-  if (!enabled) return null
+  useEffect(() => {
+    enabledRef.current = enabled
+    createSessionRef.current = createSession
+    if (!enabled) resetAvatarLightingContribution()
+    if (!dependencyEffectInitializedRef.current) {
+      dependencyEffectInitializedRef.current = true
+      return
+    }
+    reconcileRef.current?.()
+  }, [createSession, enabled])
 
   return (
-    <canvas
-      ref={canvasRef}
+    <div
+      ref={layerRef}
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 h-full w-full"
       data-projection-effect-id={EFFECT_ID}
-      data-effect-status="registered"
+      data-effect-status={enabled ? 'registered' : 'disabled'}
       data-testid="fluid-fire-relay-layer"
-      style={{ mixBlendMode: 'screen' }}
-    />
+      hidden={!enabled}
+    ></div>
   )
 }
 

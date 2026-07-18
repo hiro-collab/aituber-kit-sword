@@ -10,6 +10,13 @@ import {
   getAvatarLightingContribution,
   resetAvatarLightingContribution,
 } from '../avatarLighting'
+import * as pooledRuntimeModule from '../browser/fluidFireRelayPooledRuntime'
+import { fluidFireRelayDefinition } from '../plugins/fluidFireRelay/definition'
+import type { FluidFireRelayFrameObserver } from '../plugins/fluidFireRelay/renderer'
+import type {
+  ProjectionEffectRenderResult,
+  ProjectionEffectSession,
+} from '../rendererPlugin'
 
 describe('FluidFireRelayCanvasLayer', () => {
   const originalGetContext = HTMLCanvasElement.prototype.getContext
@@ -104,26 +111,29 @@ describe('FluidFireRelayCanvasLayer', () => {
         resolveProjectionEffectSelection(malformed, 'fluidFireRelay', true)
       ).toBeNull()
     }
+    const disabled = render(<FluidFireRelayCanvasLayer enabled={false} />)
+    expect(disabled.getByTestId('fluid-fire-relay-layer')).not.toBeVisible()
     expect(
-      render(<FluidFireRelayCanvasLayer enabled={false} />).container
-    ).toBeEmptyDOMElement()
+      disabled.queryAllByTestId(/^projection-effect-.*-canvas$/)
+    ).toHaveLength(2)
     expect(window.requestAnimationFrame).not.toHaveBeenCalled()
   })
 
-  it('renders through the registered plugin and stops on context loss or dispose', async () => {
+  it('renders through the shared compositor and stops on disable or dispose', async () => {
     const view = render(<FluidFireRelayCanvasLayer enabled />)
-    const canvas = view.getByTestId('fluid-fire-relay-layer')
+    const layer = view.getByTestId('fluid-fire-relay-layer')
 
-    await waitFor(() => expect(canvas.dataset.effectStatus).toBe('started'))
-    expect(canvas.dataset.projectionEffectId).toBe('fluidFireRelay')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+    expect(layer.dataset.projectionEffectId).toBe('fluidFireRelay')
+    expect(view.getAllByTestId(/^projection-effect-.*-canvas$/)).toHaveLength(2)
     expect(requestCallbacks.size).toBe(1)
 
     const firstFrame = [...requestCallbacks.entries()][0]
     requestCallbacks.delete(firstFrame[0])
     await act(async () => firstFrame[1](16))
 
-    await waitFor(() => expect(canvas.dataset.effectStatus).toBe('rendered'))
-    expect(canvas.dataset.effectFrameCount).toBe('1')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('rendered'))
+    expect(layer.dataset.effectFrameCount).toBe('1')
     expect(drawingContext.clearRect).toHaveBeenCalledTimes(1)
     expect(drawingContext.arc).toHaveBeenCalledTimes(18)
     expect(requestCallbacks.size).toBe(1)
@@ -132,33 +142,29 @@ describe('FluidFireRelayCanvasLayer', () => {
     expect(lightingContribution.intensityScale).toBeGreaterThanOrEqual(1)
     expect(lightingContribution.intensityScale).toBeLessThanOrEqual(1.5)
 
-    act(() =>
-      canvas.dispatchEvent(new Event('contextlost', { cancelable: true }))
-    )
-    expect(canvas.dataset.effectStatus).toBe('context-lost')
-    expect(requestCallbacks.size).toBe(0)
+    view.rerender(<FluidFireRelayCanvasLayer enabled={false} />)
+    await waitFor(() => expect(requestCallbacks.size).toBe(0))
     expect(getAvatarLightingContribution().status).toBe('neutral')
 
-    act(() => canvas.dispatchEvent(new Event('contextrestored')))
-    expect(canvas.dataset.effectStatus).toBe('recovering')
-    expect(requestCallbacks.size).toBe(1)
-
-    view.unmount()
+    await unmountAndFlush(view)
     expect(requestCallbacks.size).toBe(0)
     expect(getAvatarLightingContribution().status).toBe('neutral')
   })
 
-  it('reports unavailable without scheduling when Canvas 2D is absent', () => {
+  it('reports unavailable without scheduling when Canvas 2D is absent', async () => {
     Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
       configurable: true,
       value: jest.fn(() => null),
     })
     const view = render(<FluidFireRelayCanvasLayer enabled />)
-    expect(view.getByTestId('fluid-fire-relay-layer')).toHaveAttribute(
-      'data-effect-status',
-      'unavailable'
+    await waitFor(() =>
+      expect(view.getByTestId('fluid-fire-relay-layer')).toHaveAttribute(
+        'data-effect-status',
+        'surface-unavailable'
+      )
     )
     expect(window.requestAnimationFrame).not.toHaveBeenCalled()
+    await unmountAndFlush(view)
   })
 
   it('applies a valid parameter update on the next frame without restarting the layer', async () => {
@@ -171,8 +177,8 @@ describe('FluidFireRelayCanvasLayer', () => {
         }}
       />
     )
-    const canvas = view.getByTestId('fluid-fire-relay-layer')
-    await waitFor(() => expect(canvas.dataset.effectStatus).toBe('started'))
+    const layer = view.getByTestId('fluid-fire-relay-layer')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
 
     const firstFrame = [...requestCallbacks.entries()][0]
     requestCallbacks.delete(firstFrame[0])
@@ -198,8 +204,9 @@ describe('FluidFireRelayCanvasLayer', () => {
       .map((call) => String(call[1]))
 
     expect(secondColorStops).not.toEqual(firstColorStops)
-    expect(canvas.dataset.effectFrameCount).toBe('2')
+    expect(layer.dataset.effectFrameCount).toBe('2')
     expect(window.requestAnimationFrame).toHaveBeenCalledTimes(3)
+    await unmountAndFlush(view)
   })
 
   it('uses bloom gain in the rendered frame instead of exposing a no-op control', () => {
@@ -279,4 +286,328 @@ describe('FluidFireRelayCanvasLayer', () => {
       warmthClass: 'neutral',
     })
   })
+
+  it('retains the compositor until direct-unmount session termination joins', async () => {
+    const termination = deferred<ProjectionEffectRenderResult>()
+    let observer: FluidFireRelayFrameObserver | null = null
+    let runtime: pooledRuntimeModule.FluidFireRelayPooledRuntime | null = null
+    let compositor:
+      | pooledRuntimeModule.FluidFireRelayPooledRuntimeOptions['compositor']
+      | null = null
+    jest
+      .spyOn(pooledRuntimeModule, 'createFluidFireRelayPooledRuntime')
+      .mockImplementation((options) => {
+        compositor = options.compositor
+        runtime = new pooledRuntimeModule.FluidFireRelayPooledRuntime(options)
+        return runtime
+      })
+    const terminate = jest.fn(() => termination.promise)
+    const createSession = (
+      nextObserver: FluidFireRelayFrameObserver
+    ): ProjectionEffectSession => {
+      observer = nextObserver
+      return {
+        definition: fluidFireRelayDefinition,
+        lifecycle: 'registered',
+        start: async () => renderResult('started'),
+        update: async (frameContext) => {
+          observer?.(
+            {
+              disposed: false,
+              frameCount: 1,
+              densityEnergy: 1,
+              temperatureEnergy: 1,
+              pressureEnergy: 1,
+              completedPassCount: 4,
+            },
+            frameContext
+          )
+          return renderResult('rendered')
+        },
+        stop: async () => renderResult('stopped'),
+        reset: async () => renderResult('reset'),
+        dispose: async () => renderResult('disposed'),
+        terminate,
+      }
+    }
+    const view = render(
+      <FluidFireRelayCanvasLayer enabled createSession={createSession} />
+    )
+    const layer = view.getByTestId('fluid-fire-relay-layer')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+    const firstFrame = [...requestCallbacks.entries()][0]
+    requestCallbacks.delete(firstFrame[0])
+    await act(async () => firstFrame[1](16))
+    const clearCountBeforeUnmount = drawingContext.clearRect.mock.calls.length
+    expect(getAvatarLightingContribution().status).toBe('active')
+
+    act(() => view.unmount())
+    expect(requestCallbacks.size).toBe(0)
+    expect(terminate).toHaveBeenCalledTimes(1)
+    expect(runtime?.snapshot()).toMatchObject({
+      state: 'terminating',
+      activeLeaseCount: 1,
+    })
+    expect(drawingContext.clearRect).toHaveBeenCalledTimes(
+      clearCountBeforeUnmount
+    )
+    expect(
+      compositor?.acquireSurface({
+        backend: 'webgl2',
+        effectId: 'fire',
+        sessionId: 'blocked.before.termination',
+      }).status
+    ).toBe('busy')
+    expect(getAvatarLightingContribution().status).toBe('neutral')
+
+    await act(async () => {
+      termination.resolve(renderResult('disposed'))
+      await termination.promise
+      await Promise.resolve()
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    })
+    await waitFor(() =>
+      expect(runtime?.snapshot()).toMatchObject({
+        state: 'disposed',
+        activeLeaseCount: 0,
+      })
+    )
+    expect(drawingContext.clearRect.mock.calls.length).toBeGreaterThan(
+      clearCountBeforeUnmount
+    )
+    expect(requestCallbacks.size).toBe(0)
+    expect(getAvatarLightingContribution().status).toBe('neutral')
+  })
+
+  it('serializes disable and re-enable behind proved termination on one compositor', async () => {
+    const termination = deferred<ProjectionEffectRenderResult>()
+    const runtimes: pooledRuntimeModule.FluidFireRelayPooledRuntime[] = []
+    const compositors: pooledRuntimeModule.FluidFireRelayPooledRuntimeOptions['compositor'][] =
+      []
+    jest
+      .spyOn(pooledRuntimeModule, 'createFluidFireRelayPooledRuntime')
+      .mockImplementation((options) => {
+        compositors.push(options.compositor)
+        const runtime = new pooledRuntimeModule.FluidFireRelayPooledRuntime(
+          options
+        )
+        runtimes.push(runtime)
+        return runtime
+      })
+    let sessionCount = 0
+    const firstTerminate = jest.fn(() => termination.promise)
+    const createSession = (
+      observer: FluidFireRelayFrameObserver
+    ): ProjectionEffectSession => {
+      sessionCount += 1
+      return observedSession(
+        observer,
+        sessionCount === 1
+          ? firstTerminate
+          : async () => renderResult('disposed')
+      )
+    }
+    const view = render(
+      <FluidFireRelayCanvasLayer enabled createSession={createSession} />
+    )
+    const layer = view.getByTestId('fluid-fire-relay-layer')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+    expect(runtimes).toHaveLength(1)
+
+    view.rerender(
+      <FluidFireRelayCanvasLayer
+        enabled={false}
+        createSession={createSession}
+      />
+    )
+    await waitFor(() => expect(firstTerminate).toHaveBeenCalledTimes(1))
+    expect(requestCallbacks.size).toBe(0)
+    view.rerender(
+      <FluidFireRelayCanvasLayer enabled createSession={createSession} />
+    )
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(runtimes).toHaveLength(1)
+    expect(runtimes[0].snapshot().activeLeaseCount).toBe(1)
+    expect(
+      compositors[0].acquireSurface({
+        backend: 'webgl2',
+        effectId: 'fire',
+        sessionId: 'blocked.during.disable.transition',
+      }).status
+    ).toBe('busy')
+
+    await act(async () => {
+      termination.resolve(renderResult('disposed'))
+      await termination.promise
+    })
+    await waitFor(() => expect(runtimes).toHaveLength(2))
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+    expect(compositors[1]).toBe(compositors[0])
+    expect(sessionCount).toBe(2)
+    expect(requestCallbacks.size).toBe(1)
+    await unmountAndFlush(view)
+  })
+
+  it('serializes createSession identity replacement behind proved termination', async () => {
+    const termination = deferred<ProjectionEffectRenderResult>()
+    const runtimes: pooledRuntimeModule.FluidFireRelayPooledRuntime[] = []
+    const compositors: pooledRuntimeModule.FluidFireRelayPooledRuntimeOptions['compositor'][] =
+      []
+    jest
+      .spyOn(pooledRuntimeModule, 'createFluidFireRelayPooledRuntime')
+      .mockImplementation((options) => {
+        compositors.push(options.compositor)
+        const runtime = new pooledRuntimeModule.FluidFireRelayPooledRuntime(
+          options
+        )
+        runtimes.push(runtime)
+        return runtime
+      })
+    const firstTerminate = jest.fn(() => termination.promise)
+    const firstFactory = (observer: FluidFireRelayFrameObserver) =>
+      observedSession(observer, firstTerminate)
+    const secondFactory = (observer: FluidFireRelayFrameObserver) =>
+      observedSession(observer, async () => renderResult('disposed'))
+    const view = render(
+      <FluidFireRelayCanvasLayer enabled createSession={firstFactory} />
+    )
+    const layer = view.getByTestId('fluid-fire-relay-layer')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+
+    view.rerender(
+      <FluidFireRelayCanvasLayer enabled createSession={secondFactory} />
+    )
+    await waitFor(() => expect(firstTerminate).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(runtimes).toHaveLength(1)
+    expect(requestCallbacks.size).toBe(0)
+
+    await act(async () => {
+      termination.resolve(renderResult('disposed'))
+      await termination.promise
+    })
+    await waitFor(() => expect(runtimes).toHaveLength(2))
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+    expect(compositors[1]).toBe(compositors[0])
+    expect(requestCallbacks.size).toBe(1)
+    await unmountAndFlush(view)
+  })
+
+  it('permanently blocks queued replacement after uncertain termination', async () => {
+    const privateSentinel = 'PRIVATE_LAYER_TERMINATION_FAILURE'
+    const runtimes: pooledRuntimeModule.FluidFireRelayPooledRuntime[] = []
+    const compositors: pooledRuntimeModule.FluidFireRelayPooledRuntimeOptions['compositor'][] =
+      []
+    jest
+      .spyOn(pooledRuntimeModule, 'createFluidFireRelayPooledRuntime')
+      .mockImplementation((options) => {
+        compositors.push(options.compositor)
+        const runtime = new pooledRuntimeModule.FluidFireRelayPooledRuntime(
+          options
+        )
+        runtimes.push(runtime)
+        return runtime
+      })
+    const failingFactory = (observer: FluidFireRelayFrameObserver) =>
+      observedSession(observer, async () => {
+        throw new Error(privateSentinel)
+      })
+    const replacementFactory = (observer: FluidFireRelayFrameObserver) =>
+      observedSession(observer, async () => renderResult('disposed'))
+    const view = render(
+      <FluidFireRelayCanvasLayer enabled createSession={failingFactory} />
+    )
+    const layer = view.getByTestId('fluid-fire-relay-layer')
+    await waitFor(() => expect(layer.dataset.effectStatus).toBe('started'))
+
+    view.rerender(
+      <FluidFireRelayCanvasLayer enabled createSession={replacementFactory} />
+    )
+    await waitFor(() =>
+      expect(layer.dataset.effectStatus).toBe('runtime-quarantined')
+    )
+    expect(runtimes).toHaveLength(1)
+    expect(requestCallbacks.size).toBe(0)
+    expect(
+      compositors[0].acquireSurface({
+        backend: 'webgl2',
+        effectId: 'fire',
+        sessionId: 'blocked.after.layer.quarantine',
+      }).status
+    ).toBe('compositor-quarantined')
+    expect(JSON.stringify(runtimes[0].snapshot())).not.toContain(
+      privateSentinel
+    )
+
+    await unmountAndFlush(view)
+    expect(runtimes).toHaveLength(1)
+  })
 })
+
+function renderResult(
+  status: ProjectionEffectRenderResult['status']
+): ProjectionEffectRenderResult {
+  return {
+    status,
+    lifecycle: status === 'disposed' ? 'disposed' : 'running',
+    parameterErrorCount: 0,
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+function observedSession(
+  observer: FluidFireRelayFrameObserver,
+  terminate: () => Promise<ProjectionEffectRenderResult>
+): ProjectionEffectSession {
+  return {
+    definition: fluidFireRelayDefinition,
+    lifecycle: 'registered',
+    start: async () => renderResult('started'),
+    update: async (frameContext) => {
+      observer(
+        {
+          disposed: false,
+          frameCount: 1,
+          densityEnergy: 1,
+          temperatureEnergy: 1,
+          pressureEnergy: 1,
+          completedPassCount: 4,
+        },
+        frameContext
+      )
+      return renderResult('rendered')
+    },
+    stop: async () => renderResult('stopped'),
+    reset: async () => renderResult('reset'),
+    dispose: async () => renderResult('disposed'),
+    terminate,
+  }
+}
+
+async function unmountAndFlush(view: { unmount(): void }): Promise<void> {
+  await act(async () => {
+    view.unmount()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (
+        document.querySelector('[data-fluid-relay-compositor-host="true"]') ===
+        null
+      ) {
+        return
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  })
+}
