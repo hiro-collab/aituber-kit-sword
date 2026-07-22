@@ -3,7 +3,9 @@ import { createRef } from 'react'
 import {
   FIRE_THUNDER_LAB_VISUAL_PARAMETERS,
   FireThunderLabCanvasLayer,
+  resolveFireThunderLabVisualParameters,
   type FireThunderLabController,
+  type FireThunderLabVisualParameterOverrides,
 } from '../browser/fireThunderLabCanvasLayer'
 import {
   PROJECTION_EFFECT_COMMAND_SCHEMA_VERSION,
@@ -45,6 +47,58 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
   afterEach(() => {
     jest.useRealTimers()
     jest.restoreAllMocks()
+  })
+
+  it('accepts only bounded presentation overrides and preserves lifecycle defaults', () => {
+    const injected = {
+      fire: {
+        emitterX: 0.3,
+        emitterY: -0.25,
+        internalResolutionScale: 0.2,
+        lifetimeMs: 99_999,
+        pointSize: 46,
+      },
+      thunderBall: {
+        centerX: 0.28,
+        centerY: -0.06,
+        lifetimeMs: 99_999,
+        lineWidth: 3.8,
+        orbRadius: 0.32,
+      },
+    } as unknown as Readonly<FireThunderLabVisualParameterOverrides>
+
+    const fire = resolveFireThunderLabVisualParameters(FIRE_EFFECT_ID, injected)
+    expect(fire).toEqual(
+      expect.objectContaining({
+        emitterX: 0.3,
+        emitterY: -0.25,
+        internalResolutionScale:
+          FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.internalResolutionScale,
+        lifetimeMs: FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.lifetimeMs,
+        pointSize: 46,
+      })
+    )
+
+    const invalidFire = resolveFireThunderLabVisualParameters(FIRE_EFFECT_ID, {
+      fire: { emitterX: Number.POSITIVE_INFINITY, pointSize: 161 },
+    })
+    expect(invalidFire).toEqual(FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire)
+
+    const thunder = resolveFireThunderLabVisualParameters(
+      THUNDER_BALL_EFFECT_ID,
+      injected,
+      true
+    )
+    expect(thunder).toEqual(
+      expect.objectContaining({
+        centerX: 0.28,
+        centerY: -0.06,
+        lifetimeMs: FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall.lifetimeMs,
+        lineWidth: 3.8,
+        orbRadius: 0.32,
+        reducedMotion: true,
+      })
+    )
   })
 
   it('exposes the complete filming control surface in an idle initial state', () => {

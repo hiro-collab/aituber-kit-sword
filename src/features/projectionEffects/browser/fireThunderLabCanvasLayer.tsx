@@ -38,6 +38,20 @@ export interface FireThunderLabController {
   emergencyStop(): Promise<ProjectionEffectHostResult | null>
 }
 
+export interface FireThunderLabVisualParameterOverrides {
+  fire?: Readonly<{
+    emitterX?: number
+    emitterY?: number
+    pointSize?: number
+  }>
+  thunderBall?: Readonly<{
+    centerX?: number
+    centerY?: number
+    orbRadius?: number
+    lineWidth?: number
+  }>
+}
+
 export interface FireThunderLabCanvasLayerProps {
   reducedMotion?: boolean
   webgl2Available?: boolean
@@ -45,6 +59,7 @@ export interface FireThunderLabCanvasLayerProps {
   createFireSurface?: (canvas: HTMLCanvasElement) => FireP027Surface
   createThunderSurface?: (canvas: HTMLCanvasElement) => ThunderBallSurface
   onStatusChange?: (result: Readonly<ProjectionEffectHostResult>) => void
+  visualParameterOverrides?: FireThunderLabVisualParameterOverrides
 }
 
 const MAX_PIXEL_RATIO = 2
@@ -87,6 +102,63 @@ export const FIRE_THUNDER_LAB_VISUAL_PARAMETERS = {
   },
 } as const
 
+export function resolveFireThunderLabVisualParameters(
+  effectId: FireThunderLabEffectId,
+  overrides: Readonly<FireThunderLabVisualParameterOverrides> | undefined,
+  reducedMotion = false
+): Readonly<Record<string, unknown>> {
+  if (effectId === FIRE_EFFECT_ID) {
+    const base = FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire
+    const override = overrides?.fire
+    if (!override) return base
+
+    return {
+      ...base,
+      emitterX: boundedPresentationOverride(
+        override.emitterX,
+        base.emitterX,
+        -1,
+        1
+      ),
+      emitterY: boundedPresentationOverride(
+        override.emitterY,
+        base.emitterY,
+        -1,
+        1
+      ),
+      pointSize: boundedPresentationOverride(
+        override.pointSize,
+        base.pointSize,
+        2,
+        160
+      ),
+    }
+  }
+
+  const base = FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall
+  const override = overrides?.thunderBall
+  if (!override) return { ...base, reducedMotion }
+
+  return {
+    ...base,
+    centerX: boundedPresentationOverride(override.centerX, base.centerX, -1, 1),
+    centerY: boundedPresentationOverride(override.centerY, base.centerY, -1, 1),
+    orbRadius: boundedPresentationOverride(
+      override.orbRadius,
+      base.orbRadius,
+      0.08,
+      1
+    ),
+    lineWidth: boundedPresentationOverride(
+      override.lineWidth,
+      base.lineWidth,
+      1,
+      16
+    ),
+    reducedMotion,
+  }
+}
+
 export interface ThunderLabVisualPlan {
   bloomBlur: number
   centerX: number
@@ -111,6 +183,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
     createFireSurface = defaultFireSurface,
     createThunderSurface = defaultThunderSurface,
     onStatusChange,
+    visualParameterOverrides,
   },
   forwardedRef
 ) {
@@ -130,6 +203,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
   const mountedRef = useRef(false)
   const reducedMotionRef = useRef(reducedMotion)
   const onStatusChangeRef = useRef(onStatusChange)
+  const visualParameterOverridesRef = useRef(visualParameterOverrides)
 
   useEffect(() => {
     reducedMotionRef.current = reducedMotion
@@ -138,6 +212,10 @@ export const FireThunderLabCanvasLayer = forwardRef<
   useEffect(() => {
     onStatusChangeRef.current = onStatusChange
   }, [onStatusChange])
+
+  useEffect(() => {
+    visualParameterOverridesRef.current = visualParameterOverrides
+  }, [visualParameterOverrides])
 
   useEffect(() => {
     const compositor = compositorRef.current
@@ -301,13 +379,11 @@ export const FireThunderLabCanvasLayer = forwardRef<
         if (!host || !compositor || !mountedRef.current) return null
         if (host.activeEffectId !== null) compositor.stopFrameLoop()
         lastEffectIdRef.current = effectId
-        const parameters =
-          effectId === THUNDER_BALL_EFFECT_ID
-            ? {
-                ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
-                reducedMotion: reducedMotionRef.current,
-              }
-            : FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire
+        const parameters = resolveFireThunderLabVisualParameters(
+          effectId,
+          visualParameterOverridesRef.current,
+          reducedMotionRef.current
+        )
         const result = await host.dispatch(startCommand(effectId, parameters))
         if (effectId !== FIRE_EFFECT_ID || result.status !== 'started') {
           fireRendererRef.current = null
@@ -522,6 +598,20 @@ function strokeRibbon(
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value))
+}
+
+function boundedPresentationOverride(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= minimum &&
+    value <= maximum
+    ? value
+    : fallback
 }
 
 function defaultFireSurface(canvas: HTMLCanvasElement): FireP027Surface {

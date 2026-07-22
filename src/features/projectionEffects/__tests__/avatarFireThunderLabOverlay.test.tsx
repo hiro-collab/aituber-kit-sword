@@ -1,10 +1,14 @@
 import { createRef } from 'react'
 import { render, screen, within } from '@testing-library/react'
 import {
+  AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES,
   AvatarFireThunderLabOverlay,
   type AvatarFireThunderLabOverlayProps,
 } from '../browser/avatarFireThunderLabOverlay'
-import type { FireThunderLabController } from '../browser/fireThunderLabCanvasLayer'
+import type {
+  FireThunderLabCanvasLayerProps,
+  FireThunderLabController,
+} from '../browser/fireThunderLabCanvasLayer'
 
 jest.mock('@/components/vrmViewer', () => ({
   __esModule: true,
@@ -25,13 +29,30 @@ jest.mock('../browser/fireThunderLabCanvasLayer', () => {
   return {
     FireThunderLabCanvasLayer: React.forwardRef(
       (
-        props: AvatarFireThunderLabOverlayProps,
+        props: FireThunderLabCanvasLayerProps,
         ref: import('react').ForwardedRef<FireThunderLabController>
       ) => {
         React.useImperativeHandle(ref, () => controller)
         return (
           <div
             data-reduced-motion={String(props.reducedMotion)}
+            data-fire-emitter-x={props.visualParameterOverrides?.fire?.emitterX}
+            data-fire-emitter-y={props.visualParameterOverrides?.fire?.emitterY}
+            data-fire-point-size={
+              props.visualParameterOverrides?.fire?.pointSize
+            }
+            data-thunder-center-x={
+              props.visualParameterOverrides?.thunderBall?.centerX
+            }
+            data-thunder-center-y={
+              props.visualParameterOverrides?.thunderBall?.centerY
+            }
+            data-thunder-line-width={
+              props.visualParameterOverrides?.thunderBall?.lineWidth
+            }
+            data-thunder-orb-radius={
+              props.visualParameterOverrides?.thunderBall?.orbRadius
+            }
             data-testid="fire-thunder-lab-layer"
           >
             <canvas
@@ -58,6 +79,39 @@ describe('AvatarFireThunderLabOverlay', () => {
 
     expect(avatarLayer).toHaveClass('z-0')
     expect(effectLayer).toHaveClass('z-10', 'pointer-events-none')
+    expect(effectLayer).toHaveAttribute(
+      'data-projection-anchor-contract',
+      'fixed-stage-relative'
+    )
+    const labLayer = screen.getByTestId('fire-thunder-lab-layer')
+    expect(labLayer).toHaveAttribute(
+      'data-fire-emitter-x',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.fire.emitterX)
+    )
+    expect(labLayer).toHaveAttribute(
+      'data-fire-emitter-y',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.fire.emitterY)
+    )
+    expect(labLayer).toHaveAttribute(
+      'data-fire-point-size',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.fire.pointSize)
+    )
+    expect(labLayer).toHaveAttribute(
+      'data-thunder-center-x',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.thunderBall.centerX)
+    )
+    expect(labLayer).toHaveAttribute(
+      'data-thunder-center-y',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.thunderBall.centerY)
+    )
+    expect(labLayer).toHaveAttribute(
+      'data-thunder-line-width',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.thunderBall.lineWidth)
+    )
+    expect(labLayer).toHaveAttribute(
+      'data-thunder-orb-radius',
+      String(AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES.thunderBall.orbRadius)
+    )
     expect(
       within(avatarLayer).getAllByTestId('mock-vrm-viewer-canvas')
     ).toHaveLength(1)
