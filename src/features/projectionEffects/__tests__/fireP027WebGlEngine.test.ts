@@ -1,0 +1,352 @@
+import {
+  FIRE_P027_DEFAULT_CONTROLS,
+  FireP027CapabilityError,
+} from '../plugins/fire/p027/contracts'
+import {
+  FireP027CleanupError,
+  FireP027WebGlEngine,
+  generateFireP027FallbackOrigins,
+} from '../plugins/fire/p027/webglEngine'
+
+type ResourceKind =
+  | 'buffer'
+  | 'framebuffer'
+  | 'program'
+  | 'texture'
+  | 'vertexArray'
+
+interface FakeResource {
+  id: number
+  kind: ResourceKind
+}
+
+interface FakeP027WebGl2 {
+  allocated: Record<ResourceKind, FakeResource[]>
+  armDeleteFailure(kind: ResourceKind): void
+  canvas: HTMLCanvasElement
+  deleteAttempts: Record<ResourceKind, FakeResource[]>
+  drawCalls: jest.Mock
+  successfulDeletes: Record<ResourceKind, FakeResource[]>
+}
+
+const RESOURCE_KINDS: readonly ResourceKind[] = [
+  'buffer',
+  'vertexArray',
+  'framebuffer',
+  'texture',
+  'program',
+]
+
+const PRIVATE_NATIVE_DELETE_TEXT = 'private native driver delete detail'
+
+function resourceRecord(): Record<ResourceKind, FakeResource[]> {
+  return {
+    buffer: [],
+    framebuffer: [],
+    program: [],
+    texture: [],
+    vertexArray: [],
+  }
+}
+
+function createFakeP027WebGl2(
+  options: Readonly<{
+    failDuringInitialization?: boolean
+    failFirstDeleteKind?: ResourceKind
+  }> = {}
+): FakeP027WebGl2 {
+  const allocated = resourceRecord()
+  const deleteAttempts = resourceRecord()
+  const successfulDeletes = resourceRecord()
+  let nextId = 1
+  let initializationFailurePending = options.failDuringInitialization ?? false
+  let deleteFailureKind = options.failFirstDeleteKind
+  let deleteFailurePending = deleteFailureKind !== undefined
+
+  const allocate = (kind: ResourceKind): FakeResource => {
+    const resource = { id: nextId++, kind }
+    allocated[kind].push(resource)
+    return resource
+  }
+  const deleteResource = (kind: ResourceKind) =>
+    jest.fn((value: FakeResource) => {
+      deleteAttempts[kind].push(value)
+      if (deleteFailurePending && deleteFailureKind === kind) {
+        deleteFailurePending = false
+        throw new Error(PRIVATE_NATIVE_DELETE_TEXT)
+      }
+      successfulDeletes[kind].push(value)
+    })
+
+  const constants = {
+    ARRAY_BUFFER: 1,
+    BLEND: 2,
+    CLAMP_TO_EDGE: 3,
+    COLOR: 4,
+    COLOR_ATTACHMENT0: 10,
+    COLOR_BUFFER_BIT: 5,
+    COMPILE_STATUS: 6,
+    FLOAT: 7,
+    FRAGMENT_SHADER: 8,
+    FRAMEBUFFER: 9,
+    FRAMEBUFFER_COMPLETE: 11,
+    FUNC_ADD: 12,
+    HALF_FLOAT: 13,
+    LINEAR: 14,
+    LINK_STATUS: 15,
+    MAX_ARRAY_TEXTURE_LAYERS: 16,
+    MAX_COLOR_ATTACHMENTS: 17,
+    MAX_DRAW_BUFFERS: 18,
+    MAX_TEXTURE_SIZE: 19,
+    NEAREST: 20,
+    NO_ERROR: 0,
+    ONE: 21,
+    RGBA: 22,
+    RGBA16F: 23,
+    RGBA32F: 24,
+    STATIC_DRAW: 25,
+    TEXTURE0: 30,
+    TEXTURE_2D: 31,
+    TEXTURE_2D_ARRAY: 32,
+    TEXTURE_MAG_FILTER: 33,
+    TEXTURE_MIN_FILTER: 34,
+    TEXTURE_WRAP_S: 35,
+    TEXTURE_WRAP_T: 36,
+    TRIANGLES: 37,
+    VERTEX_SHADER: 38,
+  }
+  const drawCalls = jest.fn()
+  const gl = {
+    ...constants,
+    activeTexture: jest.fn(),
+    attachShader: jest.fn(),
+    bindBuffer: jest.fn(),
+    bindFramebuffer: jest.fn(),
+    bindTexture: jest.fn(),
+    bindVertexArray: jest.fn(),
+    blendEquation: jest.fn(),
+    blendFunc: jest.fn(),
+    bufferData: jest.fn(),
+    checkFramebufferStatus: jest.fn(() => constants.FRAMEBUFFER_COMPLETE),
+    clear: jest.fn(),
+    clearBufferfv: jest.fn(() => {
+      if (initializationFailurePending) {
+        initializationFailurePending = false
+        throw new Error('synthetic initialization failure')
+      }
+    }),
+    clearColor: jest.fn(),
+    compileShader: jest.fn(),
+    createBuffer: jest.fn(() => allocate('buffer')),
+    createFramebuffer: jest.fn(() => allocate('framebuffer')),
+    createProgram: jest.fn(() => allocate('program')),
+    createShader: jest.fn(() => ({ id: nextId++, kind: 'shader' })),
+    createTexture: jest.fn(() => allocate('texture')),
+    createVertexArray: jest.fn(() => allocate('vertexArray')),
+    deleteBuffer: deleteResource('buffer'),
+    deleteFramebuffer: deleteResource('framebuffer'),
+    deleteProgram: deleteResource('program'),
+    deleteShader: jest.fn(),
+    deleteTexture: deleteResource('texture'),
+    deleteVertexArray: deleteResource('vertexArray'),
+    disable: jest.fn(),
+    drawArrays: drawCalls,
+    drawArraysInstanced: drawCalls,
+    drawBuffers: jest.fn(),
+    enable: jest.fn(),
+    enableVertexAttribArray: jest.fn(),
+    framebufferTexture2D: jest.fn(),
+    framebufferTextureLayer: jest.fn(),
+    getError: jest.fn(() => constants.NO_ERROR),
+    getExtension: jest.fn(() => ({})),
+    getParameter: jest.fn((parameter: number) => {
+      if (parameter === constants.MAX_DRAW_BUFFERS) return 4
+      if (parameter === constants.MAX_COLOR_ATTACHMENTS) return 4
+      if (parameter === constants.MAX_ARRAY_TEXTURE_LAYERS) return 120
+      if (parameter === constants.MAX_TEXTURE_SIZE) return 4096
+      return 0
+    }),
+    getProgramInfoLog: jest.fn(() => null),
+    getProgramParameter: jest.fn(() => true),
+    getShaderInfoLog: jest.fn(() => null),
+    getShaderParameter: jest.fn(() => true),
+    getUniformLocation: jest.fn(() => ({})),
+    linkProgram: jest.fn(),
+    readBuffer: jest.fn(),
+    readPixels: jest.fn(),
+    shaderSource: jest.fn(),
+    texImage2D: jest.fn(),
+    texParameteri: jest.fn(),
+    texStorage3D: jest.fn(),
+    texSubImage2D: jest.fn(),
+    uniform1i: jest.fn(),
+    uniform4f: jest.fn(),
+    useProgram: jest.fn(),
+    vertexAttribPointer: jest.fn(),
+    viewport: jest.fn(),
+  } as unknown as WebGL2RenderingContext
+  const canvas = {
+    clientHeight: 720,
+    clientWidth: 1280,
+    getContext: jest.fn(() => gl),
+    height: 720,
+    width: 1280,
+  } as unknown as HTMLCanvasElement
+
+  return {
+    allocated,
+    armDeleteFailure(kind) {
+      deleteFailureKind = kind
+      deleteFailurePending = true
+    },
+    canvas,
+    deleteAttempts,
+    drawCalls,
+    successfulDeletes,
+  }
+}
+
+function expectEveryAllocationDeletedExactlyOnce(fake: FakeP027WebGl2): void {
+  for (const kind of RESOURCE_KINDS) {
+    expect(fake.allocated[kind].length).toBeGreaterThan(0)
+    for (const resource of fake.allocated[kind]) {
+      expect(
+        fake.successfulDeletes[kind].filter((value) => value === resource)
+      ).toHaveLength(1)
+    }
+    expect(fake.successfulDeletes[kind]).toHaveLength(
+      fake.allocated[kind].length
+    )
+  }
+}
+
+describe('P027 Fire WebGL engine boundary', () => {
+  it('constructs only from the supplied pooled canvas and fails closed without WebGL2', () => {
+    const getContext = jest.fn(() => null)
+    const canvas = { getContext } as unknown as HTMLCanvasElement
+    expect(() => new FireP027WebGlEngine(canvas)).toThrow(
+      expect.objectContaining<Partial<FireP027CapabilityError>>({
+        failure: 'webgl2',
+      })
+    )
+    expect(getContext).toHaveBeenCalledTimes(1)
+    expect(getContext).toHaveBeenCalledWith(
+      'webgl2',
+      expect.objectContaining({ alpha: true, premultipliedAlpha: false })
+    )
+  })
+
+  it('generates the same bounded 42 origins for the same semantic input', () => {
+    const first = generateFireP027FallbackOrigins(FIRE_P027_DEFAULT_CONTROLS)
+    const second = generateFireP027FallbackOrigins(FIRE_P027_DEFAULT_CONTROLS)
+    expect(first).toHaveLength(42)
+    expect(second).toEqual(first)
+    expect(
+      first.every(
+        (point) =>
+          Math.abs(point.x) <= FIRE_P027_DEFAULT_CONTROLS.originRadiusX &&
+          Math.abs(point.y) <= FIRE_P027_DEFAULT_CONTROLS.originRadiusY &&
+          Math.abs(point.z) <= FIRE_P027_DEFAULT_CONTROLS.originRadiusZ
+      )
+    ).toBe(true)
+  })
+
+  it('moves the fallback origin cloud without changing its deterministic shape', () => {
+    const original = generateFireP027FallbackOrigins(FIRE_P027_DEFAULT_CONTROLS)
+    const shifted = generateFireP027FallbackOrigins({
+      ...FIRE_P027_DEFAULT_CONTROLS,
+      originCenterX: 0.75,
+    })
+    shifted.forEach((point, index) => {
+      expect(point.x - (original[index]?.x ?? 0)).toBeCloseTo(0.75)
+      expect(point.y).toBeCloseTo(original[index]?.y ?? 0)
+      expect(point.z).toBeCloseTo(original[index]?.z ?? 0)
+    })
+  })
+
+  it('deletes every allocated identity exactly once and double-dispose is idempotent', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+
+    engine.dispose()
+    const attemptCounts = Object.fromEntries(
+      RESOURCE_KINDS.map((kind) => [kind, fake.deleteAttempts[kind].length])
+    )
+    engine.dispose()
+
+    expectEveryAllocationDeletedExactlyOnce(fake)
+    for (const kind of RESOURCE_KINDS) {
+      expect(fake.deleteAttempts[kind]).toHaveLength(attemptCounts[kind] ?? 0)
+    }
+    expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 0 })
+  })
+
+  it('cleans every resource kind when construction fails after allocation', () => {
+    const fake = createFakeP027WebGl2({ failDuringInitialization: true })
+
+    expect(() => new FireP027WebGlEngine(fake.canvas)).toThrow(
+      'synthetic initialization failure'
+    )
+    expectEveryAllocationDeletedExactlyOnce(fake)
+  })
+
+  it('retries a constructor-cleanup failure without echoing the native error', () => {
+    const fake = createFakeP027WebGl2({
+      failDuringInitialization: true,
+      failFirstDeleteKind: 'buffer',
+    })
+
+    let failure: unknown
+    try {
+      new FireP027WebGlEngine(fake.canvas)
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FireP027CleanupError)
+    expect((failure as Error).message).toBe(
+      'P027 fire resource cleanup incomplete'
+    )
+    expect((failure as Error).message).not.toContain(PRIVATE_NATIVE_DELETE_TEXT)
+    expect(fake.deleteAttempts.buffer).toHaveLength(2)
+    for (const kind of RESOURCE_KINDS.filter((value) => value !== 'buffer')) {
+      expect(fake.deleteAttempts[kind].length).toBeGreaterThan(0)
+    }
+    expectEveryAllocationDeletedExactlyOnce(fake)
+  })
+
+  it('quarantines after dispose failure and retries only retained ownership', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+    fake.armDeleteFailure('buffer')
+
+    let failure: unknown
+    try {
+      engine.dispose()
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FireP027CleanupError)
+    expect((failure as Error).message).toBe(
+      'P027 fire resource cleanup incomplete'
+    )
+    expect((failure as Error).message).not.toContain(PRIVATE_NATIVE_DELETE_TEXT)
+    expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 1 })
+    for (const kind of RESOURCE_KINDS.filter((value) => value !== 'buffer')) {
+      expect(fake.deleteAttempts[kind].length).toBeGreaterThan(0)
+    }
+
+    const drawCalls = fake.drawCalls.mock.calls.length
+    expect(() => engine.draw(FIRE_P027_DEFAULT_CONTROLS)).toThrow(
+      'P027 fire surface is disposed'
+    )
+    expect(fake.drawCalls).toHaveBeenCalledTimes(drawCalls)
+
+    engine.dispose()
+    engine.dispose()
+    expect(fake.deleteAttempts.buffer).toHaveLength(2)
+    expectEveryAllocationDeletedExactlyOnce(fake)
+    expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 0 })
+  })
+})
