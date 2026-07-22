@@ -6,6 +6,29 @@ import {
 } from '../browser/projectionEffectCompositor'
 
 describe('ProjectionEffectCompositor', () => {
+  beforeEach(() => {
+    const webgl2Context = {
+      COLOR_BUFFER_BIT: 0x4000,
+      clearColor: jest.fn(),
+      clear: jest.fn(),
+    }
+    const canvas2dContext = {
+      setTransform: jest.fn(),
+      clearRect: jest.fn(),
+    }
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((
+      contextId: string
+    ) => {
+      if (contextId === 'webgl2') return webgl2Context
+      if (contextId === '2d') return canvas2dContext
+      return null
+    }) as typeof HTMLCanvasElement.prototype.getContext)
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
   it('mounts exactly two fixed canvases in backend z-order', () => {
     const view = render(<ProjectionEffectCompositor />)
     const root = view.getByTestId('projection-effect-compositor')
@@ -305,6 +328,113 @@ describe('ProjectionEffectCompositor', () => {
     expect(acquired?.lease?.draw(jest.fn())).toEqual({
       status: 'stale-lease-rejected',
     })
+  })
+
+  it('defers pool disposal while synchronously detaching the compositor', () => {
+    const raf = createRafFixture()
+    const controllerRef = createRef<ProjectionEffectCompositorController>()
+    const view = render(
+      <ProjectionEffectCompositor
+        ref={controllerRef}
+        requestFrame={raf.requestFrame}
+        cancelFrame={raf.cancelFrame}
+        unmountPoolOwnership="external-deferred"
+      />
+    )
+    const controller = controllerRef.current!
+    const acquired = controller.acquireSurface({
+      backend: 'canvas2d',
+      effectId: 'thunderBall',
+      sessionId: 'thunder.deferred-unmount',
+    })
+    expect(acquired.status).toBe('completed')
+    acquired.lease?.draw(() => {})
+    expect(controller.startFrameLoop(jest.fn())).toBe('completed')
+
+    view.unmount()
+
+    expect(raf.cancelFrame).toHaveBeenCalledTimes(1)
+    expect(raf.callbacks).toHaveLength(0)
+    expect(controller.startFrameLoop(jest.fn())).toBe('compositor-disposed')
+    expect(
+      controller.acquireSurface({
+        backend: 'canvas2d',
+        effectId: 'thunderBall',
+        sessionId: 'thunder.deferred-rejected',
+      })
+    ).toEqual({ status: 'compositor-unavailable', lease: null })
+    expect(controller.snapshot()).toEqual(
+      expect.objectContaining({
+        state: 'disposed',
+        activeRequestCount: 0,
+        pool: expect.objectContaining({
+          state: 'leased',
+          activeLeaseCount: 1,
+          releaseCount: 0,
+        }),
+      })
+    )
+    expect(acquired.lease?.draw(jest.fn())).toEqual({ status: 'completed' })
+    expect(acquired.lease?.finish('cleanup-proved')).toEqual({
+      status: 'completed',
+    })
+    expect(controller.shutdown()).toBe('completed')
+    expect(controller.snapshot()).toEqual(
+      expect.objectContaining({ state: 'disposed', pool: null })
+    )
+    expect(acquired.lease?.draw(jest.fn())).toEqual({
+      status: 'stale-lease-rejected',
+    })
+  })
+
+  it('keeps deferred cancellation uncertainty quarantined and non-echoing', () => {
+    const raf = createRafFixture()
+    const privateCancellationError = 'private deferred cancellation detail'
+    raf.cancelFrame.mockImplementation(() => {
+      throw new Error(privateCancellationError)
+    })
+    const controllerRef = createRef<ProjectionEffectCompositorController>()
+    const view = render(
+      <ProjectionEffectCompositor
+        ref={controllerRef}
+        requestFrame={raf.requestFrame}
+        cancelFrame={raf.cancelFrame}
+        unmountPoolOwnership="external-deferred"
+      />
+    )
+    const controller = controllerRef.current!
+    const acquired = controller.acquireSurface({
+      backend: 'canvas2d',
+      effectId: 'thunderBall',
+      sessionId: 'thunder.deferred-cancel-failure',
+    })
+    acquired.lease?.draw(() => {})
+    expect(controller.startFrameLoop(jest.fn())).toBe('completed')
+
+    expect(() => view.unmount()).not.toThrow()
+
+    expect(controller.startFrameLoop(jest.fn())).toBe('compositor-quarantined')
+    expect(
+      controller.acquireSurface({
+        backend: 'canvas2d',
+        effectId: 'thunderBall',
+        sessionId: 'thunder.deferred-cancel-rejected',
+      })
+    ).toEqual({ status: 'compositor-quarantined', lease: null })
+    expect(acquired.lease?.finish('cleanup-proved')).toEqual({
+      status: 'completed',
+    })
+    expect(controller.shutdown()).toBe('compositor-quarantined')
+    const snapshot = controller.snapshot()
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        state: 'quarantined',
+        activeRequestCount: 0,
+        browserBoundaryFailureCount: 1,
+        pool: null,
+      })
+    )
+    expect(JSON.stringify(snapshot)).not.toContain(privateCancellationError)
   })
 
   it('uses the compositor pool and clears the active surface at shutdown', () => {

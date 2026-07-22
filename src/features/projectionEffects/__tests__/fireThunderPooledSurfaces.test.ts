@@ -10,10 +10,11 @@ import {
   ProjectionEffectSurfacePool,
   type ProjectionEffectSurfacePoolSnapshot,
 } from '../browser/projectionEffectSurfacePool'
-import type {
-  FireParticleDrawConfig,
-  FireParticleSurface,
-} from '../plugins/fire/renderer'
+import {
+  FIRE_P027_DEFAULT_CONTROLS,
+  type FireP027SpawnBatch,
+  type FireP027Surface,
+} from '../plugins/fire/p027/contracts'
 import type {
   ThunderBallFrame,
   ThunderBallSurface,
@@ -33,7 +34,7 @@ describe('FireThunderPooledSurfaces', () => {
     expect(fixture.pool.snapshot()).toEqual(
       expect.objectContaining({ generation: 0, activeLeaseCount: 0 })
     )
-    firstFire.draw([], {} as FireParticleDrawConfig)
+    exerciseFire(firstFire)
     expect(fixture.pool.snapshot()).toEqual(
       expect.objectContaining({
         generation: 1,
@@ -61,7 +62,7 @@ describe('FireThunderPooledSurfaces', () => {
     thunder.dispose()
 
     const secondFire = pooled.createFireSurface()
-    secondFire.draw([], {} as FireParticleDrawConfig)
+    exerciseFire(secondFire)
     expect(fixture.pool.snapshot()).toEqual(
       expect.objectContaining({
         generation: 3,
@@ -70,9 +71,7 @@ describe('FireThunderPooledSurfaces', () => {
         releaseCount: 2,
       })
     )
-    expect(() => firstFire.draw([], {} as FireParticleDrawConfig)).toThrow(
-      FireThunderPooledSurfaceError
-    )
+    expect(() => exerciseFire(firstFire)).toThrow(FireThunderPooledSurfaceError)
     expect(pooled.snapshot()).toEqual(
       expect.objectContaining({
         generation: 3,
@@ -99,7 +98,7 @@ describe('FireThunderPooledSurfaces', () => {
       createThunderSurface: fixture.createThunderSurface,
     })
     const fire = pooled.createFireSurface()
-    fire.draw([], {} as FireParticleDrawConfig)
+    exerciseFire(fire)
 
     expect(() => fire.dispose()).toThrow(FireThunderPooledSurfaceError)
     expect(pooled.snapshot()).toEqual(
@@ -180,18 +179,21 @@ function createFixture(options: { fireDisposeThrows?: boolean } = {}) {
         pool: pool.snapshot(),
       }) satisfies ProjectionEffectCompositorSnapshot,
   }
-  const fireSurfaces: FireParticleSurface[] = []
+  const fireSurfaces: FireP027Surface[] = []
   const thunderSurfaces: ThunderBallSurface[] = []
   const createFireSurface = jest.fn(() => {
     const surface = {
+      step: jest.fn(),
       draw: jest.fn(),
+      setOrigins: jest.fn(),
+      reset: jest.fn(),
       clear: jest.fn(),
       dispose: jest.fn(() => {
         if (options.fireDisposeThrows) {
           throw new Error('private fire disposal failure')
         }
       }),
-    } satisfies FireParticleSurface
+    } satisfies FireP027Surface
     fireSurfaces.push(surface)
     return surface
   })
@@ -214,4 +216,17 @@ function createFixture(options: { fireDisposeThrows?: boolean } = {}) {
     pool,
     thunderSurfaces,
   }
+}
+
+const FIRE_BATCH: Readonly<FireP027SpawnBatch> = Object.freeze({
+  start: 0,
+  count: 1,
+  generationBase: 1,
+  logicalUpdate: 1,
+  dtSeconds: 1 / 60,
+})
+
+function exerciseFire(surface: FireP027Surface): void {
+  surface.step(FIRE_BATCH, 1, FIRE_P027_DEFAULT_CONTROLS)
+  surface.draw(FIRE_P027_DEFAULT_CONTROLS)
 }

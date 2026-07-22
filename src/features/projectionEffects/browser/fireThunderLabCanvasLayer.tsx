@@ -11,10 +11,9 @@ import {
   type FireThunderLabEffectId,
 } from '../lab/fireThunderLabRegistry'
 import { FIRE_EFFECT_ID } from '../plugins/fire/definition'
-import {
-  FireWebGl2Surface,
-  type FireParticleSurface,
-} from '../plugins/fire/renderer'
+import type { FireP027Surface } from '../plugins/fire/p027/contracts'
+import type { FireP027Renderer } from '../plugins/fire/p027/renderer'
+import { FireP027WebGlEngine } from '../plugins/fire/p027/webglEngine'
 import { THUNDER_BALL_EFFECT_ID } from '../plugins/thunderBall/definition'
 import type {
   ThunderBallFrame,
@@ -43,7 +42,7 @@ export interface FireThunderLabCanvasLayerProps {
   reducedMotion?: boolean
   webgl2Available?: boolean
   waitFrame?: (durationMs: number) => Promise<void>
-  createFireSurface?: (canvas: HTMLCanvasElement) => FireParticleSurface
+  createFireSurface?: (canvas: HTMLCanvasElement) => FireP027Surface
   createThunderSurface?: (canvas: HTMLCanvasElement) => ThunderBallSurface
   onStatusChange?: (result: Readonly<ProjectionEffectHostResult>) => void
 }
@@ -121,6 +120,12 @@ export const FireThunderLabCanvasLayer = forwardRef<
   const hostRef = useRef<ReturnType<typeof createFireThunderLabHost> | null>(
     null
   )
+  const pooledSurfacesRef = useRef<FireThunderPooledSurfaces | null>(null)
+  const fireRendererRef = useRef<FireP027Renderer | null>(null)
+  const cleanupPromiseRef = useRef<Promise<void>>(Promise.resolve())
+  const readyPromiseRef = useRef<Promise<void>>(Promise.resolve())
+  const effectGenerationRef = useRef(0)
+  const cleanupUnprovedRef = useRef(false)
   const lastEffectIdRef = useRef<FireThunderLabEffectId | null>(null)
   const mountedRef = useRef(false)
   const reducedMotionRef = useRef(reducedMotion)
@@ -138,31 +143,113 @@ export const FireThunderLabCanvasLayer = forwardRef<
     const compositor = compositorRef.current
     if (!compositor) return
 
+    effectGenerationRef.current += 1
+    const generation = effectGenerationRef.current
     mountedRef.current = true
-    const pooledSurfaces = new FireThunderPooledSurfaces({
-      compositor,
-      createFireSurface,
-      createThunderSurface,
+    let pooledSurfaces: FireThunderPooledSurfaces | null = null
+    let host: ReturnType<typeof createFireThunderLabHost> | null = null
+    const ready = cleanupPromiseRef.current.then(() => {
+      if (
+        !mountedRef.current ||
+        effectGenerationRef.current !== generation ||
+        cleanupUnprovedRef.current
+      ) {
+        return
+      }
+      pooledSurfaces = new FireThunderPooledSurfaces({
+        compositor,
+        createFireSurface,
+        createThunderSurface,
+      })
+      host = createFireThunderLabHost({
+        createFireSurface: () => pooledSurfaces!.createFireSurface(),
+        createThunderSurface: () => pooledSurfaces!.createThunderSurface(),
+        onFireRendererCreated: (renderer) => {
+          if (effectGenerationRef.current === generation) {
+            fireRendererRef.current = renderer
+          }
+        },
+        webgl2Available:
+          webgl2Available ??
+          typeof globalThis.WebGL2RenderingContext !== 'undefined',
+        waitFrame,
+      })
+      pooledSurfacesRef.current = pooledSurfaces
+      hostRef.current = host
     })
-    const host = createFireThunderLabHost({
-      createFireSurface: () => pooledSurfaces.createFireSurface(),
-      createThunderSurface: () => pooledSurfaces.createThunderSurface(),
-      webgl2Available:
-        webgl2Available ??
-        typeof globalThis.WebGL2RenderingContext !== 'undefined',
-      waitFrame,
-    })
-    hostRef.current = host
+    readyPromiseRef.current = ready
 
     return () => {
-      mountedRef.current = false
-      compositor.stopFrameLoop()
-      pooledSurfaces.disposeActive()
-      hostRef.current = null
-      const effectId = lastEffectIdRef.current
-      if (effectId) {
-        void host.dispatch(stopCommand(effectId, 'emergency'))
+      if (effectGenerationRef.current === generation) {
+        mountedRef.current = false
       }
+      compositor.stopFrameLoop()
+      const effectId = lastEffectIdRef.current
+      if (hostRef.current === host) hostRef.current = null
+      if (pooledSurfacesRef.current === pooledSurfaces) {
+        pooledSurfacesRef.current = null
+      }
+      fireRendererRef.current = null
+      lastEffectIdRef.current = null
+
+      cleanupPromiseRef.current = ready
+        .then(async () => {
+          if (!host || !pooledSurfaces) {
+            const compositorState = compositor.snapshot().state
+            if (
+              compositorState === 'disposed' ||
+              compositorState === 'quarantined'
+            ) {
+              if (compositor.shutdown() !== 'completed') {
+                cleanupUnprovedRef.current = true
+              }
+            }
+            return
+          }
+          let hostCleanupProved = true
+          if (effectId) {
+            try {
+              const result = await host.dispatch(
+                stopCommand(effectId, 'emergency')
+              )
+              hostCleanupProved =
+                result.status === 'emergency-stopped' ||
+                result.status === 'no-active-effect'
+            } catch {
+              hostCleanupProved = false
+            }
+          }
+
+          if (!hostCleanupProved) {
+            cleanupUnprovedRef.current = true
+            pooledSurfaces.quarantineActive()
+          } else if (pooledSurfaces.disposeActive() !== 'completed') {
+            cleanupUnprovedRef.current = true
+            pooledSurfaces.quarantineActive()
+          }
+
+          const compositorState = compositor.snapshot().state
+          if (
+            compositorState === 'disposed' ||
+            compositorState === 'quarantined'
+          ) {
+            if (compositor.shutdown() !== 'completed') {
+              cleanupUnprovedRef.current = true
+              pooledSurfaces.quarantineActive()
+            }
+          }
+        })
+        .catch(() => {
+          cleanupUnprovedRef.current = true
+          pooledSurfaces?.quarantineActive()
+          const compositorState = compositor.snapshot().state
+          if (
+            compositorState === 'disposed' ||
+            compositorState === 'quarantined'
+          ) {
+            compositor.shutdown()
+          }
+        })
     }
   }, [createFireSurface, createThunderSurface, waitFrame, webgl2Available])
 
@@ -174,6 +261,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
     if (!host || !effectId || !mountedRef.current) return null
     compositorRef.current?.stopFrameLoop()
     const result = await host.dispatch(stopCommand(effectId, mode))
+    if (host.activeEffectId === null && effectId === FIRE_EFFECT_ID) {
+      fireRendererRef.current = null
+    }
     if (mountedRef.current) onStatusChangeRef.current?.(result)
     return result
   }
@@ -183,7 +273,20 @@ export const FireThunderLabCanvasLayer = forwardRef<
     const effectId = lastEffectIdRef.current
     if (!host || !effectId || !mountedRef.current) return null
     compositorRef.current?.stopFrameLoop()
+    if (effectId === FIRE_EFFECT_ID && fireRendererRef.current) {
+      try {
+        fireRendererRef.current.reset()
+      } catch {
+        const cleanup = await host.dispatch(stopCommand(effectId, 'emergency'))
+        cleanupUnprovedRef.current = true
+        pooledSurfacesRef.current?.quarantineActive()
+        fireRendererRef.current = null
+        if (mountedRef.current) onStatusChangeRef.current?.(cleanup)
+        return cleanup
+      }
+    }
     const result = await host.dispatch(resetCommand(effectId))
+    if (effectId === FIRE_EFFECT_ID) fireRendererRef.current = null
     if (mountedRef.current) onStatusChangeRef.current?.(result)
     return result
   }
@@ -192,6 +295,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
     forwardedRef,
     () => ({
       async start(effectId) {
+        await readyPromiseRef.current
         const host = hostRef.current
         const compositor = compositorRef.current
         if (!host || !compositor || !mountedRef.current) return null
@@ -205,6 +309,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
               }
             : FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire
         const result = await host.dispatch(startCommand(effectId, parameters))
+        if (effectId !== FIRE_EFFECT_ID || result.status !== 'started') {
+          fireRendererRef.current = null
+        }
         if (!mountedRef.current) return result
         onStatusChangeRef.current?.(result)
         if (result.status === 'started') {
@@ -217,7 +324,10 @@ export const FireThunderLabCanvasLayer = forwardRef<
             ) {
               onStatusChangeRef.current?.(frameResult)
             }
-            if (host.activeEffectId === null) compositor.stopFrameLoop()
+            if (host.activeEffectId === null) {
+              fireRendererRef.current = null
+              compositor.stopFrameLoop()
+            }
           })
           if (!compositorOperationCompleted(loopStatus)) {
             const cleanup = await host.dispatch(
@@ -248,7 +358,10 @@ export const FireThunderLabCanvasLayer = forwardRef<
       className="pointer-events-none absolute inset-0"
       data-testid="fire-thunder-lab-layer"
     >
-      <ProjectionEffectCompositor ref={compositorRef} />
+      <ProjectionEffectCompositor
+        ref={compositorRef}
+        unmountPoolOwnership="external-deferred"
+      />
     </div>
   )
 })
@@ -411,8 +524,8 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value))
 }
 
-function defaultFireSurface(canvas: HTMLCanvasElement): FireParticleSurface {
-  return new FireWebGl2Surface(canvas)
+function defaultFireSurface(canvas: HTMLCanvasElement): FireP027Surface {
+  return new FireP027WebGlEngine(canvas)
 }
 
 function defaultThunderSurface(canvas: HTMLCanvasElement): ThunderBallSurface {

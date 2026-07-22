@@ -8,9 +8,10 @@ import {
   fireEffectDefinition,
 } from '../plugins/fire/definition'
 import {
-  FireParticleRenderer,
-  type FireParticleSurface,
-} from '../plugins/fire/renderer'
+  FireP027Renderer,
+  type FireP027RendererOptions,
+} from '../plugins/fire/p027/renderer'
+import type { FireP027Surface } from '../plugins/fire/p027/contracts'
 import {
   THUNDER_BALL_EFFECT_ID,
   thunderBallEffectDefinition,
@@ -30,8 +31,9 @@ export const FIRE_THUNDER_LAB_EFFECT_IDS = [
 ] as const satisfies readonly FireThunderLabEffectId[]
 
 export interface FireThunderLabHostOptions {
-  createFireSurface(): FireParticleSurface
+  createFireSurface(): FireP027Surface
   createThunderSurface(): ThunderBallSurface
+  onFireRendererCreated?: (renderer: FireP027Renderer) => void
   webgl2Available: boolean
   waitFrame?: (durationMs: number) => Promise<void>
   nowMs?: () => number
@@ -44,11 +46,14 @@ export function createFireThunderLabHost(
   const registry = new ProjectionEffectRegistry()
   registry.register({
     definition: fireEffectDefinition,
-    createRenderer: () =>
-      new FireParticleRenderer({
+    createRenderer: () => {
+      const renderer = new FireP027Renderer({
         surface: options.createFireSurface(),
         waitFrame: options.waitFrame,
-      }),
+      } satisfies FireP027RendererOptions)
+      options.onFireRendererCreated?.(renderer)
+      return renderer
+    },
   })
   registry.register({
     definition: thunderBallEffectDefinition,

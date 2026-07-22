@@ -11,7 +11,7 @@ import {
 } from '../effectCommand'
 import { createFireThunderLabHost } from '../lab/fireThunderLabRegistry'
 import { FIRE_EFFECT_ID } from '../plugins/fire/definition'
-import type { FireParticleSurface } from '../plugins/fire/renderer'
+import type { FireP027Surface } from '../plugins/fire/p027/contracts'
 import { THUNDER_BALL_EFFECT_ID } from '../plugins/thunderBall/definition'
 import type {
   ThunderBallFrame,
@@ -161,12 +161,10 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
       await controllerRef.current?.start(FIRE_EFFECT_ID)
     })
     expect(fireSurfaces[0].draw).toHaveBeenCalledWith(
-      expect.any(Array),
       expect.objectContaining({
-        bloomGain: FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.bloomGain,
-        masterIntensity:
-          FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.masterIntensity,
-        postProcessing: true,
+        lifeSeconds: FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.lifetimeMs / 1_000,
+        resolutionScale: 0.75,
+        originCenterY: FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire.emitterY * 0.28,
       })
     )
     expect(requestCallbacks.size).toBe(1)
@@ -323,14 +321,100 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
     )
     expect(requestCallbacks.size).toBe(0)
   })
+
+  it('waits for proved cleanup before allowing one replacement start', async () => {
+    const firstFire = mockFireSurface()
+    const secondFire = mockFireSurface()
+    const firstFactory = jest.fn(() => firstFire)
+    const secondFactory = jest.fn(() => secondFire)
+    const controllerRef = createRef<FireThunderLabController>()
+    const createThunderSurface = () => mockThunderSurface()
+    const view = render(
+      <FireThunderLabCanvasLayer
+        ref={controllerRef}
+        createFireSurface={firstFactory}
+        createThunderSurface={createThunderSurface}
+        webgl2Available
+      />
+    )
+
+    await act(async () => {
+      await controllerRef.current?.start(FIRE_EFFECT_ID)
+    })
+    view.rerender(
+      <FireThunderLabCanvasLayer
+        ref={controllerRef}
+        createFireSurface={secondFactory}
+        createThunderSurface={createThunderSurface}
+        webgl2Available
+      />
+    )
+
+    let result: Awaited<ReturnType<FireThunderLabController['start']>> = null
+    await act(async () => {
+      result = (await controllerRef.current?.start(FIRE_EFFECT_ID)) ?? null
+    })
+
+    expect(firstFire.dispose).toHaveBeenCalledTimes(1)
+    expect(secondFactory).toHaveBeenCalledTimes(1)
+    expect(secondFire.draw).toHaveBeenCalledTimes(1)
+    expect(result).toEqual(expect.objectContaining({ status: 'started' }))
+    view.unmount()
+  })
+
+  it('quarantines failed cleanup and blocks replacement acquisition', async () => {
+    const firstFire = mockFireSurface()
+    firstFire.dispose.mockImplementation(() => {
+      throw new Error('private renderer cleanup detail')
+    })
+    const replacementFactory = jest.fn(() => mockFireSurface())
+    const controllerRef = createRef<FireThunderLabController>()
+    const createThunderSurface = () => mockThunderSurface()
+    const view = render(
+      <FireThunderLabCanvasLayer
+        ref={controllerRef}
+        createFireSurface={() => firstFire}
+        createThunderSurface={createThunderSurface}
+        webgl2Available
+      />
+    )
+
+    await act(async () => {
+      await controllerRef.current?.start(FIRE_EFFECT_ID)
+    })
+    view.rerender(
+      <FireThunderLabCanvasLayer
+        ref={controllerRef}
+        createFireSurface={replacementFactory}
+        createThunderSurface={createThunderSurface}
+        webgl2Available
+      />
+    )
+
+    let result: Awaited<ReturnType<FireThunderLabController['start']>> = null
+    await act(async () => {
+      result = (await controllerRef.current?.start(FIRE_EFFECT_ID)) ?? null
+    })
+
+    expect(result).toBeNull()
+    expect(replacementFactory).not.toHaveBeenCalled()
+    expect(requestCallbacks.size).toBe(0)
+    expect(JSON.stringify(result)).not.toContain(
+      'private renderer cleanup detail'
+    )
+    view.unmount()
+  })
 })
 
 function mockFireSurface() {
   return {
+    step: jest.fn(),
     draw: jest.fn(),
+    setOrigins: jest.fn(),
+    reset: jest.fn(),
     clear: jest.fn(),
     dispose: jest.fn(),
-  } satisfies FireParticleSurface
+  } satisfies FireP027Surface
 }
 
 function mockThunderSurface() {

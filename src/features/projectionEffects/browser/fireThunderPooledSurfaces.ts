@@ -8,10 +8,12 @@ import type {
 } from './projectionEffectSurfacePool'
 import { FIRE_EFFECT_ID } from '../plugins/fire/definition'
 import type {
-  FireParticle,
-  FireParticleDrawConfig,
-  FireParticleSurface,
-} from '../plugins/fire/renderer'
+  FireP027Controls,
+  FireP027OriginPoint,
+  FireP027SpawnBatch,
+  FireP027Surface,
+  FireP027SurfaceAudit,
+} from '../plugins/fire/p027/contracts'
 import { THUNDER_BALL_EFFECT_ID } from '../plugins/thunderBall/definition'
 import type {
   ThunderBallFrame,
@@ -29,7 +31,7 @@ export interface FireThunderPooledSurfacesSnapshot {
 
 export interface FireThunderPooledSurfacesOptions {
   compositor: ProjectionEffectCompositorController
-  createFireSurface(canvas: HTMLCanvasElement): FireParticleSurface
+  createFireSurface(canvas: HTMLCanvasElement): FireP027Surface
   createThunderSurface(canvas: HTMLCanvasElement): ThunderBallSurface
 }
 
@@ -64,8 +66,8 @@ export class FireThunderPooledSurfaces {
 
   constructor(private readonly options: FireThunderPooledSurfacesOptions) {}
 
-  createFireSurface(): FireParticleSurface {
-    return new PooledFireSurface(this, this.options.createFireSurface)
+  createFireSurface(): FireP027Surface {
+    return new PooledP027FireSurface(this, this.options.createFireSurface)
   }
 
   createThunderSurface(): ThunderBallSurface {
@@ -83,6 +85,12 @@ export class FireThunderPooledSurfaces {
       return 'cleanup-unproved'
     }
     return this.cleanupUnprovedValue ? 'cleanup-unproved' : 'completed'
+  }
+
+  quarantineActive(): FireThunderPooledSurfaceStatus {
+    this.cleanupUnprovedValue = true
+    this.activeSurface?.quarantine()
+    return 'cleanup-unproved'
   }
 
   snapshot(): Readonly<FireThunderPooledSurfacesSnapshot> {
@@ -159,7 +167,8 @@ abstract class PooledSurfaceSession<
   Surface,
 > {
   private owned: OwnedPooledSurface<Backend, Surface> | null = null
-  private disposed = false
+  private quarantined = false
+  private cleanupComplete = false
 
   constructor(
     private readonly surfaces: FireThunderPooledSurfaces,
@@ -171,18 +180,25 @@ abstract class PooledSurfaceSession<
   ) {}
 
   protected drawWithSurface(operation: (surface: Surface) => void): void {
-    if (this.disposed) {
-      this.rejectDisposedOperation()
-    }
+    this.readWithSurface(operation)
+  }
+
+  protected readWithSurface<Result>(
+    operation: (surface: Surface) => Result
+  ): Result {
+    if (this.quarantined) this.rejectDisposedOperation()
     const owned = this.ensureOwned()
-    const result = owned.lease.draw(() => operation(owned.surface))
-    if (result.status === 'completed') return
+    let value: Result | undefined
+    const result = owned.lease.draw(() => {
+      value = operation(owned.surface)
+    })
+    if (result.status === 'completed') return value as Result
     this.failOwnedOperation(owned, result.status)
   }
 
   clear(): void {
     if (!this.owned) {
-      if (this.disposed) throw new FireThunderPooledSurfaceError()
+      if (this.quarantined) throw new FireThunderPooledSurfaceError()
       return
     }
     const result = this.owned.lease.clear()
@@ -193,10 +209,13 @@ abstract class PooledSurfaceSession<
   }
 
   dispose(): void {
-    if (this.disposed) return
-    this.disposed = true
+    if (this.cleanupComplete) return
+    this.quarantined = true
     const owned = this.owned
-    if (!owned) return
+    if (!owned) {
+      this.cleanupComplete = true
+      return
+    }
 
     const disposed = owned.lease.draw(() => {
       const surface = owned.surface as { dispose(): void }
@@ -216,6 +235,14 @@ abstract class PooledSurfaceSession<
       this as PooledSurfaceSession<ProjectionEffectSurfaceBackend, unknown>,
       owned.generation
     )
+    this.cleanupComplete = true
+  }
+
+  quarantine(): void {
+    if (this.cleanupComplete) return
+    this.quarantined = true
+    this.surfaces.markCleanupUnproved()
+    this.owned?.lease.finish('cleanup-unproved')
   }
 
   private ensureOwned(): OwnedPooledSurface<Backend, Surface> {
@@ -253,22 +280,47 @@ abstract class PooledSurfaceSession<
   }
 }
 
-class PooledFireSurface
-  extends PooledSurfaceSession<'webgl2', FireParticleSurface>
-  implements FireParticleSurface
+class PooledP027FireSurface
+  extends PooledSurfaceSession<'webgl2', FireP027Surface>
+  implements FireP027Surface
 {
   constructor(
     surfaces: FireThunderPooledSurfaces,
-    createSurface: (canvas: HTMLCanvasElement) => FireParticleSurface
+    createSurface: (canvas: HTMLCanvasElement) => FireP027Surface
   ) {
     super(surfaces, 'webgl2', FIRE_EFFECT_ID, createSurface)
   }
 
-  draw(
-    particles: readonly Readonly<FireParticle>[],
-    config: Readonly<FireParticleDrawConfig>
+  step(
+    batch: Readonly<FireP027SpawnBatch>,
+    rawGate: number,
+    controls: Readonly<FireP027Controls>
   ): void {
-    this.drawWithSurface((surface) => surface.draw(particles, config))
+    this.drawWithSurface((surface) => surface.step(batch, rawGate, controls))
+  }
+
+  draw(controls: Readonly<FireP027Controls>): void {
+    this.drawWithSurface((surface) => surface.draw(controls))
+  }
+
+  setOrigins(points: readonly Readonly<FireP027OriginPoint>[]): void {
+    this.drawWithSurface((surface) => surface.setOrigins(points))
+  }
+
+  reset(): void {
+    this.drawWithSurface((surface) => surface.reset())
+  }
+
+  override clear(): void {
+    this.drawWithSurface((surface) => surface.clear())
+  }
+
+  audit(): Readonly<FireP027SurfaceAudit> {
+    return this.readWithSurface((surface) => {
+      const audit = surface.audit?.()
+      if (!audit) throw new FireThunderPooledSurfaceError()
+      return audit
+    })
   }
 }
 

@@ -69,6 +69,7 @@ export interface ProjectionEffectCompositorController {
 export interface ProjectionEffectCompositorProps {
   requestFrame?: (callback: FrameRequestCallback) => number
   cancelFrame?: (requestId: number) => void
+  unmountPoolOwnership?: 'component' | 'external-deferred'
 }
 
 const MAX_LEDGER_COUNT = 1_000_000
@@ -77,7 +78,11 @@ export const ProjectionEffectCompositor = forwardRef<
   ProjectionEffectCompositorController,
   ProjectionEffectCompositorProps
 >(function ProjectionEffectCompositor(
-  { requestFrame = defaultRequestFrame, cancelFrame = defaultCancelFrame },
+  {
+    requestFrame = defaultRequestFrame,
+    cancelFrame = defaultCancelFrame,
+    unmountPoolOwnership = 'component',
+  },
   forwardedRef
 ) {
   const webgl2CanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -102,9 +107,12 @@ export const ProjectionEffectCompositor = forwardRef<
   const scheduleRef = useRef<
     (() => ProjectionEffectCompositorOperationStatus) | null
   >(null)
+  const unmountPoolOwnershipRef = useRef(unmountPoolOwnership)
+  const deferredPoolRef = useRef(false)
 
   requestFrameRef.current = requestFrame
   cancelFrameRef.current = cancelFrame
+  unmountPoolOwnershipRef.current = unmountPoolOwnership
 
   const latchQuarantine = (): void => {
     if (!quarantinedRef.current) {
@@ -158,18 +166,23 @@ export const ProjectionEffectCompositor = forwardRef<
 
   const shutdown = (): ProjectionEffectCompositorOperationStatus => {
     const quarantinedBeforeShutdown = isCompositorQuarantined()
-    if (disposedRef.current) {
+    const ownsDeferredPool = deferredPoolRef.current
+    if (disposedRef.current && !ownsDeferredPool) {
       return quarantinedBeforeShutdown
         ? 'compositor-quarantined'
         : 'compositor-disposed'
     }
-    const stopResult = stopFrameLoop()
+    const stopResult = ownsDeferredPool ? 'completed' : stopFrameLoop()
     const pool = poolRef.current
     if (!pool) return 'compositor-unavailable'
     const result = pool.dispose()
     if (result.status !== 'completed') {
       latchQuarantine()
       return 'cleanup-unproved'
+    }
+    if (ownsDeferredPool) {
+      poolRef.current = null
+      deferredPoolRef.current = false
     }
     disposedRef.current = true
     if (
@@ -270,6 +283,22 @@ export const ProjectionEffectCompositor = forwardRef<
       runningRef.current = false
       callbackRef.current = null
       loopGenerationRef.current = incrementBounded(loopGenerationRef.current)
+      const deferPoolDisposal =
+        unmountPoolOwnershipRef.current === 'external-deferred'
+      const finishUnmount = (): void => {
+        const pool = poolRef.current
+        if (deferPoolDisposal) {
+          deferredPoolRef.current = pool !== null
+        } else {
+          if (pool && pool.dispose().status !== 'completed') {
+            latchQuarantine()
+          }
+          poolRef.current = null
+        }
+        scheduleRef.current = null
+        disposedRef.current = true
+      }
+
       if (requestIdRef.current !== null) {
         const requestId = requestIdRef.current
         try {
@@ -281,23 +310,11 @@ export const ProjectionEffectCompositor = forwardRef<
           )
         } finally {
           requestIdRef.current = null
-          const pool = poolRef.current
-          if (pool && pool.dispose().status !== 'completed') {
-            latchQuarantine()
-          }
-          poolRef.current = null
-          scheduleRef.current = null
-          disposedRef.current = true
+          finishUnmount()
         }
         return
       }
-      const pool = poolRef.current
-      if (pool && pool.dispose().status !== 'completed') {
-        latchQuarantine()
-      }
-      poolRef.current = null
-      scheduleRef.current = null
-      disposedRef.current = true
+      finishUnmount()
     }
   }, [])
 
