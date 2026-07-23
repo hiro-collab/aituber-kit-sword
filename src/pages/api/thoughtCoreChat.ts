@@ -14,8 +14,11 @@ import {
   PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT,
   readProjectionEffectRequestedEvent,
 } from '@/features/projectionEffects/projectionEffectIntent'
+import { CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256 } from '@/features/projectionEffects/projectionPerformancePlan'
 
 const DEFAULT_THOUGHT_CORE_BASE_URL = 'http://127.0.0.1:18888'
+export const MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES = 16 * 1024
+const MAX_JSON_DUPLICATE_SCAN_DEPTH = 64
 
 const truncate = (value: string, maxLength = 1200) =>
   value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
@@ -530,6 +533,8 @@ function projectProjectionEffectIntentEvent(
   const intent = readProjectionEffectRequestedEvent(data, {
     expectedTurnId,
     expectedSessionId,
+    expectedPerformancePlanSchemaSha256:
+      CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256,
   })
   const conversationAttemptRef = expectedConversationAttemptRef
     ? safeConversationAttemptRef(expectedConversationAttemptRef)
@@ -749,6 +754,205 @@ async function readThoughtCoreErrorDetail(response: Response): Promise<string> {
   return truncate(text)
 }
 
+type JsonDuplicateScanResult = 'unique' | 'duplicate' | 'invalid'
+
+function scanJsonForDuplicateObjectKeys(text: string): JsonDuplicateScanResult {
+  let index = 0
+
+  const skipWhitespace = () => {
+    while (index < text.length) {
+      const code = text.charCodeAt(index)
+      if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+        break
+      }
+      index += 1
+    }
+  }
+
+  const readHexDigit = (code: number): number => {
+    if (code >= 0x30 && code <= 0x39) return code - 0x30
+    if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10
+    if (code >= 0x61 && code <= 0x66) return code - 0x61 + 10
+    return -1
+  }
+
+  const parseString = (
+    collectValue: boolean
+  ): { ok: true; value: string } | { ok: false } => {
+    if (text.charCodeAt(index) !== 0x22) return { ok: false }
+    index += 1
+    const value: string[] = []
+    while (index < text.length) {
+      const code = text.charCodeAt(index)
+      index += 1
+      if (code === 0x22) {
+        return { ok: true, value: collectValue ? value.join('') : '' }
+      }
+      if (code < 0x20) return { ok: false }
+      if (code !== 0x5c) {
+        if (collectValue) value.push(String.fromCharCode(code))
+        continue
+      }
+      if (index >= text.length) return { ok: false }
+      const escaped = text.charCodeAt(index)
+      index += 1
+      const simpleEscape =
+        escaped === 0x22
+          ? '"'
+          : escaped === 0x5c
+            ? '\\'
+            : escaped === 0x2f
+              ? '/'
+              : escaped === 0x62
+                ? '\b'
+                : escaped === 0x66
+                  ? '\f'
+                  : escaped === 0x6e
+                    ? '\n'
+                    : escaped === 0x72
+                      ? '\r'
+                      : escaped === 0x74
+                        ? '\t'
+                        : null
+      if (simpleEscape !== null) {
+        if (collectValue) value.push(simpleEscape)
+        continue
+      }
+      if (escaped !== 0x75 || index + 4 > text.length) {
+        return { ok: false }
+      }
+      let unicode = 0
+      for (let offset = 0; offset < 4; offset += 1) {
+        const digit = readHexDigit(text.charCodeAt(index + offset))
+        if (digit < 0) return { ok: false }
+        unicode = unicode * 16 + digit
+      }
+      index += 4
+      if (collectValue) value.push(String.fromCharCode(unicode))
+    }
+    return { ok: false }
+  }
+
+  const parseNumber = (): boolean => {
+    if (text.charCodeAt(index) === 0x2d) index += 1
+    if (text.charCodeAt(index) === 0x30) {
+      index += 1
+    } else {
+      const first = text.charCodeAt(index)
+      if (first < 0x31 || first > 0x39) return false
+      index += 1
+      while (index < text.length) {
+        const code = text.charCodeAt(index)
+        if (code < 0x30 || code > 0x39) break
+        index += 1
+      }
+    }
+    if (text.charCodeAt(index) === 0x2e) {
+      index += 1
+      const firstFraction = text.charCodeAt(index)
+      if (firstFraction < 0x30 || firstFraction > 0x39) return false
+      while (index < text.length) {
+        const code = text.charCodeAt(index)
+        if (code < 0x30 || code > 0x39) break
+        index += 1
+      }
+    }
+    const exponent = text.charCodeAt(index)
+    if (exponent === 0x45 || exponent === 0x65) {
+      index += 1
+      const sign = text.charCodeAt(index)
+      if (sign === 0x2b || sign === 0x2d) index += 1
+      const firstExponent = text.charCodeAt(index)
+      if (firstExponent < 0x30 || firstExponent > 0x39) return false
+      while (index < text.length) {
+        const code = text.charCodeAt(index)
+        if (code < 0x30 || code > 0x39) break
+        index += 1
+      }
+    }
+    return true
+  }
+
+  const parseValue = (depth: number): JsonDuplicateScanResult => {
+    if (depth > MAX_JSON_DUPLICATE_SCAN_DEPTH) return 'invalid'
+    skipWhitespace()
+    const code = text.charCodeAt(index)
+    if (code === 0x22) {
+      return parseString(false).ok ? 'unique' : 'invalid'
+    }
+    if (code === 0x7b) {
+      index += 1
+      skipWhitespace()
+      const keys = new Set<string>()
+      if (text.charCodeAt(index) === 0x7d) {
+        index += 1
+        return 'unique'
+      }
+      while (index < text.length) {
+        const key = parseString(true)
+        if (!key.ok) return 'invalid'
+        if (keys.has(key.value)) return 'duplicate'
+        keys.add(key.value)
+        skipWhitespace()
+        if (text.charCodeAt(index) !== 0x3a) return 'invalid'
+        index += 1
+        const child = parseValue(depth + 1)
+        if (child !== 'unique') return child
+        skipWhitespace()
+        const separator = text.charCodeAt(index)
+        if (separator === 0x7d) {
+          index += 1
+          return 'unique'
+        }
+        if (separator !== 0x2c) return 'invalid'
+        index += 1
+        skipWhitespace()
+      }
+      return 'invalid'
+    }
+    if (code === 0x5b) {
+      index += 1
+      skipWhitespace()
+      if (text.charCodeAt(index) === 0x5d) {
+        index += 1
+        return 'unique'
+      }
+      while (index < text.length) {
+        const child = parseValue(depth + 1)
+        if (child !== 'unique') return child
+        skipWhitespace()
+        const separator = text.charCodeAt(index)
+        if (separator === 0x5d) {
+          index += 1
+          return 'unique'
+        }
+        if (separator !== 0x2c) return 'invalid'
+        index += 1
+      }
+      return 'invalid'
+    }
+    if (code === 0x2d || (code >= 0x30 && code <= 0x39)) {
+      return parseNumber() ? 'unique' : 'invalid'
+    }
+    for (const literal of ['true', 'false', 'null']) {
+      if (text.startsWith(literal, index)) {
+        index += literal.length
+        return 'unique'
+      }
+    }
+    return 'invalid'
+  }
+
+  try {
+    const result = parseValue(0)
+    if (result !== 'unique') return result
+    skipWhitespace()
+    return index === text.length ? 'unique' : 'invalid'
+  } catch {
+    return 'invalid'
+  }
+}
+
 export function createTracedThoughtCoreStream(
   body: ReadableStream<Uint8Array> | null,
   context: {
@@ -765,10 +969,12 @@ export function createTracedThoughtCoreStream(
   }
 
   const reader = body.getReader()
-  const decoder = new TextDecoder('utf-8')
+  const lineDecoder = new TextDecoder('utf-8', { fatal: true })
   const encoder = new TextEncoder()
   const eventCounts: Record<string, number> = {}
-  let buffer = ''
+  const lineBuffer = new Uint8Array(MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES)
+  let lineBufferLength = 0
+  let discardingOversizedLine = false
   let answerChars = 0
   let answerPreview = ''
   let answerText = ''
@@ -829,17 +1035,21 @@ export function createTracedThoughtCoreStream(
     }
   }
 
-  const processText = (
-    text: string
+  const markInvalidStreamLine = () => {
+    eventCounts.invalid_stream = (eventCounts.invalid_stream || 0) + 1
+    if (context.privateAcceptedSpeechRoute) {
+      acceptedPresentationInvalid = true
+    }
+  }
+
+  const processLines = (
+    lines: readonly string[]
   ): {
     presentationEvents: Record<string, unknown>[]
     forwardedText: string
   } => {
     const presentationEvents: Record<string, unknown>[] = []
     const forwardedLines: string[] = []
-    buffer += text
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
 
     for (const rawLine of lines) {
       const line = rawLine.trim()
@@ -851,6 +1061,11 @@ export function createTracedThoughtCoreStream(
       const jsonText = line.slice(5).trim()
       if (!jsonText) {
         forwardedLines.push(rawLine)
+        continue
+      }
+
+      if (scanJsonForDuplicateObjectKeys(jsonText) !== 'unique') {
+        markInvalidStreamLine()
         continue
       }
 
@@ -994,12 +1209,7 @@ export function createTracedThoughtCoreStream(
           }
         }
       } catch {
-        eventCounts.unparseable = (eventCounts.unparseable || 0) + 1
-        if (context.privateAcceptedSpeechRoute) {
-          acceptedPresentationInvalid = true
-        }
-        // Fail closed. Unparseable SSE cannot be classified safely, so its
-        // original bytes are never forwarded downstream.
+        markInvalidStreamLine()
       }
     }
     return {
@@ -1009,14 +1219,70 @@ export function createTracedThoughtCoreStream(
     }
   }
 
+  const emptyProcessedLines = () => ({
+    presentationEvents: [] as Record<string, unknown>[],
+    forwardedText: '',
+  })
+
+  const processBufferedLine = () => {
+    try {
+      const rawLine = lineDecoder.decode(
+        lineBuffer.subarray(0, lineBufferLength)
+      )
+      lineBufferLength = 0
+      return processLines([rawLine])
+    } catch {
+      lineBufferLength = 0
+      markInvalidStreamLine()
+      return emptyProcessedLines()
+    }
+  }
+
+  const processBytes = (bytes: Uint8Array) => {
+    const presentationEvents: Record<string, unknown>[] = []
+    let forwardedText = ''
+    for (const byte of bytes) {
+      if (byte === 0x0a) {
+        if (discardingOversizedLine) {
+          discardingOversizedLine = false
+          lineBufferLength = 0
+          continue
+        }
+        const processed = processBufferedLine()
+        presentationEvents.push(...processed.presentationEvents)
+        forwardedText += processed.forwardedText
+        continue
+      }
+      if (discardingOversizedLine) continue
+      if (lineBufferLength >= MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES) {
+        discardingOversizedLine = true
+        lineBufferLength = 0
+        markInvalidStreamLine()
+        continue
+      }
+      lineBuffer[lineBufferLength] = byte
+      lineBufferLength += 1
+    }
+    return { presentationEvents, forwardedText }
+  }
+
+  const flushBufferedLine = () => {
+    if (discardingOversizedLine) {
+      discardingOversizedLine = false
+      lineBufferLength = 0
+      return emptyProcessedLines()
+    }
+    return lineBufferLength > 0 ? processBufferedLine() : emptyProcessedLines()
+  }
+
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
-            if (buffer) {
-              const processed = processText('\n')
+            if (lineBufferLength > 0 || discardingOversizedLine) {
+              const processed = flushBufferedLine()
               if (
                 !context.privateAcceptedSpeechRoute &&
                 processed.forwardedText
@@ -1054,9 +1320,7 @@ export function createTracedThoughtCoreStream(
           }
 
           if (value) {
-            const processed = processText(
-              decoder.decode(value, { stream: true })
-            )
+            const processed = processBytes(value)
             if (context.privateAcceptedSpeechRoute) {
               for (const event of processed.presentationEvents) {
                 controller.enqueue(

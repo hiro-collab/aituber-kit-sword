@@ -11,6 +11,7 @@ import {
   readProjectionEffectRequestedEvent,
   subscribeProjectionEffectIntents,
 } from '../projectionEffectIntent'
+import { CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256 } from '../projectionPerformancePlan'
 
 const EVENT_ID = 'evt_0123456789abcdef0123456789abcdef'
 const TURN_ID = 'turn_projection_phase1'
@@ -32,6 +33,33 @@ const context = {
   expectedTurnId: TURN_ID,
   expectedSessionId: SESSION_ID,
 }
+
+const planContext = {
+  ...context,
+  expectedPerformancePlanSchemaSha256:
+    CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256,
+}
+
+const performancePlan = (overrides: Record<string, unknown> = {}) => ({
+  schemaVersion: 1,
+  planId: 'planv1_0123456789abcdef0123456789abcdef',
+  sessionId: SESSION_ID,
+  revision: 1,
+  action: 'start',
+  effectId: 'fire',
+  position: { x: 0.65, y: 0.55 },
+  strength: 0.3,
+  durationMs: 3_000,
+  seed: 42,
+  keyframes: [
+    {
+      atMs: 0,
+      position: { x: 0.65, y: 0.55 },
+      strength: 0.3,
+    },
+  ],
+  ...overrides,
+})
 
 describe('canonical projection effect intent v1', () => {
   it('binds the top-level event identity to one exact Phase1 DTO', () => {
@@ -75,6 +103,125 @@ describe('canonical projection effect intent v1', () => {
       turnId: TURN_ID,
       action: 'reset',
     })
+  })
+
+  it('projects one exact text-free v2 plan from the canonical envelope', () => {
+    const event = canonicalEvent({
+      schemaVersion: 2,
+      action: 'start',
+      plan: performancePlan({
+        effectId: 'thunderBall',
+        position: { x: 0, y: 0.3 },
+        strength: 0.25,
+        durationMs: 5_000,
+        keyframes: [
+          {
+            atMs: 0,
+            position: { x: 0, y: 0 },
+            strength: 0.25,
+          },
+          {
+            atMs: 5_000,
+            position: { x: 0, y: 0.3 },
+            strength: 0.25,
+          },
+        ],
+      }),
+    })
+    const projected = readProjectionEffectRequestedEvent(event, planContext)
+
+    expect(projected).toEqual({
+      schemaVersion: 2,
+      eventId: EVENT_ID,
+      turnId: TURN_ID,
+      action: 'start',
+      plan: performancePlan({
+        effectId: 'thunderBall',
+        position: { x: 0, y: 0.3 },
+        strength: 0.25,
+        durationMs: 5_000,
+        keyframes: [
+          {
+            atMs: 0,
+            position: { x: 0, y: 0 },
+            strength: 0.25,
+          },
+          {
+            atMs: 5_000,
+            position: { x: 0, y: 0.3 },
+            strength: 0.25,
+          },
+        ],
+      }),
+    })
+    expect(readProjectionEffectIntent(projected)).toEqual(projected)
+    expect(JSON.stringify(projected)).not.toContain('raw')
+    expect(JSON.stringify(projected)).not.toContain('PRIVATE')
+  })
+
+  it.each([
+    [
+      'missing schema digest',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: performancePlan(),
+      }),
+      context,
+    ],
+    [
+      'schema digest mismatch',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: performancePlan(),
+      }),
+      {
+        ...context,
+        expectedPerformancePlanSchemaSha256: '0'.repeat(64),
+      },
+    ],
+    [
+      'session mismatch',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: performancePlan({ sessionId: 'other_session' }),
+      }),
+      planContext,
+    ],
+    [
+      'duplicated effect id',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        effectId: 'fire',
+        plan: performancePlan(),
+      }),
+      planContext,
+    ],
+    [
+      'v2 stop',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'stop',
+        plan: performancePlan(),
+      }),
+      planContext,
+    ],
+    [
+      'v2 private extra',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: { ...performancePlan(), rawPrompt: 'PRIVATE_PLAN_MARKER' },
+      }),
+      planContext,
+    ],
+  ])('rejects %s', (_label, event, candidateContext) => {
+    expect(
+      readProjectionEffectRequestedEvent(event, candidateContext)
+    ).toBeNull()
   })
 
   it.each([
@@ -213,6 +360,57 @@ describe('canonical projection effect intent v1', () => {
     dispose()
     expect(listeners.size).toBe(0)
     expect(close).toHaveBeenCalled()
+  })
+
+  it('deduplicates a v2 plan across both transports and rejects an ID collision', () => {
+    const listeners = new Set<(event: MessageEvent) => void>()
+    const createBroadcastChannel = () => ({
+      postMessage(value: unknown) {
+        for (const listener of listeners) {
+          listener({ data: value } as MessageEvent)
+        }
+      },
+      addEventListener(
+        _type: 'message',
+        listener: (event: MessageEvent) => void
+      ) {
+        listeners.add(listener)
+      },
+      removeEventListener(
+        _type: 'message',
+        listener: (event: MessageEvent) => void
+      ) {
+        listeners.delete(listener)
+      },
+      close() {},
+    })
+    const receive = jest.fn()
+    const dispose = subscribeProjectionEffectIntents(receive, {
+      createBroadcastChannel,
+    })
+    const intent = {
+      schemaVersion: 2,
+      eventId: EVENT_ID,
+      turnId: TURN_ID,
+      action: 'start',
+      plan: performancePlan(),
+    } as const
+
+    expect(
+      publishProjectionEffectIntent(intent, { createBroadcastChannel })
+    ).toMatchObject({ status: 'published', eventId: EVENT_ID })
+    expect(receive).toHaveBeenCalledTimes(1)
+    window.dispatchEvent(
+      new CustomEvent('sword:projection-effect-intent-v1', {
+        detail: {
+          ...intent,
+          plan: performancePlan({ strength: 0.9 }),
+        },
+      })
+    )
+    expect(receive).toHaveBeenCalledTimes(1)
+    dispose()
+    expect(listeners.size).toBe(0)
   })
 
   it('fails closed at the live reservation cap and permits only expired IDs', () => {

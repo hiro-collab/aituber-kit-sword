@@ -1,3 +1,9 @@
+import {
+  CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256,
+  readProjectionPerformancePlan,
+  type ProjectionPerformancePlan,
+} from './projectionPerformancePlan'
+
 export const PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT =
   'projection.effect.requested'
 export const PROJECTION_EFFECT_INTENT_LEGACY_EVENT = 'projection_effect.intent'
@@ -32,9 +38,18 @@ export type ProjectionEffectTerminalIntent = Readonly<{
   action: 'stop' | 'reset'
 }>
 
+export type ProjectionEffectPlannedStartIntent = Readonly<{
+  schemaVersion: 2
+  eventId: string
+  turnId: string
+  action: 'start'
+  plan: ProjectionPerformancePlan
+}>
+
 export type ProjectionEffectIntent =
   | ProjectionEffectStartIntent
   | ProjectionEffectTerminalIntent
+  | ProjectionEffectPlannedStartIntent
 
 export type ProjectionEffectExecutionReceipt = Readonly<{
   schemaVersion: 1
@@ -79,6 +94,7 @@ export type ProjectionEffectIntentTransportOptions = Readonly<{
 export type ProjectionEffectRequestedEventContext = Readonly<{
   expectedTurnId: string
   expectedSessionId: string
+  expectedPerformancePlanSchemaSha256?: string
 }>
 
 type ProjectionEffectIntentEnvelope = Readonly<{
@@ -131,7 +147,13 @@ export function readProjectionEffectRequestedEvent(
   ) {
     return null
   }
-  return projectCanonicalIntent(value.data, value.event_id, value.turn_id)
+  return projectCanonicalIntent(
+    value.data,
+    value.event_id,
+    value.turn_id,
+    value.session_id,
+    context.expectedPerformancePlanSchemaSha256
+  )
 }
 
 export function readProjectionEffectIntent(
@@ -142,7 +164,6 @@ export function readProjectionEffectIntent(
   const eventId = value.eventId
   const turnId = value.turnId
   if (
-    value.schemaVersion !== 1 ||
     typeof eventId !== 'string' ||
     !CORE_EVENT_ID.test(eventId) ||
     typeof turnId !== 'string' ||
@@ -150,7 +171,7 @@ export function readProjectionEffectIntent(
   ) {
     return null
   }
-  if (action === 'start') {
+  if (value.schemaVersion === 1 && action === 'start') {
     if (
       !hasExactKeys(value, [
         'schemaVersion',
@@ -171,13 +192,34 @@ export function readProjectionEffectIntent(
       effectId: value.effectId,
     })
   }
-  if (action === 'stop' || action === 'reset') {
+  if (value.schemaVersion === 1 && (action === 'stop' || action === 'reset')) {
     if (
       !hasExactKeys(value, ['schemaVersion', 'eventId', 'turnId', 'action'])
     ) {
       return null
     }
     return Object.freeze({ schemaVersion: 1, eventId, turnId, action })
+  }
+  if (
+    value.schemaVersion === 2 &&
+    action === 'start' &&
+    hasExactKeys(value, [
+      'schemaVersion',
+      'eventId',
+      'turnId',
+      'action',
+      'plan',
+    ])
+  ) {
+    const plan = readProjectionPerformancePlan(value.plan)
+    if (!plan) return null
+    return Object.freeze({
+      schemaVersion: 2,
+      eventId,
+      turnId,
+      action: 'start',
+      plan,
+    })
   }
   return null
 }
@@ -309,10 +351,12 @@ export function subscribeProjectionEffectIntents(
 function projectCanonicalIntent(
   value: unknown,
   eventId: string,
-  turnId: string
+  turnId: string,
+  sessionId: string,
+  expectedPerformancePlanSchemaSha256?: string
 ): ProjectionEffectIntent | null {
-  if (!isRecord(value) || value.schemaVersion !== 1) return null
-  if (value.action === 'start') {
+  if (!isRecord(value)) return null
+  if (value.schemaVersion === 1 && value.action === 'start') {
     if (
       !hasExactKeys(value, ['schemaVersion', 'action', 'effectId']) ||
       (value.effectId !== 'fire' && value.effectId !== 'thunderBall')
@@ -327,13 +371,40 @@ function projectCanonicalIntent(
       effectId: value.effectId,
     })
   }
-  if (value.action === 'stop' || value.action === 'reset') {
+  if (
+    value.schemaVersion === 1 &&
+    (value.action === 'stop' || value.action === 'reset')
+  ) {
     if (!hasExactKeys(value, ['schemaVersion', 'action'])) return null
     return Object.freeze({
       schemaVersion: 1,
       eventId,
       turnId,
       action: value.action,
+    })
+  }
+  if (
+    value.schemaVersion === 2 &&
+    value.action === 'start' &&
+    hasExactKeys(value, ['schemaVersion', 'action', 'plan'])
+  ) {
+    const plan = readProjectionPerformancePlan(value.plan, {
+      expectedSchemaSha256: expectedPerformancePlanSchemaSha256,
+    })
+    if (
+      !plan ||
+      expectedPerformancePlanSchemaSha256 !==
+        CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256 ||
+      plan.sessionId !== sessionId
+    ) {
+      return null
+    }
+    return Object.freeze({
+      schemaVersion: 2,
+      eventId,
+      turnId,
+      action: 'start',
+      plan,
     })
   }
   return null
@@ -400,6 +471,11 @@ function readIntentEnvelope(
 }
 
 function fingerprintIntent(intent: ProjectionEffectIntent): string {
+  if (intent.schemaVersion === 2) {
+    return `${intent.turnId}\u0000${intent.action}\u0000${JSON.stringify(
+      intent.plan
+    )}`
+  }
   return intent.action === 'start'
     ? `${intent.turnId}\u0000${intent.action}\u0000${intent.effectId}`
     : `${intent.turnId}\u0000${intent.action}`

@@ -1159,6 +1159,26 @@ describe('projection effect intent SSE projection', () => {
     type: 'projection.effect.requested',
     data,
   })
+  const performancePlan = (overrides: Record<string, unknown> = {}) => ({
+    schemaVersion: 1,
+    planId: 'planv1_0123456789abcdef0123456789abcdef',
+    sessionId,
+    revision: 1,
+    action: 'start',
+    effectId: 'fire',
+    position: { x: 0.65, y: 0.55 },
+    strength: 0.3,
+    durationMs: 3_000,
+    seed: 42,
+    keyframes: [
+      {
+        atMs: 0,
+        position: { x: 0.65, y: 0.55 },
+        strength: 0.3,
+      },
+    ],
+    ...overrides,
+  })
 
   it('projects one canonical fixed DTO and suppresses the raw event', async () => {
     const {
@@ -1229,26 +1249,16 @@ describe('projection effect intent SSE projection', () => {
     expect(projected).not.toContain('code')
   })
 
-  const runProjectionWire = async (
-    projectionWireRecords: string[]
+  const runProjectionChunks = async (
+    chunks: readonly Uint8Array[],
+    privateAcceptedSpeechRoute = false
   ): Promise<string> => {
     const {
       createTracedThoughtCoreStream,
     } = require('@/pages/api/thoughtCoreChat')
-    const encoder = new TextEncoder()
-    const safeEvent = JSON.stringify({
-      type: 'assistant.speech_delta',
-      data: { delta: 'safe speech' },
-    })
     const upstream = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            `${projectionWireRecords
-              .map((record) => `data: ${record}\n\n`)
-              .join('')}data: ${safeEvent}\n\n`
-          )
-        )
+        for (const chunk of chunks) controller.enqueue(chunk)
         controller.close()
       },
     })
@@ -1257,12 +1267,33 @@ describe('projection effect intent SSE projection', () => {
       startedAt: Date.now(),
       turnId,
       sessionId,
+      privateAcceptedSpeechRoute,
+      expectedConversationAttemptRef: privateAcceptedSpeechRoute
+        ? canonicalConversationAttemptRef
+        : undefined,
     })
     return new TextDecoder().decode(
       Uint8Array.from(
         (await readByteStream(traced)).flatMap((chunk) => [...chunk])
       )
     )
+  }
+
+  const runProjectionWire = async (
+    projectionWireRecords: string[]
+  ): Promise<string> => {
+    const encoder = new TextEncoder()
+    const safeEvent = JSON.stringify({
+      type: 'assistant.speech_delta',
+      data: { delta: 'safe speech' },
+    })
+    return runProjectionChunks([
+      encoder.encode(
+        `${projectionWireRecords
+          .map((record) => `data: ${record}\n\n`)
+          .join('')}data: ${safeEvent}\n\n`
+      ),
+    ])
   }
 
   const projectedIntents = (output: string): unknown[] =>
@@ -1275,6 +1306,63 @@ describe('projection effect intent SSE projection', () => {
         (event) =>
           event?.type === 'accepted.presentation.projection_effect_intent'
       )
+
+  it.each([
+    ['static Fire', performancePlan()],
+    [
+      'static Thunder',
+      performancePlan({
+        planId: 'planv1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        effectId: 'thunderBall',
+        position: { x: 0, y: 0.3 },
+        strength: 0.25,
+        durationMs: 5_000,
+        seed: 2_147_483_647,
+        keyframes: [{ atMs: 0, position: { x: 0, y: 0.3 }, strength: 0.25 }],
+      }),
+    ],
+    [
+      'two-keyframe movement',
+      performancePlan({
+        planId: 'planv1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        position: { x: -0.65, y: -0.55 },
+        strength: 0.5,
+        durationMs: 4_000,
+        keyframes: [
+          { atMs: 0, position: { x: -0.65, y: -0.55 }, strength: 0.5 },
+          { atMs: 4_000, position: { x: 0.65, y: 0.55 }, strength: 0.5 },
+        ],
+      }),
+    ],
+  ])('projects one exact text-free v2 DTO for %s', async (_label, plan) => {
+    const output = await runProjectionWire([
+      JSON.stringify(
+        canonicalEvent({
+          schemaVersion: 2,
+          action: 'start',
+          plan,
+        })
+      ),
+    ])
+    expect(projectedIntents(output)).toEqual([
+      {
+        type: 'accepted.presentation.projection_effect_intent',
+        data: {
+          intent: {
+            schemaVersion: 2,
+            eventId,
+            turnId,
+            action: 'start',
+            plan,
+          },
+        },
+      },
+    ])
+    expect(output).toContain('safe speech')
+    expect(output).not.toContain('projection.effect.requested')
+    expect(output).not.toContain('raw_prompt')
+    expect(output).not.toContain('PRIVATE_PLAN_MARKER')
+  })
 
   it.each([
     [
@@ -1364,6 +1452,87 @@ describe('projection effect intent SSE projection', () => {
         turn_id: 'other_turn',
       },
     ],
+    [
+      'v2 plan session mismatch',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: performancePlan({ sessionId: 'other_session' }),
+      }),
+    ],
+    [
+      'v2 duplicated effect id',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        effectId: 'fire',
+        plan: performancePlan(),
+      }),
+    ],
+    [
+      'v2 stop',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'stop',
+        plan: performancePlan(),
+      }),
+    ],
+    [
+      'v2 reset',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'reset',
+        plan: performancePlan(),
+      }),
+    ],
+    [
+      'v2 update',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'update',
+        plan: performancePlan(),
+      }),
+    ],
+    [
+      'v2 replace',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: { ...performancePlan(), replace: true },
+      }),
+    ],
+    [
+      'v2 Emergency',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: { ...performancePlan(), emergency: true },
+      }),
+    ],
+    [
+      'v2 private plan field',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: {
+          ...performancePlan(),
+          raw_prompt: 'SECRET_PROJECTION_PROMPT',
+        },
+      }),
+    ],
+    [
+      'v2 nonmonotonic keyframes',
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: performancePlan({
+          keyframes: [
+            { atMs: 100, position: { x: 0, y: 0 }, strength: 0.5 },
+            { atMs: 50, position: { x: 0, y: 0 }, strength: 0.5 },
+          ],
+        }),
+      }),
+    ],
   ])(
     'suppresses %s projection input without forwarding raw SSE',
     async (_label, projectionEvent) => {
@@ -1404,4 +1573,155 @@ describe('projection effect intent SSE projection', () => {
       )
     }
   )
+
+  it('accepts an exact-maximum valid v2 line and rejects max+1 before JSON.parse', async () => {
+    const {
+      MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES,
+    } = require('@/pages/api/thoughtCoreChat')
+    const encoder = new TextEncoder()
+    const safeLine = `data: ${JSON.stringify({
+      type: 'assistant.speech_delta',
+      data: { delta: 'safe speech' },
+    })}\n\n`
+    const v2LinePrefix = `data: ${JSON.stringify(
+      canonicalEvent({
+        schemaVersion: 2,
+        action: 'start',
+        plan: performancePlan(),
+      })
+    )}`
+    const prefixBytes = encoder.encode(v2LinePrefix).byteLength
+    expect(prefixBytes).toBeLessThan(MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES)
+
+    const exactLine =
+      v2LinePrefix +
+      ' '.repeat(MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES - prefixBytes)
+    expect(encoder.encode(exactLine)).toHaveLength(
+      MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES
+    )
+    const exactOutput = await runProjectionChunks([
+      encoder.encode(`${exactLine}\n\n${safeLine}`),
+    ])
+    expect(projectedIntents(exactOutput)).toHaveLength(1)
+    expect(exactOutput).toContain('safe speech')
+
+    const oversizedLine = `${exactLine} `
+    const parseSpy = jest.spyOn(JSON, 'parse')
+    let oversizedOutput = ''
+    try {
+      oversizedOutput = await runProjectionChunks([
+        encoder.encode(`${oversizedLine}\n\n${safeLine}`),
+      ])
+      expect(parseSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      parseSpy.mockRestore()
+    }
+    expect(projectedIntents(oversizedOutput)).toHaveLength(0)
+    expect(oversizedOutput).toContain('safe speech')
+    expect(oversizedOutput).not.toContain('projection.effect.requested')
+  })
+
+  it('discards a split oversized private line until newline and resumes with the next bounded line', async () => {
+    const {
+      MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES,
+    } = require('@/pages/api/thoughtCoreChat')
+    const encoder = new TextEncoder()
+    const prefix =
+      'data: {"type":"projection.effect.requested","data":{"raw_prompt":"SECRET_SPLIT_OVERSIZE","padding":"'
+    const chunks = [
+      encoder.encode(prefix),
+      ...Array.from({ length: 17 }, () =>
+        encoder.encode(
+          'x'.repeat(Math.ceil(MAX_THOUGHT_CORE_SSE_LINE_UTF8_BYTES / 16))
+        )
+      ),
+      encoder.encode(
+        `"}}\n\ndata: ${JSON.stringify({
+          type: 'assistant.speech_delta',
+          data: { delta: 'safe after oversized line' },
+        })}\n\n`
+      ),
+    ]
+    const parseSpy = jest.spyOn(JSON, 'parse')
+    let output = ''
+    try {
+      output = await runProjectionChunks(chunks)
+      expect(parseSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      parseSpy.mockRestore()
+    }
+    expect(output).toContain('safe after oversized line')
+    expect(output).not.toContain('SECRET_SPLIT_OVERSIZE')
+    expect(output).not.toContain('projection.effect.requested')
+    expect(projectedIntents(output)).toHaveLength(0)
+    expect(
+      JSON.stringify(require('fs').appendFileSync.mock.calls)
+    ).not.toContain('SECRET_SPLIT_OVERSIZE')
+  })
+
+  it.each([
+    [
+      'top-level type downgrade',
+      String.raw`{"type":"projection.effect.requested","data":{"raw_prompt":"SECRET_DUPLICATE_TYPE"},"ty\u0070e":"assistant.speech_delta"}`,
+      'SECRET_DUPLICATE_TYPE',
+    ],
+    [
+      'top-level data replacement',
+      String.raw`{"type":"projection.effect.requested","data":{"raw_prompt":"SECRET_DUPLICATE_DATA"},"d\u0061ta":{"schemaVersion":1,"action":"reset"}}`,
+      'SECRET_DUPLICATE_DATA',
+    ],
+    [
+      'nested plan escaped-equivalent key',
+      JSON.stringify(
+        canonicalEvent({
+          schemaVersion: 2,
+          action: 'start',
+          plan: performancePlan(),
+        })
+      ).replace(
+        '"planId":"planv1_0123456789abcdef0123456789abcdef"',
+        String.raw`"planId":"SECRET_DUPLICATE_PLAN","pl\u0061nId":"planv1_0123456789abcdef0123456789abcdef"`
+      ),
+      'SECRET_DUPLICATE_PLAN',
+    ],
+    [
+      'otherwise nonprojection data replacement',
+      String.raw`{"type":"assistant.speech_delta","data":{"delta":"SECRET_DUPLICATE_NONPROJECTION"},"d\u0061ta":{"delta":"unsafe downgrade"}}`,
+      'SECRET_DUPLICATE_NONPROJECTION',
+    ],
+  ])(
+    'suppresses duplicate JSON property in %s and resumes at the next safe line',
+    async (_label, duplicateWire, sentinel) => {
+      const output = await runProjectionWire([duplicateWire])
+      expect(output).toContain('safe speech')
+      expect(output).not.toContain(sentinel)
+      expect(output).not.toContain('projection.effect.requested')
+      expect(projectedIntents(output)).toHaveLength(0)
+      expect(
+        JSON.stringify(require('fs').appendFileSync.mock.calls)
+      ).not.toContain(sentinel)
+    }
+  )
+
+  it('keeps private accepted presentation invalid after a duplicate-key line', async () => {
+    const encoder = new TextEncoder()
+    const duplicateWire = String.raw`{"type":"projection.effect.requested","data":{"raw_prompt":"SECRET_PRIVATE_DUPLICATE"},"ty\u0070e":"assistant.speech_delta"}`
+    const safeAssistant = JSON.stringify({
+      type: 'assistant.speech_delta',
+      data: {
+        delta: 'safe accepted speech',
+        conversation_attempt_ref: canonicalConversationAttemptRef,
+      },
+    })
+    const output = await runProjectionChunks(
+      [encoder.encode(`data: ${duplicateWire}\n\ndata: ${safeAssistant}\n\n`)],
+      true
+    )
+    expect(output).toContain('safe accepted speech')
+    expect(output).not.toContain('SECRET_PRIVATE_DUPLICATE')
+    expect(output).not.toContain('accepted.presentation.completed')
+    expect(output).not.toContain(
+      'accepted.presentation.projection_effect_intent'
+    )
+  })
 })

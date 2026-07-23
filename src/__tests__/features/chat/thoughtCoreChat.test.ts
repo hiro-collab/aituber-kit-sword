@@ -318,6 +318,76 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
     ])
     dispose()
   })
+
+  it('publishes one deduplicated text-free v2 plan and ignores malformed plans', async () => {
+    const received: unknown[] = []
+    const dispose = subscribeProjectionEffectIntents((intent) =>
+      received.push(intent)
+    )
+    const plan = {
+      schemaVersion: 1,
+      planId: 'planv1_0123456789abcdef0123456789abcdef',
+      sessionId: 'session_projection_phase1',
+      revision: 1,
+      action: 'start',
+      effectId: 'fire',
+      position: { x: -0.65, y: -0.55 },
+      strength: 0.5,
+      durationMs: 4_000,
+      seed: 42,
+      keyframes: [
+        { atMs: 0, position: { x: -0.65, y: -0.55 }, strength: 0.5 },
+        { atMs: 4_000, position: { x: 0.65, y: 0.55 }, strength: 0.5 },
+      ],
+    }
+    const safeIntentEvent = {
+      type: 'accepted.presentation.projection_effect_intent',
+      data: {
+        intent: {
+          schemaVersion: 2,
+          eventId: 'evt_cccccccccccccccccccccccccccccccc',
+          turnId: 'turn_projection_phase1',
+          action: 'start',
+          plan,
+        },
+      },
+    }
+    global.fetch = jest.fn().mockResolvedValue(
+      createSseResponse([
+        safeIntentEvent,
+        safeIntentEvent,
+        {
+          type: 'accepted.presentation.projection_effect_intent',
+          data: {
+            intent: {
+              ...safeIntentEvent.data.intent,
+              eventId: 'evt_dddddddddddddddddddddddddddddddd',
+              plan: { ...plan, rawPrompt: 'PRIVATE_PLAN_MARKER' },
+            },
+          },
+        },
+        { type: 'assistant.speech_delta', data: { delta: '炎を動かします。' } },
+      ])
+    ) as any
+
+    const stream = await getThoughtCoreChatResponseStream(
+      [{ content: '炎を左下から右上へ4秒' } as any],
+      '',
+      'session-projection-effect'
+    )
+    await expect(readTextStream(stream)).resolves.toBe('炎を動かします。')
+    expect(received).toEqual([
+      {
+        schemaVersion: 2,
+        eventId: 'evt_cccccccccccccccccccccccccccccccc',
+        turnId: 'turn_projection_phase1',
+        action: 'start',
+        plan,
+      },
+    ])
+    expect(JSON.stringify(received)).not.toContain('PRIVATE_PLAN_MARKER')
+    dispose()
+  })
 })
 
 describe('requestAcceptedPreparedSamplePresentation', () => {

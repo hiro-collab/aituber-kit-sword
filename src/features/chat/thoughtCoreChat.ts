@@ -13,6 +13,7 @@ import {
   PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT,
   publishProjectionEffectIntent,
   readProjectionEffectIntent,
+  type ProjectionEffectIntent,
 } from '@/features/projectionEffects/projectionEffectIntent'
 
 type ThoughtCoreErrorCause = {
@@ -1065,7 +1066,7 @@ export async function requestAcceptedPreparedSamplePresentation(
     let readerCancelled = false
     let normalCompletion = false
     const motionEvents: unknown[] = []
-    const projectionEffectIntents: unknown[] = []
+    const projectionEffectIntents: ProjectionEffectIntent[] = []
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -1096,13 +1097,11 @@ export async function requestAcceptedPreparedSamplePresentation(
           } else if (
             parsed.type === PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT
           ) {
-            if (
-              projectionEffectIntents.length > 0 ||
-              !readProjectionEffectIntent(parsed.data.intent)
-            ) {
+            const intent = readProjectionEffectIntent(parsed.data.intent)
+            if (projectionEffectIntents.length > 0 || !intent) {
               throw new Error()
             }
-            projectionEffectIntents.push(parsed.data.intent)
+            projectionEffectIntents.push(intent)
           } else if (parsed.type === ACCEPTED_PRESENTATION_COMPLETED_EVENT) {
             completed = true
           } else {
