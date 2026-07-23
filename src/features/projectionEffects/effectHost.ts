@@ -1,6 +1,7 @@
 import type { ProjectionEffectDefinition } from './canonical/types'
 import { validateProjectionEffectParameterValues } from './canonical/validation'
 import {
+  MAX_PROJECTION_EFFECT_PARAMETERS,
   validateProjectionEffectCommand,
   type ProjectionEffectCommand,
   type ProjectionEffectStartCommand,
@@ -107,6 +108,11 @@ export interface ProjectionEffectHostScheduler {
   cancel(handle: unknown): void
 }
 
+export interface ProjectionEffectFrameParameters {
+  effectId: string
+  parameters: Readonly<Record<string, unknown>>
+}
+
 interface ActiveProjectionEffect {
   effectId: string
   session: ProjectionEffectSession
@@ -155,6 +161,14 @@ const VISUAL_STOP_TIMEOUT_MS = 1_500
 const VISUAL_DISPOSE_TIMEOUT_MS = 750
 const MIN_EFFECT_LIFETIME_MS = 500
 const MAX_EFFECT_LIFETIME_MS = 30_000
+const SAFE_ID = /^[a-z][a-zA-Z0-9._-]{0,63}$/
+const FRAME_QUALITY_PARAMETER_IDS = new Set([
+  'particleBudget',
+  'internalResolutionScale',
+  'updateRateHz',
+  'postProcessing',
+  'reducedMotion',
+])
 
 export const DEFAULT_PROJECTION_EFFECT_LIFETIME_MS = 8_000
 
@@ -269,12 +283,37 @@ export class ProjectionEffectHost {
     return this.enqueue(() => this.dispatchValidated(validation.value))
   }
 
-  renderFrame(): Promise<ProjectionEffectHostResult> {
+  renderFrame(input?: unknown): Promise<ProjectionEffectHostResult> {
+    const frameParameters = validateFrameParameters(input)
+    if (!frameParameters.ok) {
+      return Promise.resolve(
+        this.result('rejected', null, {
+          validationErrorCount: frameParameters.errorCount,
+        })
+      )
+    }
     return this.enqueue(async () => {
       const active = this.active
       if (!active) return this.result('no-active-effect', null)
       if (active.terminalBlocked) {
         return this.result('blocked-terminal-cleanup', null)
+      }
+      if (
+        frameParameters.value &&
+        active.effectId !== frameParameters.value.effectId
+      ) {
+        return this.result('effect-mismatch', null)
+      }
+      if (frameParameters.value) {
+        const overrideErrors = validateFrameParameterOverrides(
+          active.session.definition,
+          frameParameters.value.parameters
+        )
+        if (overrideErrors.length > 0) {
+          return this.result('rejected', null, {
+            validationErrorCount: overrideErrors.length,
+          })
+        }
       }
       const frameNowMs = this.nowMs()
       const deltaMs = Math.max(
@@ -284,11 +323,24 @@ export class ProjectionEffectHost {
       if (deltaMs + 0.5 < 1000 / this.qualityPolicyValue.updateRateHz) {
         return this.result('frame-skipped', null)
       }
+      const mergedParameters = mergeFrameParameters(
+        active.parameters,
+        frameParameters.value?.parameters
+      )
       const parameters = resolveProjectionEffectParameters(
         active.session.definition,
-        active.parameters,
+        mergedParameters,
         this.qualityPolicyValue
       )
+      const parameterErrors = validateRuntimeParameterValues(
+        active.session.definition,
+        parameters
+      )
+      if (parameterErrors.length > 0) {
+        return this.result('rejected', null, {
+          validationErrorCount: parameterErrors.length,
+        })
+      }
       const visualResult = await active.session.update({
         nowMs: frameNowMs,
         deltaMs,
@@ -355,8 +407,8 @@ export class ProjectionEffectHost {
       command.parameters,
       this.qualityPolicyValue
     )
-    const parameterErrors = validateProjectionEffectParameterValues(
-      session.definition.parameters,
+    const parameterErrors = validateRuntimeParameterValues(
+      session.definition,
       parameters
     )
     if (parameterErrors.length > 0) {
@@ -521,7 +573,7 @@ export class ProjectionEffectHost {
     if (!this.capabilities.selfObservationAvailable) {
       partialReasons.push('self-adjustment-unavailable')
     }
-    this.scheduleFiniteStop(command.effectId, session)
+    this.scheduleFiniteStop(command.effectId, session, command.durationMs)
     return this.result('started', command.commandId, {
       replacedEffectId,
       visualStatus: visualResult.status,
@@ -547,8 +599,8 @@ export class ProjectionEffectHost {
       { ...this.active.parameters, ...command.parameters },
       this.qualityPolicyValue
     )
-    const parameterErrors = validateProjectionEffectParameterValues(
-      this.active.session.definition.parameters,
+    const parameterErrors = validateRuntimeParameterValues(
+      this.active.session.definition,
       parameters
     )
     if (parameterErrors.length > 0) {
@@ -887,12 +939,15 @@ export class ProjectionEffectHost {
 
   private scheduleFiniteStop(
     effectId: string,
-    session: ProjectionEffectSession
+    session: ProjectionEffectSession,
+    durationMs?: number
   ): void {
     this.cancelFiniteStop()
     const generation = this.lifetimeGeneration
     const lifetimeMs =
-      this.effectLifetimeMs.get(effectId) ?? this.defaultLifetimeMs
+      durationMs ??
+      this.effectLifetimeMs.get(effectId) ??
+      this.defaultLifetimeMs
     const handle = this.scheduler.schedule(() => {
       void this.enqueue(async () => {
         const timer = this.lifetimeTimer
@@ -1004,6 +1059,153 @@ function resolveProjectionEffectParameters(
     quality.postProcessing
   )
   return Object.freeze(parameters)
+}
+
+function validateRuntimeParameterValues(
+  definition: ProjectionEffectDefinition,
+  parameters: Readonly<Record<string, unknown>>
+): readonly string[] {
+  const errors = [
+    ...validateProjectionEffectParameterValues(
+      definition.parameters,
+      parameters
+    ),
+  ]
+  if (
+    definition.parameters.some((parameter) => parameter.id === 'seed') &&
+    (typeof parameters.seed !== 'number' ||
+      !Number.isInteger(parameters.seed) ||
+      parameters.seed < 0 ||
+      parameters.seed > 2_147_483_647)
+  ) {
+    errors.push('parameter.seed must be a bounded integer')
+  }
+  return errors
+}
+
+function validateFrameParameterOverrides(
+  definition: ProjectionEffectDefinition,
+  parameters: Readonly<Record<string, unknown>>
+): readonly string[] {
+  const definitions = new Map(
+    definition.parameters.map((parameter) => [parameter.id, parameter])
+  )
+  for (const [parameterId, value] of Object.entries(parameters)) {
+    if (parameterId === 'seed') {
+      return ['parameter.seed is start-only']
+    }
+    const parameter = definitions.get(parameterId)
+    if (!parameter) return ['parameter.undeclared is not allowed']
+    if (
+      parameter.kind === 'number' &&
+      (typeof value !== 'number' ||
+        !Number.isFinite(value) ||
+        value < parameter.minimum ||
+        value > parameter.maximum ||
+        (parameterId === 'seed' && !Number.isInteger(value)))
+    ) {
+      return [`parameter.${parameterId} is out of range`]
+    }
+    if (parameter.kind === 'boolean' && typeof value !== 'boolean') {
+      return [`parameter.${parameterId} must be boolean`]
+    }
+    if (
+      parameter.kind === 'enum' &&
+      (typeof value !== 'string' || !parameter.values.includes(value))
+    ) {
+      return [`parameter.${parameterId} is unsupported`]
+    }
+  }
+  return []
+}
+
+function validateFrameParameters(
+  input: unknown
+):
+  | { ok: true; value: ProjectionEffectFrameParameters | null }
+  | { ok: false; errorCount: number } {
+  if (input === undefined) return { ok: true, value: null }
+  if (
+    !isPlainEnumerableDataRecord(input) ||
+    !hasExactEnumerableKeys(input, ['effectId', 'parameters']) ||
+    typeof input.effectId !== 'string' ||
+    !SAFE_ID.test(input.effectId) ||
+    !isPlainEnumerableDataRecord(input.parameters)
+  ) {
+    return { ok: false, errorCount: 1 }
+  }
+  const entries = Object.entries(input.parameters)
+  if (entries.length > MAX_PROJECTION_EFFECT_PARAMETERS) {
+    return { ok: false, errorCount: 1 }
+  }
+  const snapshot: Record<string, unknown> = Object.create(null)
+  for (const [parameterId, value] of entries) {
+    if (
+      !SAFE_ID.test(parameterId) ||
+      ((typeof value !== 'number' || !Number.isFinite(value)) &&
+        typeof value !== 'boolean' &&
+        (typeof value !== 'string' || !SAFE_ID.test(value)))
+    ) {
+      return { ok: false, errorCount: 1 }
+    }
+    snapshot[parameterId] = value
+  }
+  return {
+    ok: true,
+    value: Object.freeze({
+      effectId: input.effectId,
+      parameters: Object.freeze(snapshot),
+    }),
+  }
+}
+
+function mergeFrameParameters(
+  active: Readonly<Record<string, unknown>>,
+  frame: Readonly<Record<string, unknown>> | undefined
+): Readonly<Record<string, unknown>> {
+  if (!frame) return active
+  const merged: Record<string, unknown> = Object.create(null)
+  for (const [parameterId, value] of Object.entries(active)) {
+    merged[parameterId] = value
+  }
+  for (const [parameterId, value] of Object.entries(frame)) {
+    if (!FRAME_QUALITY_PARAMETER_IDS.has(parameterId)) {
+      merged[parameterId] = value
+    }
+  }
+  return Object.freeze(merged)
+}
+
+function hasExactEnumerableKeys(
+  input: Record<string, unknown>,
+  expected: readonly string[]
+): boolean {
+  const keys = Object.keys(input)
+  return (
+    keys.length === expected.length &&
+    expected.every((key) =>
+      Object.prototype.propertyIsEnumerable.call(input, key)
+    )
+  )
+}
+
+function isPlainEnumerableDataRecord(
+  input: unknown
+): input is Record<string, unknown> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return false
+  }
+  try {
+    const prototype = Object.getPrototypeOf(input)
+    if (prototype !== Object.prototype && prototype !== null) return false
+    return Reflect.ownKeys(input).every((key) => {
+      if (typeof key !== 'string') return false
+      const descriptor = Object.getOwnPropertyDescriptor(input, key)
+      return Boolean(descriptor?.enumerable && 'value' in descriptor)
+    })
+  } catch {
+    return false
+  }
 }
 
 function assignIfDeclared(

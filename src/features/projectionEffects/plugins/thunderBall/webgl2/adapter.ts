@@ -272,6 +272,7 @@ export function mapThunderParametersToWebGl2AdapterConfig(
   const reducedMotion = parameters.reducedMotion === true
   const centerX = numberParameter(parameters, 'centerX', 0, -1, 1)
   const centerY = numberParameter(parameters, 'centerY', 0, -1, 1)
+  const seed = integerParameter(parameters, 'seed', 0, 0, 2_147_483_647)
   const orbRadius = numberParameter(
     parameters,
     'orbRadius',
@@ -331,7 +332,7 @@ export function mapThunderParametersToWebGl2AdapterConfig(
   const bloomGain = reducedMotion
     ? Math.min(0.35, requestedBloomGain)
     : requestedBloomGain
-  const topologySeed = mixParameterSeed(
+  const visualTopologySeed = mixParameterSeed(
     centerX,
     centerY,
     orbRadius,
@@ -350,6 +351,8 @@ export function mapThunderParametersToWebGl2AdapterConfig(
     postProcessing ? 1 : 0,
     reducedMotion ? 1 : 0
   )
+  const topologySeed =
+    seed === 0 ? visualTopologySeed : mixParameterSeed(visualTopologySeed, seed)
 
   return Object.freeze({
     bloomGain,

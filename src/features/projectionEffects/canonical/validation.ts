@@ -160,7 +160,18 @@ function validateNumberParameter(
     errors.push(`${path} numeric bounds/default must be finite numbers`)
     return
   }
-  if ((minimum as number) < -1_000_000 || (maximum as number) > 1_000_000) {
+  const seedParameter = item.id === 'seed'
+  if (
+    seedParameter &&
+    (![minimum, maximum, defaultValue].every(Number.isInteger) ||
+      (minimum as number) < 0 ||
+      (maximum as number) > 2_147_483_647)
+  ) {
+    errors.push(`${path} seed bounds/default must be safe integers`)
+  } else if (
+    !seedParameter &&
+    ((minimum as number) < -1_000_000 || (maximum as number) > 1_000_000)
+  ) {
     errors.push(`${path} numeric bounds exceed the canonical limit`)
   }
   if ((minimum as number) > (maximum as number)) {
@@ -417,7 +428,8 @@ export function validateProjectionEffectParameterValues(
       definition.kind === 'number' &&
       (!isFiniteNumber(value) ||
         value < definition.minimum ||
-        value > definition.maximum)
+        value > definition.maximum ||
+        (definition.id === 'seed' && !Number.isInteger(value)))
     ) {
       errors.push(`parameter.${definition.id} is out of range`)
     } else if (definition.kind === 'boolean' && typeof value !== 'boolean') {

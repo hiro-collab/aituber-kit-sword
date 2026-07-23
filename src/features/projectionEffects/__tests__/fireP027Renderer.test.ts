@@ -61,6 +61,23 @@ describe('P027 Fire renderer lifecycle', () => {
     )
   })
 
+  it('maps the declared seed deterministically while preserving the manual default', () => {
+    const defaultControls = mapFireParametersToP027Controls({})
+    const first = mapFireParametersToP027Controls({ seed: 41 })
+    const repeated = mapFireParametersToP027Controls({ seed: 41 })
+    const changed = mapFireParametersToP027Controls({ seed: 42 })
+
+    expect(defaultControls).toEqual(
+      expect.objectContaining({ originSeed: 0, particleSeed: 1 })
+    )
+    expect(first.originSeed).toBe(repeated.originSeed)
+    expect(first.particleSeed).toBe(repeated.particleSeed)
+    expect(changed.originSeed).not.toBe(first.originSeed)
+    expect(changed.particleSeed).not.toBe(first.particleSeed)
+    expect(first.originSeed).toBeGreaterThanOrEqual(0)
+    expect(first.particleSeed).toBeLessThanOrEqual(2_147_483_647)
+  })
+
   it('updates GPU state at fixed 60 Hz, creates origins once, and draws once per host frame', () => {
     const surface = createSurface()
     const renderer = new FireP027Renderer({ surface })

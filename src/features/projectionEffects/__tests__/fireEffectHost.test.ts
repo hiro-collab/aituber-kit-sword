@@ -3,6 +3,7 @@ import { validateProjectionEffectCommand } from '../effectCommand'
 import {
   normalizeProjectionEffectQualityPolicy,
   ProjectionEffectHost,
+  type ProjectionEffectHostScheduler,
   type ProjectionEffectRuntimeCapabilities,
 } from '../effectHost'
 import { ProjectionEffectRegistry } from '../registry'
@@ -24,6 +25,10 @@ import {
   FireParticleRenderer,
   createFireParticlePlugin,
 } from '../plugins/fire/renderer'
+import {
+  THUNDER_BALL_EFFECT_ID,
+  thunderBallEffectDefinition,
+} from '../plugins/thunderBall/definition'
 import {
   FIRE_COMPOSITE_FRAGMENT_SHADER,
   FIRE_PARTICLE_FRAGMENT_SHADER,
@@ -67,6 +72,60 @@ describe('Projection Effects structured command boundary', () => {
         startCommand({ parameters: { palette: 'private value with spaces' } })
       )
     ).toEqual(expect.objectContaining({ ok: false }))
+  })
+
+  it('owns an optional bounded integer duration on start commands only', () => {
+    const absent = validateProjectionEffectCommand(startCommand())
+    const minimum = validateProjectionEffectCommand(
+      startCommand({ durationMs: 500 })
+    )
+    const maximum = validateProjectionEffectCommand(
+      startCommand({ durationMs: 12_000 })
+    )
+    expect(absent.ok).toBe(true)
+    expect(minimum.ok).toBe(true)
+    expect(maximum.ok).toBe(true)
+    if (!absent.ok || !minimum.ok || !maximum.ok) {
+      throw new Error('duration controls must validate')
+    }
+    expect('durationMs' in absent.value).toBe(false)
+    expect(minimum.value).toEqual(expect.objectContaining({ durationMs: 500 }))
+    expect(maximum.value).toEqual(
+      expect.objectContaining({ durationMs: 12_000 })
+    )
+    expect(Object.isFrozen(minimum.value)).toBe(true)
+
+    for (const durationMs of [
+      499,
+      12_001,
+      500.5,
+      true,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      const result = validateProjectionEffectCommand({
+        ...startCommand(),
+        durationMs,
+      })
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: false,
+          errors: expect.arrayContaining(['command.duration_ms.invalid']),
+        })
+      )
+      expect(JSON.stringify(result)).not.toContain(String(durationMs))
+    }
+    expect(
+      validateProjectionEffectCommand({
+        ...updateCommand({ noiseStrength: 0.6 }),
+        durationMs: 500,
+      })
+    ).toEqual(
+      expect.objectContaining({
+        ok: false,
+        errors: expect.arrayContaining(['command.fields.unexpected']),
+      })
+    )
   })
 
   it('accepts only own plain fields and freezes an owned null-prototype snapshot', () => {
@@ -310,6 +369,54 @@ describe('real fire particle plugin source/static contract', () => {
 })
 
 describe('generic Projection Effect host lifecycle', () => {
+  it('schedules the default lifetime when duration is absent and exact bounded overrides when present', async () => {
+    const timer = manualScheduler()
+    const host = createHost({
+      scheduler: timer.scheduler,
+      defaultLifetimeMs: 777,
+    })
+
+    await host.dispatch(startCommand())
+    expect(timer.schedule).toHaveBeenLastCalledWith(expect.any(Function), 777)
+    await host.dispatch(resetCommand())
+
+    await host.dispatch(
+      startCommand({ commandId: 'fire.start.minimum', durationMs: 500 })
+    )
+    expect(timer.schedule).toHaveBeenLastCalledWith(expect.any(Function), 500)
+
+    await host.dispatch(
+      startCommand({ commandId: 'fire.start.maximum', durationMs: 12_000 })
+    )
+    expect(timer.schedule).toHaveBeenLastCalledWith(
+      expect.any(Function),
+      12_000
+    )
+    expect(timer.cancel).toHaveBeenCalled()
+  })
+
+  it('rejects an invalid duration before renderer or timer ownership begins', async () => {
+    const createRenderer = jest.fn(() => ({
+      render: jest.fn(),
+      reset: jest.fn(),
+      dispose: jest.fn(),
+    }))
+    const registry = new ProjectionEffectRegistry()
+    registry.register({ definition: fireEffectDefinition, createRenderer })
+    const timer = manualScheduler()
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      scheduler: timer.scheduler,
+    })
+
+    await expect(
+      host.dispatch({ ...startCommand(), durationMs: 499 })
+    ).resolves.toEqual(expect.objectContaining({ status: 'rejected' }))
+    expect(createRenderer).not.toHaveBeenCalled()
+    expect(timer.schedule).not.toHaveBeenCalled()
+  })
+
   it('starts visual and SFX, updates, fades, and remains retriggerable', async () => {
     const sfx = mockSfxPlayer()
     const renderer = new FireParticleRenderer({ waitFrame: async () => {} })
@@ -1194,6 +1301,283 @@ describe('generic Projection Effect host lifecycle', () => {
     )
   })
 
+  it('applies one due frame override after exact pre-cadence validation', async () => {
+    let nowMs = 1_000
+    const render = jest.fn()
+    const registry = new ProjectionEffectRegistry()
+    registry.register({
+      definition: fireEffectDefinition,
+      createRenderer: () => ({
+        render,
+        reset: jest.fn(),
+        dispose: jest.fn(),
+      }),
+    })
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      qualityPolicy: {
+        particleBudget: 64,
+        internalResolutionScale: 0.5,
+        postProcessing: false,
+      },
+      nowMs: () => nowMs,
+    })
+    await host.dispatch(startCommand())
+    nowMs = 1_020
+
+    await expect(
+      host.renderFrame({
+        effectId: FIRE_EFFECT_ID,
+        parameters: {
+          emitterX: 0.5,
+          particleBudget: 12_000,
+          postProcessing: true,
+        },
+      })
+    ).resolves.toEqual(expect.objectContaining({ status: 'frame-rendered' }))
+    expect(render).toHaveBeenCalledTimes(2)
+    expect(render).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parameters: expect.objectContaining({
+          emitterX: 0.5,
+          particleBudget: 64,
+          internalResolutionScale: 0.5,
+          postProcessing: false,
+        }),
+      })
+    )
+  })
+
+  it('rejects mismatched or invalid frame overrides before cadence without mutation', async () => {
+    let nowMs = 1_000
+    const render = jest.fn()
+    const registry = new ProjectionEffectRegistry()
+    registry.register({
+      definition: fireEffectDefinition,
+      createRenderer: () => ({
+        render,
+        reset: jest.fn(),
+        dispose: jest.fn(),
+      }),
+    })
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      nowMs: () => nowMs,
+    })
+    await host.dispatch(startCommand())
+    nowMs = 1_004
+
+    await expect(
+      host.renderFrame({
+        effectId: THUNDER_BALL_EFFECT_ID,
+        parameters: { noiseStrength: 0.7 },
+      })
+    ).resolves.toEqual(expect.objectContaining({ status: 'effect-mismatch' }))
+    for (const parameters of [
+      { noiseStrength: 99 },
+      { noiseStrength: Number.NaN },
+      Object.fromEntries(
+        Array.from({ length: 33 }, (_, index) => [`p${index}`, index])
+      ),
+    ]) {
+      await expect(
+        host.renderFrame({ effectId: FIRE_EFFECT_ID, parameters })
+      ).resolves.toEqual(expect.objectContaining({ status: 'rejected' }))
+    }
+    expect(render).toHaveBeenCalledTimes(1)
+
+    nowMs = 1_020
+    await host.renderFrame()
+    expect(render).toHaveBeenCalledTimes(2)
+    expect(render).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parameters: expect.objectContaining({ noiseStrength: 0.5 }),
+      })
+    )
+  })
+
+  it('does not retain a valid override when its compositor frame is skipped', async () => {
+    let nowMs = 1_000
+    const render = jest.fn()
+    const registry = new ProjectionEffectRegistry()
+    registry.register({
+      definition: fireEffectDefinition,
+      createRenderer: () => ({
+        render,
+        reset: jest.fn(),
+        dispose: jest.fn(),
+      }),
+    })
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      nowMs: () => nowMs,
+    })
+    await host.dispatch(startCommand())
+    nowMs = 1_004
+    await expect(
+      host.renderFrame({
+        effectId: FIRE_EFFECT_ID,
+        parameters: { noiseStrength: 0.9 },
+      })
+    ).resolves.toEqual(expect.objectContaining({ status: 'frame-skipped' }))
+    expect(render).toHaveBeenCalledTimes(1)
+
+    nowMs = 1_020
+    await host.renderFrame()
+    expect(render).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parameters: expect.objectContaining({ noiseStrength: 0.5 }),
+      })
+    )
+  })
+
+  it.each([
+    ['Fire', FIRE_EFFECT_ID, fireEffectDefinition],
+    ['Thunder', THUNDER_BALL_EFFECT_ID, thunderBallEffectDefinition],
+  ] as const)(
+    'keeps %s seed start-only across skipped and due frame overrides',
+    async (_label, effectId, definition) => {
+      let nowMs = 1_000
+      const render = jest.fn()
+      const registry = new ProjectionEffectRegistry()
+      registry.register({
+        definition,
+        createRenderer: () => ({
+          render,
+          reset: jest.fn(),
+          dispose: jest.fn(),
+        }),
+      })
+      const host = new ProjectionEffectHost({
+        registry,
+        capabilities: READY_CAPABILITIES,
+        nowMs: () => nowMs,
+      })
+      await host.dispatch(
+        startCommand({
+          commandId: `${effectId}.start.seeded`,
+          effectId,
+          parameters: { seed: 41 },
+        })
+      )
+      expect(render).toHaveBeenCalledTimes(1)
+      expect(render).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          parameters: expect.objectContaining({ seed: 41 }),
+        })
+      )
+
+      nowMs = 1_004
+      const skippedCadence = await host.renderFrame({
+        effectId,
+        parameters: { seed: 42 },
+      })
+      expect(skippedCadence).toEqual(
+        expect.objectContaining({ status: 'rejected' })
+      )
+      expect(JSON.stringify(skippedCadence)).not.toContain('42')
+      expect(render).toHaveBeenCalledTimes(1)
+
+      nowMs = 1_020
+      const dueCadence = await host.renderFrame({
+        effectId,
+        parameters: { seed: 43 },
+      })
+      expect(dueCadence).toEqual(
+        expect.objectContaining({ status: 'rejected' })
+      )
+      expect(JSON.stringify(dueCadence)).not.toContain('43')
+      expect(render).toHaveBeenCalledTimes(1)
+
+      nowMs = 1_040
+      await host.renderFrame()
+      expect(render).toHaveBeenCalledTimes(2)
+      expect(render).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          parameters: expect.objectContaining({ seed: 41 }),
+        })
+      )
+    }
+  )
+
+  it('keeps reduced-motion ownership out of frame overrides', async () => {
+    let nowMs = 1_000
+    const render = jest.fn()
+    const registry = new ProjectionEffectRegistry()
+    registry.register({
+      definition: thunderBallEffectDefinition,
+      createRenderer: () => ({
+        render,
+        reset: jest.fn(),
+        dispose: jest.fn(),
+      }),
+    })
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      nowMs: () => nowMs,
+    })
+    await host.dispatch(
+      startCommand({
+        commandId: 'thunder.start.reduced',
+        effectId: THUNDER_BALL_EFFECT_ID,
+        parameters: { reducedMotion: true },
+      })
+    )
+    nowMs = 1_020
+    await host.renderFrame({
+      effectId: THUNDER_BALL_EFFECT_ID,
+      parameters: { reducedMotion: false },
+    })
+    expect(render).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parameters: expect.objectContaining({ reducedMotion: true }),
+      })
+    )
+  })
+
+  it('uses the existing emergency cleanup when a frame override render fails', async () => {
+    let nowMs = 1_000
+    const renderer: ProjectionEffectRenderer = {
+      render: jest
+        .fn<Promise<void>, []>()
+        .mockResolvedValueOnce()
+        .mockRejectedValueOnce(new Error('private frame failure')),
+      stop: jest.fn(),
+      reset: jest.fn(),
+      dispose: jest.fn(),
+    }
+    const registry = new ProjectionEffectRegistry()
+    registry.register({
+      definition: fireEffectDefinition,
+      createRenderer: () => renderer,
+    })
+    const host = new ProjectionEffectHost({
+      registry,
+      capabilities: READY_CAPABILITIES,
+      nowMs: () => nowMs,
+    })
+    await host.dispatch(startCommand())
+    nowMs = 1_020
+    const result = await host.renderFrame({
+      effectId: FIRE_EFFECT_ID,
+      parameters: { emitterX: 0.25 },
+    })
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'visual-failed',
+        activeEffectId: null,
+      })
+    )
+    expect(renderer.render).toHaveBeenCalledTimes(2)
+    expect(renderer.stop).toHaveBeenCalledTimes(1)
+    expect(renderer.dispose).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(result)).not.toContain('private')
+  })
+
   it('propagates fixed stop/dispose failure classes and rejects late updates', async () => {
     const renderer: ProjectionEffectRenderer = {
       render: jest.fn(),
@@ -1384,6 +1768,7 @@ function createHost(
     renderer?: FireParticleRenderer
     nowMs?: () => number
     defaultLifetimeMs?: number
+    scheduler?: ProjectionEffectHostScheduler
   } = {}
 ): ProjectionEffectHost {
   const registry = new ProjectionEffectRegistry()
@@ -1404,6 +1789,7 @@ function createHost(
     sfxCues: [fireEffectSfxCue],
     nowMs: overrides.nowMs ?? incrementingClock(),
     defaultLifetimeMs: overrides.defaultLifetimeMs,
+    scheduler: overrides.scheduler,
   })
 }
 
@@ -1428,6 +1814,7 @@ function startCommand(
     effectId: string
     parameters: Readonly<Record<string, unknown>>
     speechCompletion: 'finished' | 'timeout'
+    durationMs: number
   }> = {}
 ) {
   return {
@@ -1439,6 +1826,21 @@ function startCommand(
     speechCompletion: 'finished',
     ...overrides,
   } as const
+}
+
+function manualScheduler() {
+  let nextHandle = 0
+  const schedule = jest.fn((callback: () => void, delayMs: number) => ({
+    callback,
+    delayMs,
+    id: (nextHandle += 1),
+  }))
+  const cancel = jest.fn()
+  return {
+    cancel,
+    schedule,
+    scheduler: { schedule, cancel } satisfies ProjectionEffectHostScheduler,
+  }
 }
 
 function updateCommand(parameters: Readonly<Record<string, unknown>>) {

@@ -247,6 +247,9 @@ export function mapFireParametersToP027Controls(
     0.8,
     1
   )
+  const seed = integerParameter(parameters, 'seed', 0, 0, 2_147_483_647)
+  const originSeed = seed === 0 ? 0 : deriveP027Seed(seed, 0x6d2b79f5)
+  const particleSeed = seed === 0 ? 1 : deriveP027Seed(seed, 0x1b873593)
 
   return {
     birthPerSecond: Math.min(requestedBirth * budgetScale, capacityBirth),
@@ -259,7 +262,7 @@ export function mapFireParametersToP027Controls(
       1
     ),
     inputLagSeconds: 0.1,
-    originSeed: 0,
+    originSeed,
     originRadiusX: 0.12,
     originRadiusY: 0.06,
     originRadiusZ: 0.08,
@@ -278,7 +281,7 @@ export function mapFireParametersToP027Controls(
     turbulenceY: 6 * turbulenceScale,
     turbulenceZ: 6 * turbulenceScale,
     turbulencePeriod: 0.01,
-    particleSeed: 1,
+    particleSeed,
     lifeVarianceSeconds: Math.min(0.12, lifeSeconds * 0.2),
     jitterBirths: true,
     useMass: false,
@@ -300,6 +303,24 @@ function numberParameter(
 ): number {
   const value = parameters[id]
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function integerParameter(
+  parameters: Readonly<Record<string, unknown>>,
+  id: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  return Math.round(
+    clamp(numberParameter(parameters, id, fallback), minimum, maximum)
+  )
+}
+
+function deriveP027Seed(seed: number, salt: number): number {
+  let mixed = Math.imul(seed ^ salt, 0x85ebca6b)
+  mixed = Math.imul(mixed ^ (mixed >>> 13), 0xc2b2ae35)
+  return (mixed ^ (mixed >>> 16)) & 0x7fffffff
 }
 
 function waitForTimer(durationMs: number, signal?: AbortSignal): Promise<void> {

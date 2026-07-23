@@ -11,6 +11,7 @@ interface ProjectionEffectCommandBase {
 
 export interface ProjectionEffectStartCommand extends ProjectionEffectCommandBase {
   action: 'start'
+  durationMs?: number
   parameters: Readonly<Record<string, unknown>>
   speechCompletion: ProjectionEffectSpeechCompletion
 }
@@ -40,7 +41,9 @@ export type ProjectionEffectCommandValidationResult =
   | { ok: false; errors: readonly string[] }
 
 const SAFE_ID = /^[a-z][a-zA-Z0-9._-]{0,63}$/
-const MAX_PARAMETERS = 32
+export const MAX_PROJECTION_EFFECT_PARAMETERS = 32
+export const MIN_PROJECTION_EFFECT_DURATION_MS = 500
+export const MAX_PROJECTION_EFFECT_DURATION_MS = 12_000
 const MAX_VALIDATION_ERRORS = 12
 
 export function validateProjectionEffectCommand(
@@ -62,6 +65,15 @@ export function validateProjectionEffectCommand(
   validateId(input.effectId, 'command.effect_id.invalid', errors)
 
   if (input.action === 'start') {
+    if (
+      Object.prototype.propertyIsEnumerable.call(input, 'durationMs') &&
+      (typeof input.durationMs !== 'number' ||
+        !Number.isInteger(input.durationMs) ||
+        input.durationMs < MIN_PROJECTION_EFFECT_DURATION_MS ||
+        input.durationMs > MAX_PROJECTION_EFFECT_DURATION_MS)
+    ) {
+      addError(errors, 'command.duration_ms.invalid')
+    }
     validateParameters(input.parameters, errors)
     if (
       input.speechCompletion !== 'finished' &&
@@ -89,22 +101,26 @@ function validateExactKeys(
   errors: string[]
 ): void {
   const common = ['schemaVersion', 'commandId', 'effectId', 'action']
-  const actionKeys =
+  const allowedActionKeys =
     input.action === 'start'
-      ? ['parameters', 'speechCompletion']
+      ? ['durationMs', 'parameters', 'speechCompletion']
       : input.action === 'update'
         ? ['parameters']
         : input.action === 'stop'
           ? ['mode']
           : []
-  const allowed = new Set([...common, ...actionKeys])
+  const requiredActionKeys =
+    input.action === 'start'
+      ? ['parameters', 'speechCompletion']
+      : allowedActionKeys
+  const allowed = new Set([...common, ...allowedActionKeys])
   for (const key of Object.keys(input)) {
     if (!allowed.has(key)) {
       addError(errors, 'command.fields.unexpected')
       break
     }
   }
-  for (const key of [...common, ...actionKeys]) {
+  for (const key of [...common, ...requiredActionKeys]) {
     if (!Object.prototype.propertyIsEnumerable.call(input, key)) {
       addError(errors, 'command.fields.missing')
       break
@@ -118,7 +134,7 @@ function validateParameters(input: unknown, errors: string[]): void {
     return
   }
   const entries = Object.entries(input)
-  if (entries.length > MAX_PARAMETERS) {
+  if (entries.length > MAX_PROJECTION_EFFECT_PARAMETERS) {
     addError(errors, 'command.parameters.too_many')
     return
   }
@@ -155,13 +171,17 @@ function snapshotProjectionEffectCommand(
     effectId: input.effectId as string,
   }
   if (input.action === 'start') {
-    return freezeNullRecord({
+    const command = {
       ...common,
       action: 'start' as const,
       parameters: snapshotParameters(input.parameters),
       speechCompletion:
         input.speechCompletion as ProjectionEffectSpeechCompletion,
-    })
+      ...(Object.prototype.propertyIsEnumerable.call(input, 'durationMs')
+        ? { durationMs: input.durationMs as number }
+        : {}),
+    }
+    return freezeNullRecord(command)
   }
   if (input.action === 'update') {
     return freezeNullRecord({

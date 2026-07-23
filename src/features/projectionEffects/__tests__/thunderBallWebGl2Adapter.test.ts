@@ -59,6 +59,28 @@ describe('Thunder Ball WebGL2 host adapter', () => {
         sparkBudget: 29,
       }).topologySeed
     ).not.toBe(first.topologySeed)
+    const explicitSeed = mapThunderParametersToWebGl2AdapterConfig({
+      ...parameters,
+      seed: 41,
+    })
+    expect(
+      mapThunderParametersToWebGl2AdapterConfig({
+        ...parameters,
+        seed: 41,
+      }).topologySeed
+    ).toBe(explicitSeed.topologySeed)
+    expect(
+      mapThunderParametersToWebGl2AdapterConfig({
+        ...parameters,
+        seed: 42,
+      }).topologySeed
+    ).not.toBe(explicitSeed.topologySeed)
+    expect(
+      mapThunderParametersToWebGl2AdapterConfig({
+        ...parameters,
+        seed: 0,
+      }).topologySeed
+    ).toBe(first.topologySeed)
   })
 
   it('starts once, maps configuration, and uses compositor frame cadence only', () => {

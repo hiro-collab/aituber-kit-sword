@@ -21,6 +21,8 @@ import {
   FLUID_FIRE_RELAY_EFFECT_ID,
   fluidFireRelayDefinition,
 } from '../plugins/fluidFireRelay/definition'
+import { fireEffectDefinition } from '../plugins/fire/definition'
+import { thunderBallEffectDefinition } from '../plugins/thunderBall/definition'
 import {
   fluidFireRelayPassGraph,
   fluidFireRelayTouchDesignerMapping,
@@ -98,6 +100,91 @@ describe('canonical Projection Effects validation', () => {
     )
     expect(errors).toContain('parameter.undeclared is not allowed')
     expect(JSON.stringify(errors)).not.toContain(privateLikeKey)
+  })
+
+  it('permits only the canonical bounded integer seed exception', () => {
+    const validSeed = definitionWithSeed()
+    expect(validateProjectionEffectDefinition(validSeed)).toEqual({
+      ok: true,
+      value: validSeed,
+    })
+    expect(validateProjectionEffectDefinition(fireEffectDefinition).ok).toBe(
+      true
+    )
+    expect(
+      validateProjectionEffectDefinition(thunderBallEffectDefinition).ok
+    ).toBe(true)
+
+    for (const patch of [
+      { maximum: 2_147_483_648 },
+      { minimum: -1 },
+      { defaultValue: -1 },
+      { minimum: 0.5 },
+      { maximum: 10.5 },
+      { defaultValue: 0.5 },
+      { maximum: Number.POSITIVE_INFINITY },
+    ]) {
+      expect(
+        validateProjectionEffectDefinition(definitionWithSeed(patch)).ok
+      ).toBe(false)
+    }
+
+    const nonSeed = cloneDefinition()
+    const first = nonSeed.parameters[0]
+    if (first?.kind !== 'number') {
+      throw new Error('test fixture must begin with a number parameter')
+    }
+    first.maximum = 1_000_001
+    expect(validateProjectionEffectDefinition(nonSeed).ok).toBe(false)
+  })
+
+  it('accepts the exact runtime seed maximum and rejects non-integer values', () => {
+    const definition = definitionWithSeed()
+    expect(
+      validateProjectionEffectParameterValues(definition.parameters, {
+        seed: 2_147_483_647,
+      })
+    ).toEqual([])
+
+    for (const seed of [
+      -1,
+      0.5,
+      2_147_483_648,
+      true,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      const errors = validateProjectionEffectParameterValues(
+        definition.parameters,
+        { seed }
+      )
+      expect(errors).toEqual(['parameter.seed is out of range'])
+      expect(JSON.stringify(errors)).not.toContain(String(seed))
+    }
+  })
+
+  it('retains the validated seed definition as an immutable registry snapshot', () => {
+    const definition = definitionWithSeed()
+    const registry = new ProjectionEffectRegistry()
+    registry.register(pluginFor(definition, mockRenderer()))
+    const seed = definition.parameters[0]
+    if (seed?.kind !== 'number') {
+      throw new Error('seed fixture must be numeric')
+    }
+    seed.maximum = 7
+
+    const session = registry.createSession(definition.id)
+    const ownedSeed = session.definition.parameters[0]
+    expect(ownedSeed).toEqual(
+      expect.objectContaining({
+        id: 'seed',
+        minimum: 0,
+        maximum: 2_147_483_647,
+        defaultValue: 0,
+      })
+    )
+    expect(Object.isFrozen(ownedSeed)).toBe(true)
+    expect(Object.isFrozen(session.definition.parameters)).toBe(true)
   })
 
   it('rejects duplicate diagnostic, capability, and source ownership', () => {
@@ -656,4 +743,33 @@ function cloneDefinition(): ProjectionEffectDefinition {
   return JSON.parse(
     JSON.stringify(fluidFireRelayDefinition)
   ) as ProjectionEffectDefinition
+}
+
+function definitionWithSeed(
+  patch: Partial<{
+    defaultValue: number
+    maximum: number
+    minimum: number
+  }> = {}
+): ProjectionEffectDefinition {
+  const definition = cloneDefinition()
+  definition.parameters = [
+    {
+      id: 'seed',
+      kind: 'number',
+      required: true,
+      defaultValue: 0,
+      minimum: 0,
+      maximum: 2_147_483_647,
+      ...patch,
+    },
+  ]
+  definition.sourceMappings = [
+    {
+      sourceId: 'host.plan.seed',
+      parameterId: 'seed',
+      status: 'mapped',
+    },
+  ]
+  return definition
 }

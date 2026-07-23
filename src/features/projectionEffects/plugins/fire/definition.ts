@@ -18,6 +18,7 @@ export const fireEffectDefinition = {
   parameters: [
     numberParameter('emitterX', 0, -1, 1),
     numberParameter('emitterY', -0.82, -1, 1),
+    numberParameter('seed', 0, 0, 2147483647),
     numberParameter('particleBudget', 1800, 64, 12000),
     numberParameter('emissionRate', 220, 1, 1200),
     numberParameter('lifetimeMs', 1250, 200, 4000),

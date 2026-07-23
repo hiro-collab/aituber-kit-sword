@@ -17,6 +17,7 @@ export const thunderBallEffectDefinition = {
   parameters: [
     numberParameter('centerX', 0, -1, 1),
     numberParameter('centerY', 0, -1, 1),
+    numberParameter('seed', 0, 0, 2147483647),
     numberParameter('orbRadius', 0.42, 0.08, 1),
     numberParameter('anchorCount', 24, 4, 64),
     numberParameter('sparkBudget', 21, 4, 128),
