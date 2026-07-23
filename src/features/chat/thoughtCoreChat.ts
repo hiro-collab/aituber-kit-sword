@@ -9,6 +9,11 @@ import {
 } from '@/features/motionRuntime/motionStimulusReceiver'
 import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
 import type { AcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampleBrowserStt'
+import {
+  PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT,
+  publishProjectionEffectIntent,
+  readProjectionEffectIntent,
+} from '@/features/projectionEffects/projectionEffectIntent'
 
 type ThoughtCoreErrorCause = {
   errorCode?: string
@@ -1060,6 +1065,7 @@ export async function requestAcceptedPreparedSamplePresentation(
     let readerCancelled = false
     let normalCompletion = false
     const motionEvents: unknown[] = []
+    const projectionEffectIntents: unknown[] = []
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -1087,6 +1093,16 @@ export async function requestAcceptedPreparedSamplePresentation(
           } else if (parsed.type === ACCEPTED_PRESENTATION_MOTION_EVENT) {
             if (motionEvents.length > 0) throw new Error()
             motionEvents.push(parsed.data.event)
+          } else if (
+            parsed.type === PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT
+          ) {
+            if (
+              projectionEffectIntents.length > 0 ||
+              !readProjectionEffectIntent(parsed.data.intent)
+            ) {
+              throw new Error()
+            }
+            projectionEffectIntents.push(parsed.data.intent)
           } else if (parsed.type === ACCEPTED_PRESENTATION_COMPLETED_EVENT) {
             completed = true
           } else {
@@ -1121,6 +1137,11 @@ export async function requestAcceptedPreparedSamplePresentation(
         motionEvent,
         options.signal
       )
+    }
+    for (const intent of projectionEffectIntents) {
+      if (publishProjectionEffectIntent(intent).status !== 'published') {
+        throw new Error()
+      }
     }
   } catch {
     throw new Error(ACCEPTED_PRESENTATION_FAILED)
@@ -1206,6 +1227,10 @@ export async function getThoughtCoreChatResponseStream(
 
                 if (eventType === THOUGHT_CORE_MOTION_REQUEST_EVENT) {
                   dispatchThoughtCoreMotionStimulus(event)
+                }
+                if (eventType === PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT) {
+                  const intent = readProjectionEffectIntent(data.intent)
+                  if (intent) void publishProjectionEffectIntent(intent)
                 }
 
                 if (

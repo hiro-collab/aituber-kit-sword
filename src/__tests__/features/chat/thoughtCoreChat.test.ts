@@ -11,6 +11,7 @@ import {
 } from '../../../features/chat/thoughtCoreChat'
 import { MOTION_STIMULUS_RECEIVER_EVENT } from '../../../features/motionRuntime/motionStimulusReceiver'
 import { createAcceptedPreparedSampleSpeechEnvelope } from '../../../utils/preparedSampleBrowserStt'
+import { subscribeProjectionEffectIntents } from '../../../features/projectionEffects/projectionEffectIntent'
 import { TextDecoder, TextEncoder } from 'util'
 ;(global as any).TextEncoder = TextEncoder
 ;(global as any).TextDecoder = TextDecoder
@@ -263,6 +264,59 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
     await expect(
       submitAcceptedPreparedSampleBrowserSpeech(envelope)
     ).rejects.toThrow('accepted_prepared_sample_request_failed')
+  })
+})
+
+describe('getThoughtCoreChatResponseStream projection effect intent bridge', () => {
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('publishes one deduplicated fixed intent and preserves speech', async () => {
+    const received: unknown[] = []
+    const dispose = subscribeProjectionEffectIntents((intent) =>
+      received.push(intent)
+    )
+    const safeIntentEvent = {
+      type: 'accepted.presentation.projection_effect_intent',
+      data: {
+        intent: {
+          schemaVersion: 1,
+          eventId: 'evt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          turnId: 'turn_projection_phase1',
+          action: 'start',
+          effectId: 'thunderBall',
+        },
+      },
+    }
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        createSseResponse([
+          safeIntentEvent,
+          safeIntentEvent,
+          { type: 'assistant.speech_delta', data: { delta: '雷を出します。' } },
+        ])
+      ) as any
+
+    const stream = await getThoughtCoreChatResponseStream(
+      [{ content: '雷を出して' } as any],
+      '',
+      'session-projection-effect'
+    )
+    await expect(readTextStream(stream)).resolves.toBe('雷を出します。')
+    expect(received).toEqual([
+      {
+        schemaVersion: 1,
+        eventId: 'evt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        turnId: 'turn_projection_phase1',
+        action: 'start',
+        effectId: 'thunderBall',
+      },
+    ])
+    dispose()
   })
 })
 

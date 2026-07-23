@@ -8,6 +8,12 @@ import {
   type AcceptedPreparedSampleSpeechEnvelope,
 } from '@/utils/preparedSampleBrowserStt'
 import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
+import {
+  PROJECTION_EFFECT_INTENT_LEGACY_EVENT,
+  PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT,
+  PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT,
+  readProjectionEffectRequestedEvent,
+} from '@/features/projectionEffects/projectionEffectIntent'
 
 const DEFAULT_THOUGHT_CORE_BASE_URL = 'http://127.0.0.1:18888'
 
@@ -452,8 +458,18 @@ function projectPresentationMotionPayload(
 function projectAcceptedPresentationEvent(
   eventType: string,
   data: Record<string, unknown>,
-  expectedConversationAttemptRef?: string
+  expectedConversationAttemptRef?: string,
+  expectedTurnId?: string,
+  expectedSessionId?: string
 ): Record<string, unknown> | null {
+  if (eventType === PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT) {
+    return projectProjectionEffectIntentEvent(
+      data,
+      expectedConversationAttemptRef,
+      expectedTurnId,
+      expectedSessionId
+    )
+  }
   const assistantPayload = isRecord(data.data) ? data.data : null
   const candidateConversationAttemptRef =
     eventType === 'assistant.speech_delta'
@@ -502,6 +518,38 @@ function projectAcceptedPresentationEvent(
     }
   }
   return null
+}
+
+function projectProjectionEffectIntentEvent(
+  data: Record<string, unknown>,
+  expectedConversationAttemptRef?: string,
+  expectedTurnId?: string,
+  expectedSessionId?: string
+): Record<string, unknown> | null {
+  if (!expectedTurnId || !expectedSessionId) return null
+  const intent = readProjectionEffectRequestedEvent(data, {
+    expectedTurnId,
+    expectedSessionId,
+  })
+  const conversationAttemptRef = expectedConversationAttemptRef
+    ? safeConversationAttemptRef(expectedConversationAttemptRef)
+    : null
+  if (
+    !intent ||
+    (expectedConversationAttemptRef !== undefined &&
+      conversationAttemptRef !== expectedConversationAttemptRef)
+  ) {
+    return null
+  }
+  return {
+    type: PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT,
+    data: {
+      ...(conversationAttemptRef
+        ? { conversation_attempt_ref: conversationAttemptRef }
+        : {}),
+      intent,
+    },
+  }
 }
 
 function buildNotableThoughtCoreEvent(
@@ -735,6 +783,7 @@ export function createTracedThoughtCoreStream(
   let completedLogged = false
   let acceptedPresentationAssistantSeen = false
   let acceptedPresentationMotionSeen = false
+  let acceptedProjectionEffectIntentSeen = false
   let acceptedPresentationInvalid = false
 
   const query = truncate(String(context.query ?? ''), 180)
@@ -780,23 +829,39 @@ export function createTracedThoughtCoreStream(
     }
   }
 
-  const processText = (text: string): Record<string, unknown>[] => {
+  const processText = (
+    text: string
+  ): {
+    presentationEvents: Record<string, unknown>[]
+    forwardedText: string
+  } => {
     const presentationEvents: Record<string, unknown>[] = []
+    const forwardedLines: string[] = []
     buffer += text
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
 
     for (const rawLine of lines) {
       const line = rawLine.trim()
-      if (!line.startsWith('data:')) continue
+      if (!line.startsWith('data:')) {
+        forwardedLines.push(rawLine)
+        continue
+      }
 
       const jsonText = line.slice(5).trim()
-      if (!jsonText) continue
+      if (!jsonText) {
+        forwardedLines.push(rawLine)
+        continue
+      }
 
       try {
         const data = JSON.parse(jsonText)
         const rawEventType =
           typeof data?.type === 'string' ? data.type : 'unknown'
+        const projectionCandidate =
+          rawEventType === PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT ||
+          rawEventType === PROJECTION_EFFECT_INTENT_LEGACY_EVENT
+        if (!projectionCandidate) forwardedLines.push(rawLine)
         const eventType =
           context.privateAcceptedSpeechRoute &&
           (!/^[a-z][a-z0-9._-]{0,63}$/.test(rawEventType) ||
@@ -850,7 +915,9 @@ export function createTracedThoughtCoreStream(
           const presentationEvent = projectAcceptedPresentationEvent(
             eventType,
             data as Record<string, unknown>,
-            context.expectedConversationAttemptRef
+            context.expectedConversationAttemptRef,
+            context.turnId,
+            context.sessionId
           )
           if (presentationEvent) {
             if (eventType === 'assistant.speech_delta') {
@@ -863,12 +930,30 @@ export function createTracedThoughtCoreStream(
                 acceptedPresentationMotionSeen = true
                 presentationEvents.push(presentationEvent)
               }
+            } else if (eventType === PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT) {
+              if (acceptedProjectionEffectIntentSeen) {
+                acceptedPresentationInvalid = true
+              } else {
+                acceptedProjectionEffectIntentSeen = true
+                presentationEvents.push(presentationEvent)
+              }
             }
           } else if (
             eventType === 'assistant.speech_delta' ||
-            eventType === MOTION_REQUESTED_EVENT_TYPE
+            eventType === MOTION_REQUESTED_EVENT_TYPE ||
+            eventType === PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT
           ) {
             acceptedPresentationInvalid = true
+          }
+        } else if (eventType === PROJECTION_EFFECT_INTENT_UPSTREAM_EVENT) {
+          const projectionEvent = projectProjectionEffectIntentEvent(
+            data as Record<string, unknown>,
+            undefined,
+            context.turnId,
+            context.sessionId
+          )
+          if (projectionEvent) {
+            forwardedLines.push(`data: ${JSON.stringify(projectionEvent)}`)
           }
         }
 
@@ -913,9 +998,15 @@ export function createTracedThoughtCoreStream(
         if (context.privateAcceptedSpeechRoute) {
           acceptedPresentationInvalid = true
         }
+        // Fail closed. Unparseable SSE cannot be classified safely, so its
+        // original bytes are never forwarded downstream.
       }
     }
-    return presentationEvents
+    return {
+      presentationEvents,
+      forwardedText:
+        forwardedLines.length > 0 ? `${forwardedLines.join('\n')}\n` : '',
+    }
   }
 
   return new ReadableStream<Uint8Array>({
@@ -925,7 +1016,14 @@ export function createTracedThoughtCoreStream(
           const { done, value } = await reader.read()
           if (done) {
             if (buffer) {
-              for (const event of processText('\n')) {
+              const processed = processText('\n')
+              if (
+                !context.privateAcceptedSpeechRoute &&
+                processed.forwardedText
+              ) {
+                controller.enqueue(encoder.encode(processed.forwardedText))
+              }
+              for (const event of processed.presentationEvents) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
                 )
@@ -956,21 +1054,23 @@ export function createTracedThoughtCoreStream(
           }
 
           if (value) {
-            const presentationEvents = processText(
+            const processed = processText(
               decoder.decode(value, { stream: true })
             )
             if (context.privateAcceptedSpeechRoute) {
-              for (const event of presentationEvents) {
+              for (const event of processed.presentationEvents) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
                 )
               }
-              if (presentationEvents.length > 0) return
+              if (processed.presentationEvents.length > 0) return
             }
-          }
-          if (!context.privateAcceptedSpeechRoute && value) {
-            controller.enqueue(value)
-            return
+            if (!context.privateAcceptedSpeechRoute) {
+              if (processed.forwardedText) {
+                controller.enqueue(encoder.encode(processed.forwardedText))
+                return
+              }
+            }
           }
         }
       } catch (error) {

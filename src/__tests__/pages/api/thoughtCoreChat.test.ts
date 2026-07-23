@@ -1143,3 +1143,265 @@ describe('/api/thoughtCoreChat', () => {
     expect(completedLine).not.toContain('SECRET_UNPROJECTED_NESTED_VALUE')
   })
 })
+
+describe('projection effect intent SSE projection', () => {
+  const turnId = 'turn_projection_phase1'
+  const sessionId = 'session_projection_phase1'
+  const eventId = 'evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const canonicalEvent = (data: Record<string, unknown>) => ({
+    schema_version: 'thought-core.event.v0',
+    event_id: eventId,
+    turn_id: turnId,
+    session_id: sessionId,
+    seq: 3,
+    timestamp: '2026-07-23T00:00:00.000Z',
+    source: 'thought-core',
+    type: 'projection.effect.requested',
+    data,
+  })
+
+  it('projects one canonical fixed DTO and suppresses the raw event', async () => {
+    const {
+      createTracedThoughtCoreStream,
+    } = require('@/pages/api/thoughtCoreChat')
+    const encoder = new TextEncoder()
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify(
+              canonicalEvent({
+                schemaVersion: 1,
+                action: 'start',
+                effectId: 'fire',
+              })
+            )}\n\n`
+          )
+        )
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: 'assistant.speech_delta',
+              data: {
+                delta: '炎を出します。',
+                conversation_attempt_ref: canonicalConversationAttemptRef,
+              },
+            })}\n\n`
+          )
+        )
+        controller.close()
+      },
+    })
+    const traced = createTracedThoughtCoreStream(upstream, {
+      query: 'accepted_prepared_sample_private_turn',
+      startedAt: Date.now(),
+      turnId,
+      sessionId,
+      privateAcceptedSpeechRoute: true,
+      expectedConversationAttemptRef: canonicalConversationAttemptRef,
+    })
+    const projected = new TextDecoder().decode(
+      Uint8Array.from(
+        (await readByteStream(traced)).flatMap((chunk) => [...chunk])
+      )
+    )
+    const events = projected
+      .trim()
+      .split('\n\n')
+      .map((line) => JSON.parse(line.replace(/^data:\s*/, '')))
+    expect(events[0]).toEqual({
+      type: 'accepted.presentation.projection_effect_intent',
+      data: {
+        conversation_attempt_ref: canonicalConversationAttemptRef,
+        intent: {
+          schemaVersion: 1,
+          eventId,
+          turnId,
+          action: 'start',
+          effectId: 'fire',
+        },
+      },
+    })
+    expect(projected).not.toContain('projection.effect.requested')
+    expect(projected).not.toContain('session_projection_phase1')
+    expect(projected).not.toContain('raw_phrase')
+    expect(projected).not.toContain('parameters')
+    expect(projected).not.toContain('code')
+  })
+
+  const runProjectionWire = async (
+    projectionWireRecords: string[]
+  ): Promise<string> => {
+    const {
+      createTracedThoughtCoreStream,
+    } = require('@/pages/api/thoughtCoreChat')
+    const encoder = new TextEncoder()
+    const safeEvent = JSON.stringify({
+      type: 'assistant.speech_delta',
+      data: { delta: 'safe speech' },
+    })
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `${projectionWireRecords
+              .map((record) => `data: ${record}\n\n`)
+              .join('')}data: ${safeEvent}\n\n`
+          )
+        )
+        controller.close()
+      },
+    })
+    const traced = createTracedThoughtCoreStream(upstream, {
+      query: 'safe query',
+      startedAt: Date.now(),
+      turnId,
+      sessionId,
+    })
+    return new TextDecoder().decode(
+      Uint8Array.from(
+        (await readByteStream(traced)).flatMap((chunk) => [...chunk])
+      )
+    )
+  }
+
+  const projectedIntents = (output: string): unknown[] =>
+    output
+      .trim()
+      .split('\n\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line.replace(/^data:\s*/, '')))
+      .filter(
+        (event) =>
+          event?.type === 'accepted.presentation.projection_effect_intent'
+      )
+
+  it.each([
+    [
+      'escaped type key',
+      String.raw`{"schema_version":"thought-core.event.v0","event_id":"evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","turn_id":"turn_projection_phase1","session_id":"session_projection_phase1","seq":3,"timestamp":"2026-07-23T00:00:00.000Z","source":"thought-core","ty\u0070e":"projection.effect.requested","data":{"schemaVersion":1,"action":"start","effectId":"fire"}}`,
+    ],
+    [
+      'escaped canonical type value',
+      String.raw`{"schema_version":"thought-core.event.v0","event_id":"evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","turn_id":"turn_projection_phase1","session_id":"session_projection_phase1","seq":3,"timestamp":"2026-07-23T00:00:00.000Z","source":"thought-core","type":"projection.\u0065ffect.requested","data":{"schemaVersion":1,"action":"start","effectId":"fire"}}`,
+    ],
+  ])(
+    'projects one fixed DTO for a valid canonical %s',
+    async (_label, wire) => {
+      const output = await runProjectionWire([wire])
+      expect(projectedIntents(output)).toEqual([
+        {
+          type: 'accepted.presentation.projection_effect_intent',
+          data: {
+            intent: {
+              schemaVersion: 1,
+              eventId,
+              turnId,
+              action: 'start',
+              effectId: 'fire',
+            },
+          },
+        },
+      ])
+      expect(output).toContain('safe speech')
+      expect(output).not.toContain('projection.effect.requested')
+    }
+  )
+
+  it.each([
+    [
+      'canonical reordered type-last',
+      String.raw`{"data":{"schemaVersion":1,"action":"reset","raw_prompt":"SECRET_CANONICAL_WIRE"},"source":"thought-core","timestamp":"2026-07-23T00:00:00.000Z","seq":3,"session_id":"session_projection_phase1","turn_id":"turn_projection_phase1","event_id":"evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema_version":"thought-core.event.v0","type":"projection.effect.requested"}`,
+      'SECRET_CANONICAL_WIRE',
+    ],
+    [
+      'legacy escaped key and value reordered type-last',
+      String.raw`{"data":{"schemaVersion":1,"action":"reset","raw_prompt":"SECRET_LEGACY_WIRE"},"source":"thought-core","timestamp":"2026-07-23T00:00:00.000Z","seq":3,"session_id":"session_projection_phase1","turn_id":"turn_projection_phase1","event_id":"evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema_version":"thought-core.event.v0","ty\u0070e":"projection_effect.\u0069ntent"}`,
+      'SECRET_LEGACY_WIRE',
+    ],
+    [
+      'malformed projection-looking JSON',
+      String.raw`{"type":"projection.effect.requested","data":{"raw_prompt":"SECRET_MALFORMED_WIRE"}`,
+      'SECRET_MALFORMED_WIRE',
+    ],
+  ])(
+    'suppresses %s without raw or private echo while later safe SSE survives',
+    async (_label, wire, sentinel) => {
+      const output = await runProjectionWire([wire])
+      expect(projectedIntents(output)).toHaveLength(0)
+      expect(output).toContain('assistant.speech_delta')
+      expect(output).toContain('safe speech')
+      expect(output).not.toContain('projection.effect.requested')
+      expect(output).not.toContain('projection_effect.intent')
+      expect(output).not.toContain(sentinel)
+    }
+  )
+
+  it.each([
+    [
+      'legacy',
+      {
+        ...canonicalEvent({ schemaVersion: 1, action: 'reset' }),
+        type: 'projection_effect.intent',
+      },
+    ],
+    [
+      'private field',
+      canonicalEvent({
+        schemaVersion: 1,
+        action: 'reset',
+        raw_prompt: 'SECRET_PROJECTION_PROMPT',
+      }),
+    ],
+    [
+      'Phase2 action',
+      canonicalEvent({ schemaVersion: 1, action: 'update', effectId: 'fire' }),
+    ],
+    [
+      'turn mismatch',
+      {
+        ...canonicalEvent({ schemaVersion: 1, action: 'reset' }),
+        turn_id: 'other_turn',
+      },
+    ],
+  ])(
+    'suppresses %s projection input without forwarding raw SSE',
+    async (_label, projectionEvent) => {
+      const {
+        createTracedThoughtCoreStream,
+      } = require('@/pages/api/thoughtCoreChat')
+      const encoder = new TextEncoder()
+      const raw = `data: ${JSON.stringify(projectionEvent)}\n\ndata: ${JSON.stringify(
+        {
+          type: 'assistant.speech_delta',
+          data: { delta: 'safe speech' },
+        }
+      )}\n\n`
+      const upstream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(raw))
+          controller.close()
+        },
+      })
+      const traced = createTracedThoughtCoreStream(upstream, {
+        query: 'safe query',
+        startedAt: Date.now(),
+        turnId,
+        sessionId,
+      })
+      const output = new TextDecoder().decode(
+        Uint8Array.from(
+          (await readByteStream(traced)).flatMap((chunk) => [...chunk])
+        )
+      )
+      expect(output).toContain('assistant.speech_delta')
+      expect(output).toContain('safe speech')
+      expect(output).not.toContain('projection.effect.requested')
+      expect(output).not.toContain('projection_effect.intent')
+      expect(output).not.toContain('SECRET_PROJECTION_PROMPT')
+      expect(output).not.toContain(
+        'accepted.presentation.projection_effect_intent'
+      )
+    }
+  )
+})
