@@ -1,3 +1,101 @@
+export interface FireP027ColorSample {
+  r: number
+  g: number
+  b: number
+  a: number
+}
+
+const FIRE_P027_LUMA_R = 0.2126
+const FIRE_P027_LUMA_G = 0.7152
+const FIRE_P027_LUMA_B = 0.0722
+const FIRE_P027_ALPHA_LUMA_START = 0.015
+const FIRE_P027_ALPHA_LUMA_END = 0.18
+const FIRE_P027_DISPLAY_EXPOSURE = 1.35
+const FIRE_P027_DISPLAY_GAMMA = 2.2
+const FIRE_P027_DISPLAY_ALPHA_GAIN = 0.55
+const FIRE_P027_DISPLAY_ALPHA_LUMA_START = 0.01
+const FIRE_P027_DISPLAY_ALPHA_LUMA_END = 0.08
+const FIRE_P027_CORE_LUMA_START = 0.55
+const FIRE_P027_CORE_LUMA_END = 0.92
+const FIRE_P027_CORE_MIX = 0.72
+const FIRE_P027_CORE_COLOR = {
+  r: 1,
+  g: 0.96,
+  b: 0.82,
+} as const
+
+/**
+ * CPU reference for the raster shader's additive contribution.
+ * Generator RGB is already alpha-shaped, so rasterization must not multiply it
+ * by source alpha a second time. Alpha is additionally tied to visible energy
+ * so transparent black can never accumulate into a dark opaque veil.
+ */
+export function composeFireP027SpriteSample(
+  sprite: Readonly<FireP027ColorSample>,
+  tint: Readonly<FireP027ColorSample>,
+  opacity: number
+): FireP027ColorSample {
+  const safeOpacity = clamp01(opacity)
+  const tintAlpha = clamp01(tint.a)
+  const sourceAlpha = clamp01(sprite.a) * tintAlpha * safeOpacity
+  const sourceRgb = {
+    r: nonNegative(sprite.r) * nonNegative(tint.r) * tintAlpha * safeOpacity,
+    g: nonNegative(sprite.g) * nonNegative(tint.g) * tintAlpha * safeOpacity,
+    b: nonNegative(sprite.b) * nonNegative(tint.b) * tintAlpha * safeOpacity,
+  }
+  const sourceLuminance = luminance(sourceRgb)
+  const correlatedAlpha =
+    sourceAlpha *
+    smoothstep(
+      FIRE_P027_ALPHA_LUMA_START,
+      FIRE_P027_ALPHA_LUMA_END,
+      sourceLuminance
+    )
+  const remaining = 1 - correlatedAlpha
+  return {
+    r: sourceRgb.r * remaining,
+    g: sourceRgb.g * remaining,
+    b: sourceRgb.b * remaining,
+    a: correlatedAlpha * remaining,
+  }
+}
+
+/** CPU reference for the bounded final display transform used by WebGL2. */
+export function toneMapFireP027DisplaySample(
+  accumulated: Readonly<FireP027ColorSample>
+): FireP027ColorSample {
+  const mapped = {
+    r: toneMapChannel(accumulated.r),
+    g: toneMapChannel(accumulated.g),
+    b: toneMapChannel(accumulated.b),
+  }
+  const mappedLuminance = luminance(mapped)
+  const core =
+    smoothstep(
+      FIRE_P027_CORE_LUMA_START,
+      FIRE_P027_CORE_LUMA_END,
+      mappedLuminance
+    ) * FIRE_P027_CORE_MIX
+  const visibleAlpha =
+    clamp01(
+      Math.max(
+        clamp01(accumulated.a) * FIRE_P027_DISPLAY_ALPHA_GAIN,
+        mappedLuminance
+      )
+    ) *
+    smoothstep(
+      FIRE_P027_DISPLAY_ALPHA_LUMA_START,
+      FIRE_P027_DISPLAY_ALPHA_LUMA_END,
+      mappedLuminance
+    )
+  return {
+    r: mix(mapped.r, FIRE_P027_CORE_COLOR.r, core),
+    g: mix(mapped.g, FIRE_P027_CORE_COLOR.g, core),
+    b: mix(mapped.b, FIRE_P027_CORE_COLOR.b, core),
+    a: visibleAlpha,
+  }
+}
+
 export const FIRE_P027_FULLSCREEN_VERTEX_SHADER = `#version 300 es
 precision highp float;
 out vec2 vUV;
@@ -273,9 +371,15 @@ layout(location = 0) out vec4 fragColor;
 void main() {
   if (vAlive <= 0.5) discard;
   vec4 sprite = texture(uFireLayers, vec3(vLocal.x, 1.0 - vLocal.y, float(vLayer)));
-  vec4 sourceColor = sprite * uTint;
-  sourceColor.rgb *= sourceColor.a * vOpacity;
-  sourceColor.a *= vOpacity;
+  float safeOpacity = clamp(vOpacity, 0.0, 1.0);
+  float tintAlpha = clamp(uTint.a, 0.0, 1.0);
+  float sourceAlpha = clamp(sprite.a, 0.0, 1.0) * tintAlpha * safeOpacity;
+  vec3 sourceRgb = max(sprite.rgb, vec3(0.0))
+    * max(uTint.rgb, vec3(0.0)) * tintAlpha * safeOpacity;
+  float sourceLuminance = dot(sourceRgb, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B}));
+  float correlatedAlpha = sourceAlpha
+    * smoothstep(${FIRE_P027_ALPHA_LUMA_START}, ${FIRE_P027_ALPHA_LUMA_END}, sourceLuminance);
+  vec4 sourceColor = vec4(sourceRgb, correlatedAlpha);
   fragColor = sourceColor * (1.0 - sourceColor.a);
 }`
 
@@ -285,7 +389,59 @@ in vec2 vUV;
 uniform sampler2D uAccumulatedFire;
 layout(location = 0) out vec4 fragColor;
 void main() {
-  vec4 color = texture(uAccumulatedFire, vUV);
-  color.a = clamp(color.a, 0.0, 1.0);
-  fragColor = color;
+  vec4 accumulated = texture(uAccumulatedFire, vUV);
+  vec3 nonNegativeRgb = max(accumulated.rgb, vec3(0.0));
+  vec3 mapped = vec3(1.0) - exp(-nonNegativeRgb * ${FIRE_P027_DISPLAY_EXPOSURE});
+  mapped = pow(clamp(mapped, vec3(0.0), vec3(1.0)), vec3(1.0 / ${FIRE_P027_DISPLAY_GAMMA}));
+  float mappedLuminance = dot(mapped, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B}));
+  float core = smoothstep(${FIRE_P027_CORE_LUMA_START}, ${FIRE_P027_CORE_LUMA_END}, mappedLuminance)
+    * ${FIRE_P027_CORE_MIX};
+  vec3 displayRgb = mix(mapped, vec3(${FIRE_P027_CORE_COLOR.r.toFixed(2)}, ${FIRE_P027_CORE_COLOR.g.toFixed(2)}, ${FIRE_P027_CORE_COLOR.b.toFixed(2)}), core);
+  float visibleAlpha = clamp(
+    max(clamp(accumulated.a, 0.0, 1.0) * ${FIRE_P027_DISPLAY_ALPHA_GAIN}, mappedLuminance),
+    0.0,
+    1.0
+  ) * smoothstep(
+    ${FIRE_P027_DISPLAY_ALPHA_LUMA_START},
+    ${FIRE_P027_DISPLAY_ALPHA_LUMA_END},
+    mappedLuminance
+  );
+  fragColor = vec4(displayRgb, visibleAlpha);
 }`
+
+function toneMapChannel(value: number): number {
+  const mapped = 1 - Math.exp(-nonNegative(value) * FIRE_P027_DISPLAY_EXPOSURE)
+  return Math.pow(clamp01(mapped), 1 / FIRE_P027_DISPLAY_GAMMA)
+}
+
+function luminance(
+  color: Readonly<{ r: number; g: number; b: number }>
+): number {
+  return (
+    color.r * FIRE_P027_LUMA_R +
+    color.g * FIRE_P027_LUMA_G +
+    color.b * FIRE_P027_LUMA_B
+  )
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = clamp01((finiteOr(value, edge0) - edge0) / (edge1 - edge0))
+  return t * t * (3 - 2 * t)
+}
+
+function mix(left: number, right: number, amount: number): number {
+  const t = clamp01(amount)
+  return left * (1 - t) + right * t
+}
+
+function nonNegative(value: number): number {
+  return Math.max(0, finiteOr(value, 0))
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, finiteOr(value, 0)))
+}
+
+function finiteOr(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback
+}

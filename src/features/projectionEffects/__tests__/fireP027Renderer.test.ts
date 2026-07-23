@@ -34,6 +34,31 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(controls.windY).toBe(3)
     expect(controls.turbulenceX).toBe(6)
     expect(controls.resolutionScale).toBe(0.8)
+    expect(controls.tintR).toBeGreaterThan(controls.tintA)
+    expect(controls.tintG).toBeGreaterThan(controls.tintA)
+    expect(controls.tintA).toBeLessThanOrEqual(1)
+  })
+
+  it('separates visible emission from bounded coverage without changing the public vocabulary', () => {
+    const bright = mapFireParametersToP027Controls({
+      temperature: 1,
+      masterIntensity: 1,
+      bloomGain: 2,
+      postProcessing: true,
+    })
+    const off = mapFireParametersToP027Controls({
+      masterIntensity: 0,
+      bloomGain: 2,
+      postProcessing: true,
+    })
+
+    expect(bright.tintR).toBeGreaterThan(bright.tintG)
+    expect(bright.tintG).toBeGreaterThan(bright.tintB)
+    expect(bright.tintR).toBeGreaterThan(bright.tintA)
+    expect(bright.tintA).toBeCloseTo(0.94)
+    expect(off).toEqual(
+      expect.objectContaining({ tintR: 0, tintG: 0, tintB: 0, tintA: 0 })
+    )
   })
 
   it('updates GPU state at fixed 60 Hz, creates origins once, and draws once per host frame', () => {

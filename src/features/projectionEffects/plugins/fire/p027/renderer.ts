@@ -229,10 +229,15 @@ export function mapFireParametersToP027Controls(
   )
   const bloomGain = clamp(numberParameter(parameters, 'bloomGain', 0.64), 0, 2)
   const postProcessing = parameters.postProcessing !== false
-  const appearanceGain = clamp(
-    masterIntensity * (postProcessing ? 1 + bloomGain * 0.18 : 1),
+  const emissionGain = clamp(
+    masterIntensity * (postProcessing ? 1 + bloomGain * 0.32 : 1),
     0,
     2
+  )
+  const coverageGain = clamp(
+    masterIntensity * (postProcessing ? 0.82 + bloomGain * 0.06 : 0.88),
+    0,
+    1
   )
   const sizeX = clamp(pointSize / 240, 0.02, 0.67)
   const motionScale = upwardSpeed / 0.58
@@ -281,10 +286,10 @@ export function mapFireParametersToP027Controls(
     useDrag: false,
     drag: 1,
     alphaSpeed: clamp((1 - dissipation) * 2, 0, 5),
-    tintR: appearanceGain * (0.92 + temperature * 0.08),
-    tintG: appearanceGain * (0.82 + temperature * 0.18),
-    tintB: appearanceGain,
-    tintA: clamp(appearanceGain, 0, 1),
+    tintR: emissionGain * (0.96 + temperature * 0.12),
+    tintG: emissionGain * (0.62 + temperature * 0.35),
+    tintB: emissionGain * (0.08 + temperature * 0.18),
+    tintA: coverageGain,
   }
 }
 
