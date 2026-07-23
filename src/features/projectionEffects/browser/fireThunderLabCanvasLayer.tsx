@@ -21,6 +21,12 @@ import type {
   ThunderBallSurface,
 } from '../plugins/thunderBall/renderer'
 import {
+  ThunderBallWebGl2Adapter,
+  createThunderBallWebGl2CanvasSurface,
+  normalizeThunderWebGl2AdapterSurface,
+  type ThunderWebGl2AdapterSurfaceInput,
+} from '../plugins/thunderBall/webgl2/adapter'
+import {
   FireThunderPooledSurfaces,
   compositorOperationCompleted,
 } from './fireThunderPooledSurfaces'
@@ -57,7 +63,9 @@ export interface FireThunderLabCanvasLayerProps {
   webgl2Available?: boolean
   waitFrame?: (durationMs: number) => Promise<void>
   createFireSurface?: (canvas: HTMLCanvasElement) => FireP027Surface
-  createThunderSurface?: (canvas: HTMLCanvasElement) => ThunderBallSurface
+  createThunderSurface?: (
+    canvas: HTMLCanvasElement
+  ) => ThunderWebGl2AdapterSurfaceInput
   onStatusChange?: (result: Readonly<ProjectionEffectHostResult>) => void
   visualParameterOverrides?: FireThunderLabVisualParameterOverrides
 }
@@ -195,6 +203,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
   )
   const pooledSurfacesRef = useRef<FireThunderPooledSurfaces | null>(null)
   const fireRendererRef = useRef<FireP027Renderer | null>(null)
+  const thunderRendererRef = useRef<ThunderBallWebGl2Adapter | null>(null)
   const cleanupPromiseRef = useRef<Promise<void>>(Promise.resolve())
   const readyPromiseRef = useRef<Promise<void>>(Promise.resolve())
   const effectGenerationRef = useRef(0)
@@ -237,7 +246,11 @@ export const FireThunderLabCanvasLayer = forwardRef<
       pooledSurfaces = new FireThunderPooledSurfaces({
         compositor,
         createFireSurface,
-        createThunderSurface,
+        createThunderSurface: (canvas) =>
+          normalizeThunderWebGl2AdapterSurface(
+            createThunderSurface(canvas),
+            waitFrame
+          ),
       })
       host = createFireThunderLabHost({
         createFireSurface: () => pooledSurfaces!.createFireSurface(),
@@ -245,6 +258,11 @@ export const FireThunderLabCanvasLayer = forwardRef<
         onFireRendererCreated: (renderer) => {
           if (effectGenerationRef.current === generation) {
             fireRendererRef.current = renderer
+          }
+        },
+        onThunderRendererCreated: (renderer) => {
+          if (effectGenerationRef.current === generation) {
+            thunderRendererRef.current = renderer
           }
         },
         webgl2Available:
@@ -268,6 +286,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
         pooledSurfacesRef.current = null
       }
       fireRendererRef.current = null
+      thunderRendererRef.current = null
       lastEffectIdRef.current = null
 
       cleanupPromiseRef.current = ready
@@ -342,6 +361,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
     if (host.activeEffectId === null && effectId === FIRE_EFFECT_ID) {
       fireRendererRef.current = null
     }
+    if (host.activeEffectId === null && effectId === THUNDER_BALL_EFFECT_ID) {
+      thunderRendererRef.current = null
+    }
     if (mountedRef.current) onStatusChangeRef.current?.(result)
     return result
   }
@@ -363,8 +385,23 @@ export const FireThunderLabCanvasLayer = forwardRef<
         return cleanup
       }
     }
+    if (effectId === THUNDER_BALL_EFFECT_ID && thunderRendererRef.current) {
+      try {
+        thunderRendererRef.current.reset()
+      } catch {
+        const cleanup = await host.dispatch(stopCommand(effectId, 'emergency'))
+        cleanupUnprovedRef.current = true
+        pooledSurfacesRef.current?.quarantineActive()
+        thunderRendererRef.current = null
+        if (mountedRef.current) onStatusChangeRef.current?.(cleanup)
+        return cleanup
+      }
+    }
     const result = await host.dispatch(resetCommand(effectId))
     if (effectId === FIRE_EFFECT_ID) fireRendererRef.current = null
+    if (effectId === THUNDER_BALL_EFFECT_ID) {
+      thunderRendererRef.current = null
+    }
     if (mountedRef.current) onStatusChangeRef.current?.(result)
     return result
   }
@@ -388,6 +425,12 @@ export const FireThunderLabCanvasLayer = forwardRef<
         if (effectId !== FIRE_EFFECT_ID || result.status !== 'started') {
           fireRendererRef.current = null
         }
+        if (
+          effectId !== THUNDER_BALL_EFFECT_ID ||
+          result.status !== 'started'
+        ) {
+          thunderRendererRef.current = null
+        }
         if (!mountedRef.current) return result
         onStatusChangeRef.current?.(result)
         if (result.status === 'started') {
@@ -402,6 +445,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
             }
             if (host.activeEffectId === null) {
               fireRendererRef.current = null
+              thunderRendererRef.current = null
               compositor.stopFrameLoop()
             }
           })
@@ -618,8 +662,10 @@ function defaultFireSurface(canvas: HTMLCanvasElement): FireP027Surface {
   return new FireP027WebGlEngine(canvas)
 }
 
-function defaultThunderSurface(canvas: HTMLCanvasElement): ThunderBallSurface {
-  return new ThunderCanvas2dLabSurface(canvas)
+function defaultThunderSurface(
+  canvas: HTMLCanvasElement
+): ThunderWebGl2AdapterSurfaceInput {
+  return createThunderBallWebGl2CanvasSurface(canvas)
 }
 
 function startCommand(

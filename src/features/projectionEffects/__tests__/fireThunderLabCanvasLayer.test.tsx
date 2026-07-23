@@ -15,10 +15,10 @@ import { createFireThunderLabHost } from '../lab/fireThunderLabRegistry'
 import { FIRE_EFFECT_ID } from '../plugins/fire/definition'
 import type { FireP027Surface } from '../plugins/fire/p027/contracts'
 import { THUNDER_BALL_EFFECT_ID } from '../plugins/thunderBall/definition'
-import type {
-  ThunderBallFrame,
-  ThunderBallSurface,
-} from '../plugins/thunderBall/renderer'
+import {
+  fixedThunderWebGl2AdapterResult,
+  type ThunderWebGl2AdapterSurface,
+} from '../plugins/thunderBall/webgl2/adapter'
 import FireThunderLabPage from '../../../pages/projection-effects-fire-thunder-lab'
 
 describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
@@ -159,10 +159,8 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
       })
     )
     expect(fireSurfaces[0].dispose).toHaveBeenCalledTimes(1)
-    expect(thunderSurfaces[0].draw).toHaveBeenCalledWith(
-      expect.objectContaining({
-        config: expect.objectContaining({ reducedMotion: true }),
-      })
+    expect(thunderSurfaces[0].configure).toHaveBeenCalledWith(
+      expect.objectContaining({ reducedMotion: true })
     )
 
     await host.dispatch({
@@ -295,10 +293,14 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
       await controllerRef.current?.reset()
     })
     expect(requestCallbacks.size).toBe(0)
+    expect(thunderSurfaces[1].reset).toHaveBeenCalledTimes(1)
     expect(thunderSurfaces[1].dispose).toHaveBeenCalledTimes(1)
-    const resetThunderDrawCount = thunderSurfaces[1].draw.mock.calls.length
+    const resetThunderDrawCount =
+      thunderSurfaces[1].renderFrame.mock.calls.length
     await act(async () => staleThunderFrame(48))
-    expect(thunderSurfaces[1].draw).toHaveBeenCalledTimes(resetThunderDrawCount)
+    expect(thunderSurfaces[1].renderFrame).toHaveBeenCalledTimes(
+      resetThunderDrawCount
+    )
     expect(requestCallbacks.size).toBe(0)
   })
 
@@ -344,14 +346,14 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
       await jest.advanceTimersByTimeAsync(5_000)
     })
     expect(thunderSurfaces[0].dispose).toHaveBeenCalledTimes(1)
-    const drawCount = thunderSurfaces[0].draw.mock.calls.length
+    const drawCount = thunderSurfaces[0].renderFrame.mock.calls.length
     const finalFrame = [...requestCallbacks.entries()][0]
     requestCallbacks.delete(finalFrame[0])
     await act(async () => finalFrame[1](5_016))
 
     expect(statuses).toContain('no-active-effect')
     expect(requestCallbacks.size).toBe(0)
-    expect(thunderSurfaces[0].draw).toHaveBeenCalledTimes(drawCount)
+    expect(thunderSurfaces[0].renderFrame).toHaveBeenCalledTimes(drawCount)
   })
 
   it('fails closed without scheduling when a renderer surface is unavailable', async () => {
@@ -473,10 +475,18 @@ function mockFireSurface() {
 
 function mockThunderSurface() {
   return {
-    draw: jest.fn((_frame: Readonly<ThunderBallFrame>) => {}),
-    clear: jest.fn(),
+    configure: jest.fn(),
+    start: jest.fn(() => fixedThunderWebGl2AdapterResult('running', 'started')),
+    renderFrame: jest.fn(() =>
+      fixedThunderWebGl2AdapterResult('running', 'rendered')
+    ),
+    stop: jest.fn(() => fixedThunderWebGl2AdapterResult('stopped', 'stopped')),
+    reset: jest.fn(() => fixedThunderWebGl2AdapterResult('idle', 'reset')),
+    emergencyStop: jest.fn(() =>
+      fixedThunderWebGl2AdapterResult('stopped', 'emergency-stopped')
+    ),
     dispose: jest.fn(),
-  } satisfies ThunderBallSurface
+  } satisfies ThunderWebGl2AdapterSurface
 }
 
 function startCommand(

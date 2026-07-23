@@ -15,10 +15,11 @@ import {
   type FireP027SpawnBatch,
   type FireP027Surface,
 } from '../plugins/fire/p027/contracts'
-import type {
-  ThunderBallFrame,
-  ThunderBallSurface,
-} from '../plugins/thunderBall/renderer'
+import {
+  fixedThunderWebGl2AdapterResult,
+  mapThunderParametersToWebGl2AdapterConfig,
+  type ThunderWebGl2AdapterSurface,
+} from '../plugins/thunderBall/webgl2/adapter'
 
 describe('FireThunderPooledSurfaces', () => {
   it('acquires lazily, releases Fire before Thunder, and rejects stale generations', () => {
@@ -45,7 +46,7 @@ describe('FireThunderPooledSurfaces', () => {
     firstFire.clear()
     firstFire.dispose()
 
-    thunder.draw({} as ThunderBallFrame)
+    exerciseThunder(thunder)
     expect(fixture.acquireSnapshots[1]).toEqual(
       expect.objectContaining({
         activeLeaseCount: 0,
@@ -55,7 +56,7 @@ describe('FireThunderPooledSurfaces', () => {
     expect(fixture.pool.snapshot()).toEqual(
       expect.objectContaining({
         generation: 2,
-        activeBackend: 'canvas2d',
+        activeBackend: 'webgl2',
         activeLeaseCount: 1,
       })
     )
@@ -117,7 +118,7 @@ describe('FireThunderPooledSurfaces', () => {
     )
 
     const thunder = pooled.createThunderSurface()
-    expect(() => thunder.draw({} as ThunderBallFrame)).toThrow(
+    expect(() => exerciseThunder(thunder)).toThrow(
       FireThunderPooledSurfaceError
     )
     expect(fixture.acquireSnapshots).toHaveLength(1)
@@ -130,9 +131,45 @@ describe('FireThunderPooledSurfaces', () => {
       })
     )
   })
+
+  it('keeps a failed Thunder cleanup lease quarantined and blocks Fire reacquire', () => {
+    const fixture = createFixture({ thunderDisposeThrows: true })
+    const pooled = new FireThunderPooledSurfaces({
+      compositor: fixture.controller,
+      createFireSurface: fixture.createFireSurface,
+      createThunderSurface: fixture.createThunderSurface,
+    })
+    const thunder = pooled.createThunderSurface()
+    exerciseThunder(thunder)
+
+    expect(() => thunder.dispose()).toThrow(FireThunderPooledSurfaceError)
+    expect(pooled.snapshot()).toEqual(
+      expect.objectContaining({
+        activeSurfaceCount: 1,
+        cleanupUnproved: true,
+      })
+    )
+    expect(fixture.pool.snapshot()).toEqual(
+      expect.objectContaining({
+        activeBackend: 'webgl2',
+        activeLeaseCount: 1,
+        releaseCount: 0,
+        state: 'cleanup-unproved',
+      })
+    )
+
+    const fire = pooled.createFireSurface()
+    expect(() => exerciseFire(fire)).toThrow(FireThunderPooledSurfaceError)
+    expect(fixture.acquireSnapshots).toHaveLength(1)
+  })
 })
 
-function createFixture(options: { fireDisposeThrows?: boolean } = {}) {
+function createFixture(
+  options: {
+    fireDisposeThrows?: boolean
+    thunderDisposeThrows?: boolean
+  } = {}
+) {
   const webgl2Canvas = document.createElement('canvas')
   const canvas2dCanvas = document.createElement('canvas')
   const webgl2Context = {
@@ -180,7 +217,7 @@ function createFixture(options: { fireDisposeThrows?: boolean } = {}) {
       }) satisfies ProjectionEffectCompositorSnapshot,
   }
   const fireSurfaces: FireP027Surface[] = []
-  const thunderSurfaces: ThunderBallSurface[] = []
+  const thunderSurfaces: ThunderWebGl2AdapterSurface[] = []
   const createFireSurface = jest.fn(() => {
     const surface = {
       step: jest.fn(),
@@ -199,10 +236,26 @@ function createFixture(options: { fireDisposeThrows?: boolean } = {}) {
   })
   const createThunderSurface = jest.fn(() => {
     const surface = {
-      draw: jest.fn(),
-      clear: jest.fn(),
-      dispose: jest.fn(),
-    } satisfies ThunderBallSurface
+      configure: jest.fn(),
+      start: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'started')
+      ),
+      renderFrame: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'rendered')
+      ),
+      stop: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('stopped', 'stopped')
+      ),
+      reset: jest.fn(() => fixedThunderWebGl2AdapterResult('idle', 'reset')),
+      emergencyStop: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('stopped', 'emergency-stopped')
+      ),
+      dispose: jest.fn(() => {
+        if (options.thunderDisposeThrows) {
+          throw new Error('private thunder disposal failure')
+        }
+      }),
+    } satisfies ThunderWebGl2AdapterSurface
     thunderSurfaces.push(surface)
     return surface
   })
@@ -229,4 +282,10 @@ const FIRE_BATCH: Readonly<FireP027SpawnBatch> = Object.freeze({
 function exerciseFire(surface: FireP027Surface): void {
   surface.step(FIRE_BATCH, 1, FIRE_P027_DEFAULT_CONTROLS)
   surface.draw(FIRE_P027_DEFAULT_CONTROLS)
+}
+
+function exerciseThunder(surface: ThunderWebGl2AdapterSurface): void {
+  surface.configure(mapThunderParametersToWebGl2AdapterConfig({}))
+  surface.start({ nowMs: 0 })
+  surface.renderFrame({ nowMs: 0 })
 }

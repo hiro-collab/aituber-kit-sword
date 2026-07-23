@@ -16,9 +16,14 @@ import type {
 } from '../plugins/fire/p027/contracts'
 import { THUNDER_BALL_EFFECT_ID } from '../plugins/thunderBall/definition'
 import type {
-  ThunderBallFrame,
-  ThunderBallSurface,
-} from '../plugins/thunderBall/renderer'
+  ThunderWebGl2AdapterConfig,
+  ThunderWebGl2AdapterSurface,
+} from '../plugins/thunderBall/webgl2/adapter'
+import type {
+  ThunderWebGl2FrameOptions,
+  ThunderWebGl2StartOptions,
+  ThunderWebGl2StopOptions,
+} from '../plugins/thunderBall/webgl2/renderer'
 
 export type FireThunderPooledSurfaceStatus = 'completed' | 'cleanup-unproved'
 
@@ -32,7 +37,7 @@ export interface FireThunderPooledSurfacesSnapshot {
 export interface FireThunderPooledSurfacesOptions {
   compositor: ProjectionEffectCompositorController
   createFireSurface(canvas: HTMLCanvasElement): FireP027Surface
-  createThunderSurface(canvas: HTMLCanvasElement): ThunderBallSurface
+  createThunderSurface(canvas: HTMLCanvasElement): ThunderWebGl2AdapterSurface
 }
 
 interface OwnedPooledSurface<
@@ -70,8 +75,11 @@ export class FireThunderPooledSurfaces {
     return new PooledP027FireSurface(this, this.options.createFireSurface)
   }
 
-  createThunderSurface(): ThunderBallSurface {
-    return new PooledThunderSurface(this, this.options.createThunderSurface)
+  createThunderSurface(): ThunderWebGl2AdapterSurface {
+    return new PooledThunderWebGl2Surface(
+      this,
+      this.options.createThunderSurface
+    )
   }
 
   disposeActive(): FireThunderPooledSurfaceStatus {
@@ -324,19 +332,39 @@ class PooledP027FireSurface
   }
 }
 
-class PooledThunderSurface
-  extends PooledSurfaceSession<'canvas2d', ThunderBallSurface>
-  implements ThunderBallSurface
+class PooledThunderWebGl2Surface
+  extends PooledSurfaceSession<'webgl2', ThunderWebGl2AdapterSurface>
+  implements ThunderWebGl2AdapterSurface
 {
   constructor(
     surfaces: FireThunderPooledSurfaces,
-    createSurface: (canvas: HTMLCanvasElement) => ThunderBallSurface
+    createSurface: (canvas: HTMLCanvasElement) => ThunderWebGl2AdapterSurface
   ) {
-    super(surfaces, 'canvas2d', THUNDER_BALL_EFFECT_ID, createSurface)
+    super(surfaces, 'webgl2', THUNDER_BALL_EFFECT_ID, createSurface)
   }
 
-  draw(frame: Readonly<ThunderBallFrame>): void {
-    this.drawWithSurface((surface) => surface.draw(frame))
+  configure(config: Readonly<ThunderWebGl2AdapterConfig>): void {
+    this.drawWithSurface((surface) => surface.configure(config))
+  }
+
+  start(options?: Readonly<ThunderWebGl2StartOptions>) {
+    return this.readWithSurface((surface) => surface.start(options))
+  }
+
+  renderFrame(options: Readonly<ThunderWebGl2FrameOptions>) {
+    return this.readWithSurface((surface) => surface.renderFrame(options))
+  }
+
+  stop(options?: Readonly<ThunderWebGl2StopOptions>) {
+    return this.readWithSurface((surface) => surface.stop(options))
+  }
+
+  reset() {
+    return this.readWithSurface((surface) => surface.reset())
+  }
+
+  emergencyStop() {
+    return this.readWithSurface((surface) => surface.emergencyStop())
   }
 }
 

@@ -17,9 +17,9 @@ import {
   thunderBallEffectDefinition,
 } from '../plugins/thunderBall/definition'
 import {
-  ThunderBallRenderer,
-  type ThunderBallSurface,
-} from '../plugins/thunderBall/renderer'
+  ThunderBallWebGl2Adapter,
+  type ThunderWebGl2AdapterSurface,
+} from '../plugins/thunderBall/webgl2/adapter'
 
 export type FireThunderLabEffectId =
   | typeof FIRE_EFFECT_ID
@@ -32,8 +32,9 @@ export const FIRE_THUNDER_LAB_EFFECT_IDS = [
 
 export interface FireThunderLabHostOptions {
   createFireSurface(): FireP027Surface
-  createThunderSurface(): ThunderBallSurface
+  createThunderSurface(): ThunderWebGl2AdapterSurface
   onFireRendererCreated?: (renderer: FireP027Renderer) => void
+  onThunderRendererCreated?: (renderer: ThunderBallWebGl2Adapter) => void
   webgl2Available: boolean
   waitFrame?: (durationMs: number) => Promise<void>
   nowMs?: () => number
@@ -57,11 +58,14 @@ export function createFireThunderLabHost(
   })
   registry.register({
     definition: thunderBallEffectDefinition,
-    createRenderer: () =>
-      new ThunderBallRenderer({
+    createRenderer: () => {
+      const renderer = new ThunderBallWebGl2Adapter({
         surface: options.createThunderSurface(),
         waitFrame: options.waitFrame,
-      }),
+      })
+      options.onThunderRendererCreated?.(renderer)
+      return renderer
+    },
   })
 
   return new ProjectionEffectHost({
