@@ -804,9 +804,9 @@ function isBoundedEngineFrame(
   const sources = frame.sources
   if (
     !Array.isArray(ribbons) ||
-    ribbons.length !== THUNDER_WEBGL2_SOURCE_COUNT ||
+    ribbons.length > THUNDER_WEBGL2_SOURCE_COUNT ||
     !Array.isArray(sources) ||
-    sources.length !== THUNDER_WEBGL2_SOURCE_COUNT ||
+    sources.length !== ribbons.length ||
     !isExactPassGraph(frame.passGraph) ||
     !isBoundedTone(frame.tone)
   ) {

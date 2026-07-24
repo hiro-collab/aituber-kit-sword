@@ -114,6 +114,8 @@ describe('Thunder Ball WebGL2 engine', () => {
     })
     const frame = createValidEngineFrame(7, 0)
 
+    expect(frame.ribbons).toHaveLength(21)
+    expect(frame.sources).toHaveLength(21)
     expect(engine.audit()).toMatchObject({
       state: 'ready',
       failure: null,
@@ -177,6 +179,78 @@ describe('Thunder Ball WebGL2 engine', () => {
     expect(engine.audit().resources.total).toBe(
       THUNDER_WEBGL2_MAX_RESOURCE_COUNT
     )
+  })
+
+  it('renders an exact recipe frame, a reduced live subset in the same epoch, and an empty temporal-decay frame', () => {
+    const fake = createFakeThunderGl()
+    const engine = new ThunderBallWebGl2Engine({
+      gl: fake.gl,
+      width: 640,
+      height: 360,
+    })
+    const seed = 17
+    const epochStartMs = 192
+    const withinEpochMs = 250
+    const topology = createThunderWebGl2Topology({
+      seed,
+      nowMs: epochStartMs,
+    })
+    const sameEpoch = createThunderWebGl2Topology({
+      seed,
+      nowMs: withinEpochMs,
+    })
+    const config = mapThunderParametersToWebGl2AdapterConfig({ seed })
+    const frameFromConnections = (
+      connections: typeof topology.connections
+    ): ThunderWebGl2EngineFrame =>
+      mapThunderWebGl2EngineFrame(
+        {
+          ribbons: connections.map(({ ribbon }) => ribbon),
+          tone: resolveThunderWebGl2Tone(false),
+        },
+        config
+      )
+    const liveConnections = Object.freeze(
+      topology.connections.filter(
+        ({ bornAtMs, lifeMs }) => bornAtMs + lifeMs > withinEpochMs
+      )
+    )
+    const exactFrame = frameFromConnections(topology.connections)
+    const reducedFrame = frameFromConnections(liveConnections)
+    const emptyFrame = frameFromConnections(Object.freeze([]))
+
+    expect(sameEpoch.epoch).toBe(topology.epoch)
+    expect(exactFrame.ribbons).toHaveLength(21)
+    expect(reducedFrame.ribbons.length).toBeGreaterThan(0)
+    expect(reducedFrame.ribbons.length).toBeLessThan(21)
+    expect(reducedFrame.sources).toHaveLength(reducedFrame.ribbons.length)
+
+    expect(engine.render(exactFrame)).toMatchObject({
+      status: 'rendered',
+      state: 'ready',
+      failure: null,
+      failureStage: 'none',
+    })
+    expect(engine.render(reducedFrame)).toMatchObject({
+      status: 'rendered',
+      state: 'ready',
+      failure: null,
+      failureStage: 'none',
+    })
+    expect(engine.render(emptyFrame)).toMatchObject({
+      status: 'rendered',
+      state: 'ready',
+      failure: null,
+      failureStage: 'none',
+    })
+    expect(fake.drawArrays).toHaveBeenCalledTimes(
+      exactFrame.ribbons.length + 9 + reducedFrame.ribbons.length + 9 + 9
+    )
+    expect(engine.audit()).toMatchObject({
+      state: 'ready',
+      failure: null,
+      failureStage: 'none',
+    })
   })
 
   it('presents the temporal target as an exact fullscreen copy without legacy blit', () => {
@@ -525,17 +599,30 @@ describe('Thunder Ball WebGL2 engine', () => {
       }),
     ],
     [
-      'source over-count',
+      'source/ribbon count mismatch under the cap',
       (
         frame: Readonly<ThunderWebGl2EngineFrame>
       ): ThunderWebGl2EngineFrame => ({
         ...frame,
-        sources: Object.freeze([
-          ...(frame.sources ?? []),
-          frame.sources?.[0] as NonNullable<
-            ThunderWebGl2EngineFrame['sources']
-          >[number],
-        ]),
+        sources: Object.freeze((frame.sources ?? []).slice(0, -1)),
+      }),
+    ],
+    [
+      'duplicate source index',
+      (
+        frame: Readonly<ThunderWebGl2EngineFrame>
+      ): ThunderWebGl2EngineFrame => ({
+        ...frame,
+        sources: Object.freeze(
+          (frame.sources ?? []).map((source, index, sources) =>
+            index === 1
+              ? Object.freeze({
+                  ...source,
+                  index: sources[0]?.index ?? source.index,
+                })
+              : source
+          )
+        ),
       }),
     ],
     [
