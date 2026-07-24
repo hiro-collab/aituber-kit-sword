@@ -165,7 +165,10 @@ export class FireP027WebGlEngine implements FireP027Surface {
       this.snapshotFramebuffer = this.resources.createFramebuffer()
       this.snapshotTexture = this.createSnapshotTexture()
       this.setOrigins(generateFireP027FallbackOrigins(initialControls))
-      this.ensureOutputSize(initialControls.resolutionScale)
+      this.ensureOutputSize(
+        initialControls.resolutionScale,
+        this.readCssViewportSize()
+      )
       this.clearState()
       assertNoGlError(gl, 'P027 engine initialization')
     } catch (error) {
@@ -305,7 +308,8 @@ export class FireP027WebGlEngine implements FireP027Surface {
   draw(controls: Readonly<FireP027Controls>): void {
     this.assertActive()
     const gl = this.gl
-    this.ensureOutputSize(controls.resolutionScale)
+    const cssViewport = this.readCssViewportSize()
+    this.ensureOutputSize(controls.resolutionScale, cssViewport)
     const state = this.stateSets[this.readStateIndex]
     if (!this.outputFramebuffer || !this.outputTexture) {
       throw new Error('P027 output framebuffer is unavailable')
@@ -330,15 +334,15 @@ export class FireP027WebGlEngine implements FireP027Surface {
     gl.uniform1i(uniform(gl, this.rasterProgram, 'uFireLayers'), 4)
     gl.uniform4f(
       uniform(gl, this.rasterProgram, 'uSizeOrthoSlots'),
-      controls.sizeX,
-      controls.sizeY,
+      controls.spriteWidthCssPx,
+      controls.spriteHeightCssPx,
       1,
       FIRE_P027_SLOT_COUNT
     )
     gl.uniform4f(
-      uniform(gl, this.rasterProgram, 'uOutputLayers'),
-      this.outputWidthValue,
-      this.outputHeightValue,
+      uniform(gl, this.rasterProgram, 'uCssViewportLayers'),
+      cssViewport.width,
+      cssViewport.height,
       FIRE_P027_LAYER_COUNT,
       0
     )
@@ -594,20 +598,36 @@ export class FireP027WebGlEngine implements FireP027Surface {
       this.snapshotIndexValue >= FIRE_P027_LAYER_COUNT
   }
 
-  private ensureOutputSize(resolutionScale: number): void {
+  private readCssViewportSize(): { height: number; width: number } {
+    const widthCandidate = this.canvas.clientWidth || this.canvas.width || 1
+    const heightCandidate = this.canvas.clientHeight || this.canvas.height || 1
+    return {
+      width:
+        Number.isFinite(widthCandidate) && widthCandidate > 0
+          ? widthCandidate
+          : 1,
+      height:
+        Number.isFinite(heightCandidate) && heightCandidate > 0
+          ? heightCandidate
+          : 1,
+    }
+  }
+
+  private ensureOutputSize(
+    resolutionScale: number,
+    cssViewport: Readonly<{ height: number; width: number }>
+  ): void {
     const gl = this.gl
     const maxSize = numberGlParameter(gl, gl.MAX_TEXTURE_SIZE)
     const scale = clamp(resolutionScale, 0.25, 1)
-    const cssWidth = Math.max(
-      1,
-      this.canvas.clientWidth || this.canvas.width || 1
+    const width = Math.min(
+      maxSize,
+      Math.max(1, Math.round(cssViewport.width * scale))
     )
-    const cssHeight = Math.max(
-      1,
-      this.canvas.clientHeight || this.canvas.height || 1
+    const height = Math.min(
+      maxSize,
+      Math.max(1, Math.round(cssViewport.height * scale))
     )
-    const width = Math.min(maxSize, Math.max(1, Math.round(cssWidth * scale)))
-    const height = Math.min(maxSize, Math.max(1, Math.round(cssHeight * scale)))
     if (width === this.outputWidthValue && height === this.outputHeightValue) {
       return
     }

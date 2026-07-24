@@ -38,6 +38,44 @@ describe('P027 Fire visual compositing quality', () => {
     expect(visible.r).toBeGreaterThan(dark.r)
   })
 
+  it('keeps additive sprite energy monotonic as source alpha and overlap rise', () => {
+    const byAlpha = [0.08, 0.24, 0.5, 0.9].map((alpha) =>
+      composeFireP027SpriteSample(
+        { r: 0.62, g: 0.21, b: 0.018, a: alpha },
+        WHITE_TINT,
+        1
+      )
+    )
+    for (let index = 1; index < byAlpha.length; index += 1) {
+      const previous = byAlpha[index - 1]!
+      const current = byAlpha[index]!
+      expect(current.r).toBeGreaterThanOrEqual(previous.r)
+      expect(current.g).toBeGreaterThanOrEqual(previous.g)
+      expect(current.b).toBeGreaterThanOrEqual(previous.b)
+      expect(current.a).toBeGreaterThanOrEqual(previous.a)
+    }
+
+    const overlapAlphas = [1, 2, 4, 8, 16, 32].map(
+      (count) =>
+        toneMapFireP027DisplaySample(
+          accumulateSamples(
+            Array.from({ length: count }, () =>
+              composeFireP027SpriteSample(
+                { r: 0.62, g: 0.21, b: 0.018, a: 0.5 },
+                WHITE_TINT,
+                1
+              )
+            )
+          )
+        ).a
+    )
+    for (let index = 1; index < overlapAlphas.length; index += 1) {
+      expect(overlapAlphas[index]).toBeGreaterThanOrEqual(
+        overlapAlphas[index - 1]!
+      )
+    }
+  })
+
   it('tone maps brightness monotonically with finite bounded alpha', () => {
     const samples = [0, 0.08, 0.25, 0.8, 2, 8].map((energy) =>
       toneMapFireP027DisplaySample({
@@ -59,6 +97,38 @@ describe('P027 Fire visual compositing quality', () => {
       expect(sample.a).toBeGreaterThanOrEqual(0)
       expect(sample.a).toBeLessThanOrEqual(1)
     }
+  })
+
+  it('derives bounded coverage from linear display luminance before RGB gamma', () => {
+    const black = toneMapFireP027DisplaySample({ r: 0, g: 0, b: 0, a: 9 })
+    const dark = toneMapFireP027DisplaySample({
+      r: 0.005,
+      g: 0.001,
+      b: 0,
+      a: 9,
+    })
+    const orange = toneMapFireP027DisplaySample({
+      r: 0.8,
+      g: 0.25,
+      b: 0.02,
+      a: 0,
+    })
+    const hot = toneMapFireP027DisplaySample({
+      r: 8,
+      g: 5,
+      b: 0.4,
+      a: 0,
+    })
+
+    expect(black).toEqual({ r: 0, g: 0, b: 0, a: 0 })
+    expect(dark.a).toBeGreaterThan(0)
+    expect(dark.a).toBeLessThan(0.01)
+    expect(orange.a).toBeGreaterThan(0.25)
+    expect(orange.a).toBeLessThan(0.7)
+    expect(hot.a).toBeGreaterThan(0.9)
+    expect(hot.a).toBeLessThanOrEqual(1)
+    expect(orange.r).toBeGreaterThan(orange.g)
+    expect(orange.g).toBeGreaterThan(orange.b)
   })
 
   it('produces a yellow-white core without flattening the whole result to white', () => {
@@ -243,7 +313,7 @@ describe('P027 Fire visual compositing quality', () => {
     }
   })
 
-  it('caps dense finite overlap at the same 0.86 display-alpha boundary in CPU and GLSL', () => {
+  it('lets dense finite overlap approach opaque coverage without a sub-unity cap', () => {
     const controls = mapFireParametersToP027Controls({
       masterIntensity: 1,
       temperature: 1,
@@ -262,30 +332,35 @@ describe('P027 Fire visual compositing quality', () => {
       )
     )
     const display = toneMapFireP027DisplaySample(denseOverlap)
-    const shaderAlphaCap = FIRE_P027_DISPLAY_FRAGMENT_SHADER.match(
-      /float visibleAlpha = min\(\s*([0-9.]+),/
-    )
 
-    expect(shaderAlphaCap).not.toBeNull()
-    expect(Number(shaderAlphaCap?.[1])).toBe(0.86)
-    expect(display.a).toBeGreaterThanOrEqual(0.84)
-    expect(display.a).toBeLessThanOrEqual(Number(shaderAlphaCap?.[1]))
-    expect(display.a).toBeLessThanOrEqual(0.86)
+    expect(display.a).toBeGreaterThan(0.95)
+    expect(display.a).toBeLessThanOrEqual(1)
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('0.86')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('dot(displayLinearRgb')
   })
 
-  it('locks the shader to one premultiplication and luminance-correlated alpha', () => {
+  it('locks the shader to monotonic additive energy and straight display RGBA', () => {
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).not.toContain(
       'sourceColor.rgb *= sourceColor.a'
     )
-    expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain(
-      'float spriteCoverage = sqrt(spriteAlpha);'
+    expect(FIRE_P027_RASTER_FRAGMENT_SHADER).not.toContain('spriteCoverage')
+    expect(FIRE_P027_RASTER_FRAGMENT_SHADER).not.toContain(
+      'sourceColor * (1.0 - sourceColor.a)'
     )
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain(
-      'fragColor = sourceColor * (1.0 - sourceColor.a);'
+      'fragColor = vec4(sourceRgb, correlatedAlpha);'
     )
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain('correlatedAlpha')
-    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('mappedLuminance')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
+      'toneMappedLinearLuminance'
+    )
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
+      'vec3 displayRgb = pow('
+    )
     expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('visibleAlpha')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
+      'fragColor = vec4(displayRgb, visibleAlpha);'
+    )
   })
 })
 

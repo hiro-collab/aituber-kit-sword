@@ -40,7 +40,8 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(controls.originCenterY).toBeCloseTo(-0.14)
     expect(controls.lifeSeconds).toBe(2)
     expect(controls.birthPerSecond).toBe(66)
-    expect(controls.sizeX).toBe(0.225)
+    expect(controls.spriteWidthCssPx).toBe(72)
+    expect(controls.spriteHeightCssPx).toBeCloseTo(80.64)
     expect(controls.forceY).toBe(4)
     expect(controls.windY).toBe(3)
     expect(controls.turbulenceX).toBe(6)
@@ -101,8 +102,8 @@ describe('P027 Fire renderer lifecycle', () => {
     })
     const occupancy = (controls: typeof weak) =>
       controls.birthPerSecond * controls.lifeSeconds
-    const footprint = (controls: typeof weak) =>
-      occupancy(controls) * controls.sizeX * controls.sizeY
+    const spriteArea = (controls: typeof weak) =>
+      controls.spriteWidthCssPx * controls.spriteHeightCssPx
     const energy = (controls: typeof weak) =>
       controls.tintR + controls.tintG + controls.tintB
 
@@ -114,10 +115,17 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(occupancy(strong)).toBeLessThan(FIRE_P027_SLOT_COUNT)
     expect(occupancy(weak)).toBeLessThan(occupancy(medium))
     expect(occupancy(medium)).toBeLessThan(occupancy(strong))
-    expect(weak.sizeX).toBeLessThan(medium.sizeX)
-    expect(medium.sizeX).toBeLessThan(strong.sizeX)
-    expect(footprint(weak)).toBeLessThan(footprint(medium))
-    expect(footprint(medium)).toBeLessThan(footprint(strong))
+    expect(weak.spriteWidthCssPx).toBeCloseTo(49.344)
+    expect(medium.spriteWidthCssPx).toBeCloseTo(70.656)
+    expect(strong.spriteWidthCssPx).toBeCloseTo(93.984)
+    expect(weak.spriteHeightCssPx).toBeCloseTo(55.26528)
+    expect(medium.spriteHeightCssPx).toBeCloseTo(79.13472)
+    expect(strong.spriteHeightCssPx).toBeCloseTo(105.26208)
+    expect(weak.spriteWidthCssPx).toBeLessThan(medium.spriteWidthCssPx)
+    expect(medium.spriteWidthCssPx).toBeLessThan(strong.spriteWidthCssPx)
+    expect(spriteArea(weak)).toBeLessThan(spriteArea(medium))
+    expect(spriteArea(medium)).toBeLessThan(spriteArea(strong))
+    expect(weak.spriteWidthCssPx).toBeLessThan(60)
     expect(energy(weak)).toBeLessThan(energy(medium))
     expect(energy(medium)).toBeLessThan(energy(strong))
     expect(off).toEqual(

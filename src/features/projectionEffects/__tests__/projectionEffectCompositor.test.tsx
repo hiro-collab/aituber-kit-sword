@@ -37,12 +37,14 @@ describe('ProjectionEffectCompositor', () => {
     expect(canvases).toHaveLength(2)
     expect(view.getByTestId('projection-effect-webgl2-canvas')).toHaveStyle({
       zIndex: '0',
-      mixBlendMode: 'screen',
+      mixBlendMode: 'normal',
     })
     expect(view.getByTestId('projection-effect-canvas2d-canvas')).toHaveStyle({
       zIndex: '1',
-      mixBlendMode: 'screen',
+      mixBlendMode: 'normal',
     })
+    expect(root).toHaveStyle({ isolation: 'isolate' })
+    expect(root.querySelector('[style*="mix-blend-mode: screen"]')).toBeNull()
   })
 
   it('owns at most one RAF and rejects a cancelled stale callback', async () => {

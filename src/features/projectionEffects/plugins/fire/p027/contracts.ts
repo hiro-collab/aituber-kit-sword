@@ -13,8 +13,8 @@ export const FIRE_P027_STATE_PORTS = Object.freeze([
 export interface FireP027Controls {
   birthPerSecond: number
   lifeSeconds: number
-  sizeX: number
-  sizeY: number
+  spriteWidthCssPx: number
+  spriteHeightCssPx: number
   resolutionScale: number
   inputLagSeconds: number
   originSeed: number
@@ -52,8 +52,8 @@ export const FIRE_P027_DEFAULT_CONTROLS: Readonly<FireP027Controls> =
   Object.freeze({
     birthPerSecond: 300,
     lifeSeconds: 0.5,
-    sizeX: 0.3,
-    sizeY: 0.3,
+    spriteWidthCssPx: 96,
+    spriteHeightCssPx: 96,
     resolutionScale: 0.75,
     inputLagSeconds: 0.1,
     originSeed: 0,

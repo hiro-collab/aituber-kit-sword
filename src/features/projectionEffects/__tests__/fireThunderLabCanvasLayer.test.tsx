@@ -314,7 +314,7 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
       expect.objectContaining({
         originCenterX: -0.5,
         originCenterY: 0.14,
-        sizeX: 0.1,
+        spriteWidthCssPx: 24,
       })
     )
     expect(requestCallbacks.size).toBe(1)
@@ -331,7 +331,7 @@ describe('standalone Fire+Thunder lab registry and canvas lifecycle', () => {
       expect.objectContaining({
         originCenterX: 0,
         originCenterY: 0,
-        sizeX: 0.25,
+        spriteWidthCssPx: 60,
       })
     )
 

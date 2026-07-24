@@ -44,6 +44,8 @@ describe('P027 Fire source/static contract', () => {
     controls.birthPerSecond = 12
     expect(FIRE_P027_DEFAULT_CONTROLS.birthPerSecond).toBe(300)
     expect(FIRE_P027_DEFAULT_CONTROLS.lifeSeconds).toBe(0.5)
+    expect(FIRE_P027_DEFAULT_CONTROLS.spriteWidthCssPx).toBe(96)
+    expect(FIRE_P027_DEFAULT_CONTROLS.spriteHeightCssPx).toBe(96)
     expect(FIRE_P027_DEFAULT_CONTROLS.inputLagSeconds).toBe(0.1)
     expect(Object.isFrozen(FIRE_P027_DEFAULT_CONTROLS)).toBe(true)
   })
@@ -75,8 +77,11 @@ describe('P027 Fire source/static contract', () => {
     )
     expect(FIRE_P027_GENERATOR_FRAGMENT_SHADER).toContain('float fbm(')
     expect(FIRE_P027_RASTER_VERTEX_SHADER).toContain('gl_InstanceID')
+    expect(FIRE_P027_RASTER_VERTEX_SHADER).toContain(
+      'spriteCssSize * 2.0 / cssViewport'
+    )
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain(
-      'sourceColor * (1.0 - sourceColor.a)'
+      'fragColor = vec4(sourceRgb, correlatedAlpha)'
     )
   })
 })

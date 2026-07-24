@@ -12,9 +12,6 @@ const FIRE_P027_ALPHA_LUMA_START = 0.015
 const FIRE_P027_ALPHA_LUMA_END = 0.18
 const FIRE_P027_DISPLAY_EXPOSURE = 1.32
 const FIRE_P027_DISPLAY_GAMMA = 1.8
-const FIRE_P027_DISPLAY_ALPHA_GAIN = 0.86
-const FIRE_P027_DISPLAY_ALPHA_LUMA_START = 0.02
-const FIRE_P027_DISPLAY_ALPHA_LUMA_END = 0.12
 const FIRE_P027_CORE_LUMA_START = 0.72
 const FIRE_P027_CORE_LUMA_END = 0.94
 const FIRE_P027_CORE_MIX = 0.62
@@ -26,11 +23,9 @@ const FIRE_P027_CORE_COLOR = {
 
 /**
  * CPU reference for the raster shader's additive contribution.
- * Generator RGB is already alpha-shaped. Rasterization applies only a softened
- * square-root coverage attenuation: this suppresses low-alpha fog without
- * reintroducing the reference implementation's full second alpha multiply.
- * Alpha remains tied to visible energy so transparent black cannot accumulate
- * into a dark opaque veil.
+ * Generator RGB is already alpha-shaped, so rasterization keeps its energy
+ * monotonic instead of multiplying it by alpha again. Alpha remains tied to
+ * visible energy so transparent black cannot accumulate into a dark veil.
  */
 export function composeFireP027SpriteSample(
   sprite: Readonly<FireP027ColorSample>,
@@ -40,27 +35,11 @@ export function composeFireP027SpriteSample(
   const safeOpacity = clamp01(opacity)
   const tintAlpha = clamp01(tint.a)
   const spriteAlpha = clamp01(sprite.a)
-  const spriteCoverage = Math.sqrt(spriteAlpha)
   const sourceAlpha = spriteAlpha * tintAlpha * safeOpacity
   const sourceRgb = {
-    r:
-      nonNegative(sprite.r) *
-      nonNegative(tint.r) *
-      tintAlpha *
-      safeOpacity *
-      spriteCoverage,
-    g:
-      nonNegative(sprite.g) *
-      nonNegative(tint.g) *
-      tintAlpha *
-      safeOpacity *
-      spriteCoverage,
-    b:
-      nonNegative(sprite.b) *
-      nonNegative(tint.b) *
-      tintAlpha *
-      safeOpacity *
-      spriteCoverage,
+    r: nonNegative(sprite.r) * nonNegative(tint.r) * tintAlpha * safeOpacity,
+    g: nonNegative(sprite.g) * nonNegative(tint.g) * tintAlpha * safeOpacity,
+    b: nonNegative(sprite.b) * nonNegative(tint.b) * tintAlpha * safeOpacity,
   }
   const sourceLuminance = luminance(sourceRgb)
   const correlatedAlpha =
@@ -70,12 +49,11 @@ export function composeFireP027SpriteSample(
       FIRE_P027_ALPHA_LUMA_END,
       sourceLuminance
     )
-  const remaining = 1 - correlatedAlpha
   return {
-    r: sourceRgb.r * remaining,
-    g: sourceRgb.g * remaining,
-    b: sourceRgb.b * remaining,
-    a: correlatedAlpha * remaining,
+    r: sourceRgb.r,
+    g: sourceRgb.g,
+    b: sourceRgb.b,
+    a: correlatedAlpha,
   }
 }
 
@@ -83,37 +61,28 @@ export function composeFireP027SpriteSample(
 export function toneMapFireP027DisplaySample(
   accumulated: Readonly<FireP027ColorSample>
 ): FireP027ColorSample {
-  const mapped = {
-    r: toneMapChannel(accumulated.r),
-    g: toneMapChannel(accumulated.g),
-    b: toneMapChannel(accumulated.b),
+  const toneMappedLinearRgb = {
+    r: toneMapLinearChannel(accumulated.r),
+    g: toneMapLinearChannel(accumulated.g),
+    b: toneMapLinearChannel(accumulated.b),
   }
-  const mappedLuminance = luminance(mapped)
+  const toneMappedLinearLuminance = luminance(toneMappedLinearRgb)
   const core =
     smoothstep(
       FIRE_P027_CORE_LUMA_START,
       FIRE_P027_CORE_LUMA_END,
-      mappedLuminance
+      toneMappedLinearLuminance
     ) * FIRE_P027_CORE_MIX
-  const visibleAlpha = Math.min(
-    FIRE_P027_DISPLAY_ALPHA_GAIN,
-    clamp01(
-      Math.max(
-        clamp01(accumulated.a) * FIRE_P027_DISPLAY_ALPHA_GAIN,
-        mappedLuminance
-      )
-    ) *
-      smoothstep(
-        FIRE_P027_DISPLAY_ALPHA_LUMA_START,
-        FIRE_P027_DISPLAY_ALPHA_LUMA_END,
-        mappedLuminance
-      )
-  )
+  const displayLinearRgb = {
+    r: mix(toneMappedLinearRgb.r, FIRE_P027_CORE_COLOR.r, core),
+    g: mix(toneMappedLinearRgb.g, FIRE_P027_CORE_COLOR.g, core),
+    b: mix(toneMappedLinearRgb.b, FIRE_P027_CORE_COLOR.b, core),
+  }
   return {
-    r: mix(mapped.r, FIRE_P027_CORE_COLOR.r, core),
-    g: mix(mapped.g, FIRE_P027_CORE_COLOR.g, core),
-    b: mix(mapped.b, FIRE_P027_CORE_COLOR.b, core),
-    a: visibleAlpha,
+    r: gammaEncodeChannel(displayLinearRgb.r),
+    g: gammaEncodeChannel(displayLinearRgb.g),
+    b: gammaEncodeChannel(displayLinearRgb.b),
+    a: clamp01(luminance(displayLinearRgb)),
   }
 }
 
@@ -435,7 +404,7 @@ uniform sampler2D uGenerationLife;
 uniform sampler2D uVelocityOpacity;
 uniform sampler2D uControlRelay;
 uniform vec4 uSizeOrthoSlots;
-uniform vec4 uOutputLayers;
+uniform vec4 uCssViewportLayers;
 out vec2 vLocal;
 out float vOpacity;
 flat out int vLayer;
@@ -455,15 +424,20 @@ void main() {
   vec4 positionAge = texelFetch(uPositionAge, ivec2(slot, 0), 0);
   vec4 velocityOpacity = texelFetch(uVelocityOpacity, ivec2(slot, 0), 0);
   float sizeGate = clamp(texelFetch(uControlRelay, ivec2(0, 0), 0).g, 0.0, 1.0);
-  vec2 spriteSize = max(uSizeOrthoSlots.xy * sizeGate, vec2(1e-6));
-  vec2 world = positionAge.xy + (aCorner - vec2(0.5)) * spriteSize;
-  vec2 outputSize = max(uOutputLayers.xy, vec2(1.0));
-  float aspect = outputSize.x / outputSize.y;
+  vec2 cssViewport = max(uCssViewportLayers.xy, vec2(1.0));
+  vec2 spriteCssSize = max(uSizeOrthoSlots.xy * sizeGate, vec2(1e-6));
+  float aspect = cssViewport.x / cssViewport.y;
   float ortho = max(uSizeOrthoSlots.z, 1e-6);
-  gl_Position = vec4(world.x * 2.0 / ortho, world.y * 2.0 * aspect / ortho, 0.0, 1.0);
+  vec2 centerClip = vec2(
+    positionAge.x * 2.0 / ortho,
+    positionAge.y * 2.0 * aspect / ortho
+  );
+  vec2 spriteClipOffset = (aCorner - vec2(0.5))
+    * spriteCssSize * 2.0 / cssViewport;
+  gl_Position = vec4(centerClip + spriteClipOffset, 0.0, 1.0);
   float phase = float(slot) / float(max(int(uSizeOrthoSlots.w + 0.5) - 1, 1)) * 60.0;
   float lifePhase = generationLife.a > 0.0 ? positionAge.a / generationLife.a * 60.0 : 0.0;
-  vLayer = clamp(int(floor(phase + lifePhase + 0.5)), 0, max(int(uOutputLayers.z + 0.5) - 1, 0));
+  vLayer = clamp(int(floor(phase + lifePhase + 0.5)), 0, max(int(uCssViewportLayers.z + 0.5) - 1, 0));
   vOpacity = clamp(velocityOpacity.a, 0.0, 1.0);
 }`
 
@@ -482,16 +456,13 @@ void main() {
   vec4 sprite = texture(uFireLayers, vec3(vLocal.x, 1.0 - vLocal.y, float(vLayer)));
   float safeOpacity = clamp(vOpacity, 0.0, 1.0);
   float tintAlpha = clamp(uTint.a, 0.0, 1.0);
-  float spriteAlpha = clamp(sprite.a, 0.0, 1.0);
-  float spriteCoverage = sqrt(spriteAlpha);
-  float sourceAlpha = spriteAlpha * tintAlpha * safeOpacity;
+  float sourceAlpha = clamp(sprite.a, 0.0, 1.0) * tintAlpha * safeOpacity;
   vec3 sourceRgb = max(sprite.rgb, vec3(0.0))
-    * max(uTint.rgb, vec3(0.0)) * tintAlpha * safeOpacity * spriteCoverage;
+    * max(uTint.rgb, vec3(0.0)) * tintAlpha * safeOpacity;
   float sourceLuminance = dot(sourceRgb, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B}));
   float correlatedAlpha = sourceAlpha
     * smoothstep(${FIRE_P027_ALPHA_LUMA_START}, ${FIRE_P027_ALPHA_LUMA_END}, sourceLuminance);
-  vec4 sourceColor = vec4(sourceRgb, correlatedAlpha);
-  fragColor = sourceColor * (1.0 - sourceColor.a);
+  fragColor = vec4(sourceRgb, correlatedAlpha);
 }`
 
 export const FIRE_P027_DISPLAY_FRAGMENT_SHADER = `#version 300 es
@@ -502,30 +473,33 @@ layout(location = 0) out vec4 fragColor;
 void main() {
   vec4 accumulated = texture(uAccumulatedFire, vUV);
   vec3 nonNegativeRgb = max(accumulated.rgb, vec3(0.0));
-  vec3 mapped = vec3(1.0) - exp(-nonNegativeRgb * ${FIRE_P027_DISPLAY_EXPOSURE});
-  mapped = pow(clamp(mapped, vec3(0.0), vec3(1.0)), vec3(1.0 / ${FIRE_P027_DISPLAY_GAMMA}));
-  float mappedLuminance = dot(mapped, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B}));
-  float core = smoothstep(${FIRE_P027_CORE_LUMA_START}, ${FIRE_P027_CORE_LUMA_END}, mappedLuminance)
+  vec3 toneMappedLinearRgb = vec3(1.0) - exp(-nonNegativeRgb * ${FIRE_P027_DISPLAY_EXPOSURE});
+  float toneMappedLinearLuminance = dot(toneMappedLinearRgb, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B}));
+  float core = smoothstep(${FIRE_P027_CORE_LUMA_START}, ${FIRE_P027_CORE_LUMA_END}, toneMappedLinearLuminance)
     * ${FIRE_P027_CORE_MIX};
-  vec3 displayRgb = mix(mapped, vec3(${FIRE_P027_CORE_COLOR.r.toFixed(2)}, ${FIRE_P027_CORE_COLOR.g.toFixed(2)}, ${FIRE_P027_CORE_COLOR.b.toFixed(2)}), core);
-  float visibleAlpha = min(
-    ${FIRE_P027_DISPLAY_ALPHA_GAIN},
-    clamp(
-      max(clamp(accumulated.a, 0.0, 1.0) * ${FIRE_P027_DISPLAY_ALPHA_GAIN}, mappedLuminance),
-      0.0,
-      1.0
-    ) * smoothstep(
-      ${FIRE_P027_DISPLAY_ALPHA_LUMA_START},
-      ${FIRE_P027_DISPLAY_ALPHA_LUMA_END},
-      mappedLuminance
-    )
+  vec3 displayLinearRgb = mix(
+    toneMappedLinearRgb,
+    vec3(${FIRE_P027_CORE_COLOR.r.toFixed(2)}, ${FIRE_P027_CORE_COLOR.g.toFixed(2)}, ${FIRE_P027_CORE_COLOR.b.toFixed(2)}),
+    core
+  );
+  float visibleAlpha = clamp(
+    dot(displayLinearRgb, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B})),
+    0.0,
+    1.0
+  );
+  vec3 displayRgb = pow(
+    clamp(displayLinearRgb, vec3(0.0), vec3(1.0)),
+    vec3(1.0 / ${FIRE_P027_DISPLAY_GAMMA})
   );
   fragColor = vec4(displayRgb, visibleAlpha);
 }`
 
-function toneMapChannel(value: number): number {
-  const mapped = 1 - Math.exp(-nonNegative(value) * FIRE_P027_DISPLAY_EXPOSURE)
-  return Math.pow(clamp01(mapped), 1 / FIRE_P027_DISPLAY_GAMMA)
+function toneMapLinearChannel(value: number): number {
+  return 1 - Math.exp(-nonNegative(value) * FIRE_P027_DISPLAY_EXPOSURE)
+}
+
+function gammaEncodeChannel(value: number): number {
+  return Math.pow(clamp01(value), 1 / FIRE_P027_DISPLAY_GAMMA)
 }
 
 function coherentNoise1(

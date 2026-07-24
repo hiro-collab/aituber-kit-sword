@@ -254,7 +254,7 @@ export function mapFireParametersToP027Controls(
     0,
     1
   )
-  const sizeX = clamp(pointSize / 320, 0.015, 0.5)
+  const spriteWidthCssPx = pointSize
   const motionScale = upwardSpeed / 0.58
   const turbulenceScale = noiseStrength / 0.34
   const dissipation = clamp(
@@ -273,8 +273,8 @@ export function mapFireParametersToP027Controls(
       capacityBirth
     ),
     lifeSeconds,
-    sizeX,
-    sizeY: sizeX * 1.12,
+    spriteWidthCssPx,
+    spriteHeightCssPx: spriteWidthCssPx * 1.12,
     resolutionScale: clamp(
       numberParameter(parameters, 'internalResolutionScale', 0.75),
       0.25,

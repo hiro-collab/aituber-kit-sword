@@ -377,14 +377,14 @@ export const ProjectionEffectCompositor = forwardRef<
         className="absolute inset-0 h-full w-full"
         data-effect-surface-backend="webgl2"
         data-testid="projection-effect-webgl2-canvas"
-        style={{ mixBlendMode: 'screen', zIndex: 0 }}
+        style={{ mixBlendMode: 'normal', zIndex: 0 }}
       />
       <canvas
         ref={canvas2dCanvasRef}
         className="absolute inset-0 h-full w-full"
         data-effect-surface-backend="canvas2d"
         data-testid="projection-effect-canvas2d-canvas"
-        style={{ mixBlendMode: 'screen', zIndex: 1 }}
+        style={{ mixBlendMode: 'normal', zIndex: 1 }}
       />
     </div>
   )

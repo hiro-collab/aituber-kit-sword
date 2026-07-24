@@ -24,6 +24,8 @@ interface FakeResource {
 interface FakeP027WebGl2 {
   allocated: Record<ResourceKind, FakeResource[]>
   armDeleteFailure(kind: ResourceKind): void
+  blendEquation: jest.Mock
+  blendFunc: jest.Mock
   canvas: HTMLCanvasElement
   deleteAttempts: Record<ResourceKind, FakeResource[]>
   drawCalls: jest.Mock
@@ -40,6 +42,18 @@ const RESOURCE_KINDS: readonly ResourceKind[] = [
 ]
 
 const PRIVATE_NATIVE_DELETE_TEXT = 'private native driver delete detail'
+const CSS_FOOTPRINT_CASES = [
+  [640, 360, 0.1542, 0.3070293333333333],
+  [1280, 720, 0.0771, 0.15351466666666666],
+  [1920, 1080, 0.0514, 0.1023431111111111],
+].flatMap(([width, height, clipWidth, clipHeight]) =>
+  [1, 2].flatMap((dpr) =>
+    [0.25, 0.75, 1].map(
+      (resolutionScale) =>
+        [width, height, dpr, resolutionScale, clipWidth, clipHeight] as const
+    )
+  )
+)
 
 function resourceRecord(): Record<ResourceKind, FakeResource[]> {
   return {
@@ -53,6 +67,10 @@ function resourceRecord(): Record<ResourceKind, FakeResource[]> {
 
 function createFakeP027WebGl2(
   options: Readonly<{
+    backingHeight?: number
+    backingWidth?: number
+    clientHeight?: number
+    clientWidth?: number
     failDuringInitialization?: boolean
     failFirstDeleteKind?: ResourceKind
   }> = {}
@@ -118,6 +136,8 @@ function createFakeP027WebGl2(
     VERTEX_SHADER: 38,
   }
   const drawCalls = jest.fn()
+  const blendEquation = jest.fn()
+  const blendFunc = jest.fn()
   const uniform4f = jest.fn()
   const gl = {
     ...constants,
@@ -127,8 +147,8 @@ function createFakeP027WebGl2(
     bindFramebuffer: jest.fn(),
     bindTexture: jest.fn(),
     bindVertexArray: jest.fn(),
-    blendEquation: jest.fn(),
-    blendFunc: jest.fn(),
+    blendEquation,
+    blendFunc,
     bufferData: jest.fn(),
     checkFramebufferStatus: jest.fn(() => constants.FRAMEBUFFER_COMPLETE),
     clear: jest.fn(),
@@ -192,11 +212,11 @@ function createFakeP027WebGl2(
     viewport: jest.fn(),
   } as unknown as WebGL2RenderingContext
   const canvas = {
-    clientHeight: 720,
-    clientWidth: 1280,
+    clientHeight: options.clientHeight ?? 720,
+    clientWidth: options.clientWidth ?? 1280,
     getContext: jest.fn(() => gl),
-    height: 720,
-    width: 1280,
+    height: options.backingHeight ?? options.clientHeight ?? 720,
+    width: options.backingWidth ?? options.clientWidth ?? 1280,
   } as unknown as HTMLCanvasElement
 
   return {
@@ -205,6 +225,8 @@ function createFakeP027WebGl2(
       deleteFailureKind = kind
       deleteFailurePending = true
     },
+    blendEquation,
+    blendFunc,
     canvas,
     deleteAttempts,
     drawCalls,
@@ -241,6 +263,58 @@ describe('P027 Fire WebGL engine boundary', () => {
       'webgl2',
       expect.objectContaining({ alpha: true, premultipliedAlpha: false })
     )
+  })
+
+  it.each(CSS_FOOTPRINT_CASES)(
+    'keeps a 49.344 CSS-pixel sprite invariant at viewport %ix%i, DPR %i and scale %s',
+    (
+      clientWidth,
+      clientHeight,
+      dpr,
+      resolutionScale,
+      expectedClipWidth,
+      expectedClipHeight
+    ) => {
+      const fake = createFakeP027WebGl2({
+        clientHeight,
+        clientWidth,
+        backingHeight: clientHeight * dpr,
+        backingWidth: clientWidth * dpr,
+      })
+      const engine = new FireP027WebGlEngine(fake.canvas)
+      engine.draw({
+        ...FIRE_P027_DEFAULT_CONTROLS,
+        spriteWidthCssPx: 49.344,
+        spriteHeightCssPx: 55.26528,
+        resolutionScale,
+      })
+
+      expect(uniformVectors(fake, 'uSizeOrthoSlots')).toContainEqual([
+        49.344, 55.26528, 1, 150,
+      ])
+      expect(uniformVectors(fake, 'uCssViewportLayers')).toContainEqual([
+        clientWidth,
+        clientHeight,
+        120,
+        0,
+      ])
+      expect((49.344 * 2) / clientWidth).toBeCloseTo(expectedClipWidth, 12)
+      expect((55.26528 * 2) / clientHeight).toBeCloseTo(expectedClipHeight, 12)
+      expect((expectedClipWidth / 2) * clientWidth).toBeCloseTo(49.344, 12)
+      expect((expectedClipHeight / 2) * clientHeight).toBeCloseTo(55.26528, 12)
+      engine.dispose()
+    }
+  )
+
+  it('retains additive ONE/ONE accumulation behind a straight-alpha display', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+
+    engine.draw(FIRE_P027_DEFAULT_CONTROLS)
+
+    expect(fake.blendEquation).toHaveBeenCalledWith(12)
+    expect(fake.blendFunc).toHaveBeenCalledWith(21, 21)
+    engine.dispose()
   })
 
   it('generates the same bounded 42 origins for the same semantic input', () => {
