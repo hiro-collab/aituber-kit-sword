@@ -46,16 +46,40 @@ describe('Thunder Ball WebGL2 engine', () => {
       const position = [(vertexId << 1) & 2, vertexId & 2] as const
       return {
         clip: [position[0] * 2 - 1, position[1] * 2 - 1],
-        uv: [position[0] * 0.5, position[1] * 0.5],
+        uv: [position[0], position[1]],
       }
     })
 
     expect(vertices).toEqual([
       { clip: [-1, -1], uv: [0, 0] },
-      { clip: [3, -1], uv: [1, 0] },
-      { clip: [-1, 3], uv: [0, 1] },
+      { clip: [3, -1], uv: [2, 0] },
+      { clip: [-1, 3], uv: [0, 2] },
     ])
-    expect(THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER).toContain(
+    expect(
+      [
+        [-1, -1],
+        [1, -1],
+        [-1, 1],
+        [1, 1],
+      ].map(([clipX, clipY]) => {
+        const weightB = (clipX + 1) / 4
+        const weightC = (clipY + 1) / 4
+        const weightA = 1 - weightB - weightC
+        return vertices[0]!.uv.map(
+          (_, axis) =>
+            vertices[0]!.uv[axis]! * weightA +
+            vertices[1]!.uv[axis]! * weightB +
+            vertices[2]!.uv[axis]! * weightC
+        )
+      })
+    ).toEqual([
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+    ])
+    expect(THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER).toContain('vUv = position;')
+    expect(THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER).not.toContain(
       'vUv = position * 0.5;'
     )
     expect(THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER).toContain(
