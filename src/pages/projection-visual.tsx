@@ -23,6 +23,7 @@ import { ProjectionVisualAssistantBubble } from '@/components/projectionVisualAs
 import { ProjectionVisualDisplayStateBridge } from '@/components/projectionVisualDisplayStateBridge'
 import { ProjectionVisualCalibrationPanel } from '@/components/projectionVisualCalibrationPanel'
 import homeStore from '@/features/stores/home'
+import projectionDisplayStore from '@/features/stores/projectionDisplay'
 import settingsStore from '@/features/stores/settings'
 import toastStore from '@/features/stores/toast'
 import { usePresetLoader } from '@/features/presets/usePresetLoader'
@@ -117,6 +118,9 @@ const ProjectionVisual = () => {
   const captureHandleClearFailedRef = useRef(false)
   const messageReceiverEnabled = settingsStore((s) => s.messageReceiverEnabled)
   const modelType = settingsStore((s) => s.modelType)
+  const remoteSpeechOutputActive = projectionDisplayStore(
+    (s) => s.speechOutputActive
+  )
   const projectionEffects = resolveProjectionEffectsSettings(
     settingsStore((s) => s.projectionEffects)
   )
@@ -288,6 +292,9 @@ const ProjectionVisual = () => {
       data-projection-effect-id={projectionEffectId ?? 'none'}
       data-projection-effect-host-state={projectionEffectHostState}
       data-projection-effect-receiver-state={projectionEffectReceiverState}
+      data-projection-avatar-speech-motion={
+        isDisplayOnlyMode && remoteSpeechOutputActive ? 'active' : 'idle'
+      }
       data-projection-capture-handle-status="inactive"
     >
       <Meta />
@@ -305,6 +312,9 @@ const ProjectionVisual = () => {
         <VrmViewer
           visualTestMode={projectionVisualTestMode}
           motionStimulusAssetPath={motionStimulusAssetPath}
+          remoteSpeechOutputActive={
+            isDisplayOnlyMode ? remoteSpeechOutputActive : undefined
+          }
           onDanceLifecycleAcceptanceReady={handleDanceLifecycleAcceptanceReady}
         />
       )}

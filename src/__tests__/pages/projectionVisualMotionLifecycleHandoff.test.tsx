@@ -17,6 +17,7 @@ const passiveProjectionVisualQueryState = {
   shouldRenderHud: false,
 }
 let mockProjectionVisualQueryState = passiveProjectionVisualQueryState
+let mockRemoteSpeechOutputActive = true
 const originalBroadcastChannel = globalThis.BroadcastChannel
 const pageBroadcastChannels = new Set<PageBroadcastChannel>()
 const mockPageLabController = {
@@ -104,6 +105,12 @@ jest.mock('@/features/stores/settings', () => {
   store.setState = jest.fn()
   return { __esModule: true, default: store }
 })
+jest.mock('@/features/stores/projectionDisplay', () => {
+  const store = (
+    selector: (value: { speechOutputActive: boolean }) => unknown
+  ) => selector({ speechOutputActive: mockRemoteSpeechOutputActive })
+  return { __esModule: true, default: store }
+})
 jest.mock('@/features/presets/usePresetLoader', () => ({
   usePresetLoader: jest.fn(),
 }))
@@ -125,15 +132,22 @@ jest.mock('@/components/vrmViewer', () => ({
   __esModule: true,
   default: function MockVrmViewer({
     onDanceLifecycleAcceptanceReady,
+    remoteSpeechOutputActive,
   }: {
     onDanceLifecycleAcceptanceReady: (value: typeof predicate) => void
+    remoteSpeechOutputActive?: boolean
   }) {
     const { useEffect } = require('react') as typeof import('react')
     useEffect(
       () => onDanceLifecycleAcceptanceReady(predicate),
       [onDanceLifecycleAcceptanceReady]
     )
-    return <div data-testid="mock-projection-vrm-viewer" />
+    return (
+      <div
+        data-testid="mock-projection-vrm-viewer"
+        data-remote-speech-active={String(Boolean(remoteSpeechOutputActive))}
+      />
+    )
   },
 }))
 jest.mock(
@@ -255,6 +269,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     pageBroadcastChannels.clear()
     jest.clearAllMocks()
     bridgePredicate = undefined
+    mockRemoteSpeechOutputActive = true
     mockProjectionVisualQueryState = passiveProjectionVisualQueryState
   })
 
@@ -285,13 +300,18 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
       projectionVisualMode: 'stage-output',
     }
 
-    render(<ProjectionVisual />)
+    const { container } = render(<ProjectionVisual />)
 
     const avatar = screen.getByTestId('mock-projection-vrm-viewer')
     const effect = screen.getByTestId('avatar-fire-thunder-effect-layer')
     const bubble = screen.getByTestId('mock-projection-assistant-bubble')
 
     expect(screen.getAllByTestId('mock-projection-vrm-viewer')).toHaveLength(1)
+    expect(avatar).toHaveAttribute('data-remote-speech-active', 'true')
+    expect(container.firstElementChild).toHaveAttribute(
+      'data-projection-avatar-speech-motion',
+      'active'
+    )
     expect(
       screen.getAllByTestId('avatar-fire-thunder-effect-layer')
     ).toHaveLength(1)

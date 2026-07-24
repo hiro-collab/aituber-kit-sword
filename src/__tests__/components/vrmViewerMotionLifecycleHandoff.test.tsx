@@ -7,6 +7,9 @@ const viewer = {
   isReady: true,
   setup: jest.fn(),
   loadVrm: jest.fn().mockResolvedValue(undefined),
+  model: {
+    setPassiveSpeechOutputActive: jest.fn(),
+  },
   setMotionRuntimeAssetPath: jest.fn(),
   getDanceLifecycleAcceptancePredicate: jest.fn(() => predicate),
   receiveMotionStimulus: jest.fn(),
@@ -53,5 +56,27 @@ describe('VrmViewer dance lifecycle handoff', () => {
 
     unmount()
     expect(onDanceLifecycleAcceptanceReady).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('follows remote speech activity without replaying audio and clears it on unmount', async () => {
+    const { rerender, unmount } = render(
+      <VrmViewer remoteSpeechOutputActive={true} />
+    )
+
+    await waitFor(() =>
+      expect(viewer.model.setPassiveSpeechOutputActive).toHaveBeenCalledWith(
+        true
+      )
+    )
+
+    rerender(<VrmViewer remoteSpeechOutputActive={false} />)
+    expect(viewer.model.setPassiveSpeechOutputActive).toHaveBeenLastCalledWith(
+      false
+    )
+
+    unmount()
+    expect(viewer.model.setPassiveSpeechOutputActive).toHaveBeenLastCalledWith(
+      false
+    )
   })
 })

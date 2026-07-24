@@ -75,6 +75,19 @@ export interface MotionRuntimeExpressionValueSummary {
   last_frame_seq: number | null
 }
 
+export const calculatePassiveSpeechMouthWeight = (
+  phaseSeconds: number
+): number => {
+  if (!Number.isFinite(phaseSeconds)) return 0
+  const boundedPhase = Math.max(0, phaseSeconds)
+  const primary = 0.5 + 0.5 * Math.sin(boundedPhase * Math.PI * 7.2)
+  const secondary = 0.5 + 0.5 * Math.sin(boundedPhase * Math.PI * 11.4)
+  return Math.min(
+    0.72,
+    Math.max(0.12, 0.12 + primary * 0.42 + secondary * 0.12)
+  )
+}
+
 /**
  * 3Dキャラクターを管理するクラス
  */
@@ -98,6 +111,8 @@ export class Model {
   private _queuedMotionFrame: MotionRuntimeFrameRequest | null = null
   private _queuedMotionFrameSequence: MotionRuntimeFrameRequest[] = []
   private _lastMotionDriverResult: MotionDriverResult | null = null
+  private _passiveSpeechOutputActive = false
+  private _passiveSpeechPhaseSeconds = 0
   private _motionRuntimeExpressionValueSummary =
     createEmptyMotionRuntimeExpressionValueSummary()
   private _idleNeutralVisualTestMode = false
@@ -297,6 +312,20 @@ export class Model {
   }
 
   /**
+   * A passive Projection Visual cannot replay the operator tab's private audio
+   * buffer. It can, however, follow the bounded speech lifecycle and animate
+   * the local avatar's mouth without duplicating audio output.
+   */
+  public setPassiveSpeechOutputActive(active: boolean): void {
+    if (this._passiveSpeechOutputActive === active) return
+    this._passiveSpeechOutputActive = active
+    this._passiveSpeechPhaseSeconds = 0
+    if (!active) {
+      this.emoteController?.lipSync('aa', 0)
+    }
+  }
+
+  /**
    * 感情表現を再生する
    */
   public async playEmotion(preset: VRMExpressionPresetName) {
@@ -375,7 +404,15 @@ export class Model {
         ? null
         : queuedMotionFrame
 
-    if (!freezeNonTargetVisualMotion && this._lipSync) {
+    if (!freezeNonTargetVisualMotion && this._passiveSpeechOutputActive) {
+      const boundedDelta = Math.max(0, Math.min(delta, 0.1))
+      this._passiveSpeechPhaseSeconds =
+        (this._passiveSpeechPhaseSeconds + boundedDelta) % 4
+      const mouthWeight = calculatePassiveSpeechMouthWeight(
+        this._passiveSpeechPhaseSeconds
+      )
+      this.emoteController?.lipSync('aa', mouthWeight)
+    } else if (!freezeNonTargetVisualMotion && this._lipSync) {
       const { volume } = this._lipSync.update()
       this.emoteController?.lipSync('aa', volume)
     }

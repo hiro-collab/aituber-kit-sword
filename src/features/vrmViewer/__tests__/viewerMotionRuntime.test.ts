@@ -4,6 +4,7 @@
 
 import * as THREE from 'three'
 import { createProjectionVisualInPageDiagnostics, Viewer } from '../viewer'
+import { calculatePassiveSpeechMouthWeight } from '../model'
 import {
   calculateCameraFit,
   horizontalToVerticalFovDegrees,
@@ -33,6 +34,21 @@ const mockedLoadVRMAnimation = loadVRMAnimation as jest.MockedFunction<
 const originalDanceMotionAssetPath = process.env[DANCE_MOTION_ASSET_PATH_ENV]
 const originalSemanticMotionRegistry =
   process.env[MOTION_ASSET_SEMANTIC_REGISTRY_JSON_ENV]
+
+describe('passive Projection Visual speech motion', () => {
+  it('produces bounded non-flat mouth movement without audio data', () => {
+    const samples = [0, 0.05, 0.1, 0.2, 0.35].map(
+      calculatePassiveSpeechMouthWeight
+    )
+
+    expect(Math.min(...samples)).toBeGreaterThanOrEqual(0.12)
+    expect(Math.max(...samples)).toBeLessThanOrEqual(0.72)
+    expect(
+      new Set(samples.map((value) => value.toFixed(6))).size
+    ).toBeGreaterThan(2)
+    expect(calculatePassiveSpeechMouthWeight(Number.NaN)).toBe(0)
+  })
+})
 
 describe('VRM camera fit', () => {
   const originalCameraSettings = {

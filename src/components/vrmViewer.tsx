@@ -15,6 +15,7 @@ import type { MotionRuntimeLifecycleAcceptanceCandidate } from '@/features/motio
 type VrmViewerProps = {
   visualTestMode?: ProjectionVisualTestMode
   motionStimulusAssetPath?: string
+  remoteSpeechOutputActive?: boolean
   onDanceLifecycleAcceptanceReady?: (
     predicate:
       | ((candidate: MotionRuntimeLifecycleAcceptanceCandidate) => boolean)
@@ -62,6 +63,7 @@ const createVrmLoadError = (selectedVrmPath: string): VrmLoadError => {
 export default function VrmViewer({
   visualTestMode,
   motionStimulusAssetPath,
+  remoteSpeechOutputActive,
   onDanceLifecycleAcceptanceReady,
 }: VrmViewerProps = {}) {
   const loadedVrmPathRef = useRef<string | null>(null)
@@ -80,6 +82,7 @@ export default function VrmViewer({
   const motionStimulusAssetPathRef = useRef<string | undefined>(
     motionStimulusAssetPath
   )
+  const remoteSpeechOutputActiveRef = useRef(Boolean(remoteSpeechOutputActive))
   const motionStimulusHandlerRef = useRef<((event: Event) => void) | null>(null)
   const selectedVrmPath = settingsStore((s) => s.selectedVrmPath)
   const [vrmLoadError, setVrmLoadError] = useState<VrmLoadError | null>(null)
@@ -205,6 +208,9 @@ export default function VrmViewer({
       void viewer
         .loadVrm(selectedVrmPath, options)
         .then(() => {
+          viewer.model?.setPassiveSpeechOutputActive(
+            remoteSpeechOutputActiveRef.current
+          )
           onDanceLifecycleAcceptanceReady?.(
             viewer.getDanceLifecycleAcceptancePredicate()
           )
@@ -337,6 +343,17 @@ export default function VrmViewer({
     viewer.setMotionRuntimeAssetPath(motionStimulusAssetPath)
     publishVrmViewerDebugState(selectedVrmPath)
   }, [motionStimulusAssetPath, publishVrmViewerDebugState, selectedVrmPath])
+
+  useEffect(() => {
+    remoteSpeechOutputActiveRef.current = Boolean(remoteSpeechOutputActive)
+    const { viewer } = homeStore.getState()
+    viewer.model?.setPassiveSpeechOutputActive(
+      remoteSpeechOutputActiveRef.current
+    )
+    return () => {
+      viewer.model?.setPassiveSpeechOutputActive(false)
+    }
+  }, [remoteSpeechOutputActive])
 
   useEffect(() => {
     bindMotionStimulusReceiver()
