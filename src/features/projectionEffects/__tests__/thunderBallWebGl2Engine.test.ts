@@ -27,9 +27,10 @@ interface FakeResource {
 
 interface FakeThunderGl {
   allocated: Record<ThunderWebGl2ResourceKind, FakeResource[]>
+  armContextLossAtCheck(check: number): void
   armDeleteFailure(kind: ThunderWebGl2ResourceKind): void
   armDrawFailure(): void
-  armGlError(): void
+  armGlErrorAtCheck(check: number): void
   armLegacyBlitError(): void
   armResizeFailure(): void
   bindFramebuffer: jest.Mock
@@ -116,6 +117,7 @@ describe('Thunder Ball WebGL2 engine', () => {
     expect(engine.audit()).toMatchObject({
       state: 'ready',
       failure: null,
+      failureStage: 'none',
       passGraph: THUNDER_WEBGL2_PASS_GRAPH,
       blurScales: THUNDER_WEBGL2_BLUR_SCALES,
       blurWeights: THUNDER_WEBGL2_BLUR_WEIGHTS,
@@ -124,6 +126,7 @@ describe('Thunder Ball WebGL2 engine', () => {
     expect(engine.render(frame)).toMatchObject({
       status: 'rendered',
       state: 'ready',
+      failureStage: 'none',
     })
     expect(fake.drawArrays).toHaveBeenCalledTimes(frame.ribbons.length + 9)
     expect(fake.blurSteps).toHaveBeenCalledTimes(6)
@@ -220,16 +223,18 @@ describe('Thunder Ball WebGL2 engine', () => {
       width: 640,
       height: 360,
     })
-    fake.armGlError()
+    fake.armGlErrorAtCheck(11)
 
     expect(engine.render(createValidEngineFrame(7, 0))).toEqual({
       status: 'blocked',
       state: 'quarantined',
       failure: 'draw-failed',
+      failureStage: 'presentation',
     })
     expect(fake.blitFramebuffer).not.toHaveBeenCalled()
     expect(engine.audit()).toMatchObject({
       feedbackIndex: 0,
+      failureStage: 'presentation',
       resources: { total: 0 },
     })
     const drawCount = fake.drawArrays.mock.calls.length
@@ -238,6 +243,78 @@ describe('Thunder Ball WebGL2 engine', () => {
       state: 'quarantined',
     })
     expect(fake.drawArrays).toHaveBeenCalledTimes(drawCount)
+  })
+
+  it.each([
+    ['preflight', 1],
+    ['raw', 2],
+    ['blur', 3],
+    ['blur', 4],
+    ['blur', 5],
+    ['blur', 6],
+    ['blur', 7],
+    ['blur', 8],
+    ['bloom', 9],
+    ['temporal', 10],
+    ['presentation', 11],
+  ] as const)(
+    'reports only the fixed %s failure stage and blocks all later GPU work',
+    (failureStage, check) => {
+      const fake = createFakeThunderGl()
+      const engine = new ThunderBallWebGl2Engine({
+        gl: fake.gl,
+        width: 640,
+        height: 360,
+      })
+      fake.armGlErrorAtCheck(check)
+
+      const failed = engine.render(createValidEngineFrame(7, 0))
+      expect(failed).toEqual({
+        status: 'blocked',
+        state: 'quarantined',
+        failure: 'draw-failed',
+        failureStage,
+      })
+      expect(engine.audit()).toMatchObject({
+        feedbackIndex: 0,
+        failureStage,
+        resources: { total: 0 },
+      })
+      expect(JSON.stringify(failed)).not.toContain(PRIVATE_NATIVE_TEXT)
+
+      const drawCount = fake.drawArrays.mock.calls.length
+      const uploadCount = fake.bufferData.mock.calls.length
+      expect(engine.render(createValidEngineFrame(7, 1))).toMatchObject({
+        status: 'blocked',
+        state: 'quarantined',
+        failureStage,
+      })
+      expect(fake.drawArrays).toHaveBeenCalledTimes(drawCount)
+      expect(fake.bufferData).toHaveBeenCalledTimes(uploadCount)
+    }
+  )
+
+  it('reports context loss as one fixed stage without later GPU work', () => {
+    const fake = createFakeThunderGl()
+    const engine = new ThunderBallWebGl2Engine({
+      gl: fake.gl,
+      width: 640,
+      height: 360,
+    })
+    fake.armContextLossAtCheck(1)
+
+    expect(engine.render(createValidEngineFrame(7, 0))).toEqual({
+      status: 'blocked',
+      state: 'quarantined',
+      failure: 'draw-failed',
+      failureStage: 'context-lost',
+    })
+    expect(fake.bufferData).toHaveBeenCalledTimes(0)
+    expect(fake.drawArrays).toHaveBeenCalledTimes(0)
+    expect(engine.audit()).toMatchObject({
+      feedbackIndex: 0,
+      failureStage: 'context-lost',
+    })
   })
 
   it('retains six weighted blur energies and maps weak core energy without full-frame washout', () => {
@@ -379,6 +456,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       status: 'blocked',
       state: 'quarantined',
       failure: 'draw-failed',
+      failureStage: 'raw',
     })
     const drawCount = fake.drawArrays.mock.calls.length
     expect(
@@ -501,6 +579,7 @@ describe('Thunder Ball WebGL2 engine', () => {
         status: 'blocked',
         state: 'quarantined',
         failure: 'frame-invalid',
+        failureStage: 'preflight',
       })
       expect(fake.drawArrays).toHaveBeenCalledTimes(0)
       expect(fake.bufferData).toHaveBeenCalledTimes(0)
@@ -510,6 +589,7 @@ describe('Thunder Ball WebGL2 engine', () => {
         status: 'blocked',
         state: 'quarantined',
         failure: 'frame-invalid',
+        failureStage: 'preflight',
       })
       expect(fake.drawArrays).toHaveBeenCalledTimes(0)
       expect(fake.bufferData).toHaveBeenCalledTimes(0)
@@ -545,6 +625,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       status: 'cleanup-incomplete',
       state: 'quarantined',
       failure: 'cleanup-incomplete',
+      failureStage: 'none',
     })
     expect(fake.drawArrays).toHaveBeenCalledTimes(drawCount)
 
@@ -552,6 +633,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       status: 'disposed',
       state: 'disposed',
       failure: null,
+      failureStage: 'none',
     })
     expect(fake.deleteAttempts.shader).toHaveLength(5)
     expect(engine.audit().resources).toMatchObject({ shader: 0, total: 0 })
@@ -571,6 +653,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       status: 'cleanup-incomplete',
       state: 'quarantined',
       failure: 'cleanup-incomplete',
+      failureStage: 'none',
     })
     expect(JSON.stringify(failed)).not.toContain(PRIVATE_NATIVE_TEXT)
     expect(engine.audit().resources).toMatchObject({ buffer: 1, total: 1 })
@@ -633,6 +716,9 @@ function createFakeThunderGl(
   let textureAllocationFailurePending = options.failTextureAllocation === true
   let resizeFailurePending = false
   let drawFailurePending = false
+  let boundaryCheckCount = 0
+  let contextLossAtCheck: number | null = null
+  let glErrorAtCheck: number | null = null
   let glErrorPending = false
   let legacyBlitErrorArmed = false
   const deleteFailureBudget: Partial<
@@ -743,9 +829,11 @@ function createFakeThunderGl(
     enableVertexAttribArray: jest.fn(),
     framebufferTexture2D: jest.fn(),
     getError: jest.fn(() => {
-      if (!glErrorPending) return constants.NO_ERROR
-      glErrorPending = false
-      return 39
+      if (glErrorPending) {
+        glErrorPending = false
+        return 39
+      }
+      return boundaryCheckCount === glErrorAtCheck ? 39 : constants.NO_ERROR
     }),
     getExtension: jest.fn(() =>
       options.extensionAvailable === false ? null : {}
@@ -761,6 +849,10 @@ function createFakeThunderGl(
       if (!compileFailurePending) return true
       compileFailurePending = false
       return false
+    }),
+    isContextLost: jest.fn(() => {
+      boundaryCheckCount += 1
+      return boundaryCheckCount === contextLossAtCheck
     }),
     getUniformLocation: jest.fn((program, name) => ({ program, name })),
     linkProgram: jest.fn(),
@@ -783,14 +875,17 @@ function createFakeThunderGl(
 
   return {
     allocated,
+    armContextLossAtCheck(check) {
+      contextLossAtCheck = check
+    },
     armDeleteFailure(kind) {
       deleteFailureBudget[kind] = 1
     },
     armDrawFailure() {
       drawFailurePending = true
     },
-    armGlError() {
-      glErrorPending = true
+    armGlErrorAtCheck(check) {
+      glErrorAtCheck = check
     },
     armLegacyBlitError() {
       legacyBlitErrorArmed = true

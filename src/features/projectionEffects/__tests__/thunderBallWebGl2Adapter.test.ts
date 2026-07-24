@@ -5,6 +5,7 @@ import type {
 import {
   ThunderBallWebGl2Adapter,
   ThunderWebGl2AdapterError,
+  createThunderBallWebGl2CanvasSurface,
   fixedThunderWebGl2AdapterResult,
   mapThunderWebGl2EngineFrame,
   mapThunderParametersToWebGl2AdapterConfig,
@@ -12,6 +13,7 @@ import {
   type ThunderWebGl2AdapterSurface,
 } from '../plugins/thunderBall/webgl2/adapter'
 import {
+  THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE,
   THUNDER_WEBGL2_PASS_GRAPH,
   type ThunderWebGl2EngineFrame,
   type ThunderWebGl2RendererResult,
@@ -284,6 +286,124 @@ describe('Thunder Ball WebGL2 host adapter', () => {
       disposed: true,
       quarantined: true,
     })
+  })
+
+  it('publishes only a sticky allowlisted GPU stage and resets it on a fresh successful start', () => {
+    const attributes = new Map<string, string>()
+    const canvas = {
+      clientHeight: 540,
+      clientWidth: 960,
+      height: 150,
+      width: 300,
+      getAttribute: (name: string) => attributes.get(name) ?? null,
+      setAttribute: (name: string, value: string) => {
+        attributes.set(name, value)
+      },
+    } as unknown as HTMLCanvasElement
+    const failedSurface = createThunderBallWebGl2CanvasSurface(canvas)
+    const failedRenderer = {
+      start: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'started')
+      ),
+      renderFrame: jest.fn(
+        (): ThunderWebGl2RendererResult => ({
+          status: 'blocked',
+          state: 'quarantined',
+          failure: 'draw-failed',
+        })
+      ),
+      stop: jest.fn(() => fixedThunderWebGl2AdapterResult('stopped')),
+      reset: jest.fn(() => fixedThunderWebGl2AdapterResult('idle', 'reset')),
+      emergencyStop: jest.fn(
+        (): ThunderWebGl2RendererResult => ({
+          status: 'blocked',
+          state: 'quarantined',
+          failure: 'draw-failed',
+        })
+      ),
+      dispose: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('disposed', 'disposed')
+      ),
+      snapshot: jest.fn(() => ({
+        engine: { failureStage: 'presentation' as const },
+      })),
+    }
+    ;(failedSurface as unknown as { renderer: unknown }).renderer =
+      failedRenderer
+    const failedAdapter = new ThunderBallWebGl2Adapter({
+      surface: failedSurface,
+    })
+
+    expect(() => failedAdapter.render(frameContext(10))).toThrow(
+      ThunderWebGl2AdapterError
+    )
+    expect(
+      canvas.getAttribute(THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE)
+    ).toBe('presentation')
+    expect(
+      canvas.getAttribute(THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE)
+    ).not.toContain(PRIVATE_ERROR)
+
+    failedAdapter.dispose()
+    expect(
+      canvas.getAttribute(THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE)
+    ).toBe('presentation')
+
+    const blockedSurface = createThunderBallWebGl2CanvasSurface(canvas)
+    const blockedRenderer = {
+      start: jest.fn(
+        (): ThunderWebGl2RendererResult => ({
+          status: 'blocked',
+          state: 'quarantined',
+          failure: 'context-unavailable',
+        })
+      ),
+      snapshot: jest.fn(() => ({
+        engine: { failureStage: 'none' as const },
+      })),
+    }
+    ;(blockedSurface as unknown as { renderer: unknown }).renderer =
+      blockedRenderer
+    const blockedAdapter = new ThunderBallWebGl2Adapter({
+      surface: blockedSurface,
+    })
+    expect(() => blockedAdapter.render(frameContext(15))).toThrow(
+      ThunderWebGl2AdapterError
+    )
+    expect(
+      canvas.getAttribute(THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE)
+    ).toBe('presentation')
+
+    const successfulSurface = createThunderBallWebGl2CanvasSurface(canvas)
+    const successfulRenderer = {
+      start: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'started')
+      ),
+      renderFrame: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'rendered')
+      ),
+      stop: jest.fn(() => fixedThunderWebGl2AdapterResult('stopped')),
+      reset: jest.fn(() => fixedThunderWebGl2AdapterResult('idle', 'reset')),
+      emergencyStop: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('stopped', 'emergency-stopped')
+      ),
+      dispose: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('disposed', 'disposed')
+      ),
+      snapshot: jest.fn(() => ({
+        engine: { failureStage: 'none' as const },
+      })),
+    }
+    ;(successfulSurface as unknown as { renderer: unknown }).renderer =
+      successfulRenderer
+    const successfulAdapter = new ThunderBallWebGl2Adapter({
+      surface: successfulSurface,
+    })
+
+    successfulAdapter.render(frameContext(20))
+    expect(
+      canvas.getAttribute(THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE)
+    ).toBe('none')
   })
 
   it('keeps the frozen Canvas2D injection boundary compatibility-only', () => {

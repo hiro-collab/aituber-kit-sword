@@ -18,6 +18,7 @@ import {
   type ThunderWebGl2EngineResult,
   type ThunderWebGl2EngineState,
   type ThunderWebGl2FailureClass,
+  type ThunderWebGl2GpuFailureStage,
   type ThunderWebGl2ResourceCounts,
   type ThunderWebGl2ResourceKind,
   type ThunderWebGl2SurfaceBoundary,
@@ -59,6 +60,7 @@ export class ThunderBallWebGl2Engine {
   private readonly resources: ThunderWebGl2ResourceLedger | null
   private stateValue: ThunderWebGl2EngineState = 'quarantined'
   private failureValue: ThunderWebGl2FailureClass | null = null
+  private failureStageValue: ThunderWebGl2GpuFailureStage = 'none'
   private widthValue = 0
   private heightValue = 0
   private drawCountValue = 0
@@ -129,7 +131,10 @@ export class ThunderBallWebGl2Engine {
     const gl = this.gl as WebGL2RenderingContext
     const programs = this.programs as ThunderPrograms
     const targets = this.targets as Record<TargetName, RenderTarget>
+    let activeStage: ThunderWebGl2GpuFailureStage = 'preflight'
     try {
+      this.assertGpuBoundary(activeStage)
+      activeStage = 'raw'
       gl.bindFramebuffer(gl.FRAMEBUFFER, targets.raw.framebuffer)
       gl.viewport(0, 0, this.widthValue, this.heightValue)
       gl.clearColor(0, 0, 0, 0)
@@ -165,6 +170,7 @@ export class ThunderBallWebGl2Engine {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertices.length / 4)
       }
       gl.disable(gl.BLEND)
+      this.assertGpuBoundary(activeStage)
 
       let previousBlur = targets.raw.texture
       for (
@@ -172,6 +178,7 @@ export class ThunderBallWebGl2Engine {
         stageIndex < THUNDER_WEBGL2_BLUR_STAGE_COUNT;
         stageIndex += 1
       ) {
+        activeStage = 'blur'
         const target = stageIndex % 2 === 0 ? targets.blurA : targets.blurB
         const scale = THUNDER_WEBGL2_BLUR_SCALES[stageIndex] as number
         this.runBlurPass(
@@ -184,14 +191,18 @@ export class ThunderBallWebGl2Engine {
           stageIndex === 0 ? 0 : 1
         )
         previousBlur = target.texture
+        this.assertGpuBoundary(activeStage)
       }
+      activeStage = 'bloom'
       this.runBloomPass(
         targets.raw.texture,
         previousBlur,
         targets.bloom.framebuffer,
         clamp(frame.tone.bloomGain, 0, 2)
       )
+      this.assertGpuBoundary(activeStage)
 
+      activeStage = 'temporal'
       const historyRead =
         this.feedbackIndexValue === 0 ? targets.historyA : targets.historyB
       const historyWrite =
@@ -204,12 +215,17 @@ export class ThunderBallWebGl2Engine {
         clamp(frame.tone.exposure, 0.5, 2),
         clamp(frame.tone.gamma, 0.6, 1.4)
       )
+      this.assertGpuBoundary(activeStage)
+      activeStage = 'presentation'
       this.runPresentationPass(historyWrite.texture)
-      if (gl.getError() !== gl.NO_ERROR) throw new Error('native draw failure')
+      this.assertGpuBoundary(activeStage)
       this.feedbackIndexValue = this.feedbackIndexValue === 0 ? 1 : 0
       this.drawCountValue += 1
       return this.result('rendered')
     } catch {
+      if (this.failureStageValue === 'none') {
+        this.failureStageValue = activeStage
+      }
       this.quarantine('draw-failed')
       return this.blockedResult()
     }
@@ -287,6 +303,7 @@ export class ThunderBallWebGl2Engine {
     return Object.freeze({
       state: this.stateValue,
       failure: this.failureValue,
+      failureStage: this.failureStageValue,
       width: this.widthValue,
       height: this.heightValue,
       drawCount: this.drawCountValue,
@@ -522,6 +539,18 @@ export class ThunderBallWebGl2Engine {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
+  private assertGpuBoundary(stage: ThunderWebGl2GpuFailureStage): void {
+    const gl = this.gl as WebGL2RenderingContext
+    if (typeof gl.isContextLost === 'function' && gl.isContextLost.call(gl)) {
+      this.failureStageValue = 'context-lost'
+      throw new Error('thunder WebGL2 context unavailable')
+    }
+    if (gl.getError() !== gl.NO_ERROR) {
+      this.failureStageValue = stage
+      throw new Error('thunder WebGL2 pass unavailable')
+    }
+  }
+
   private quarantine(failure: ThunderWebGl2FailureClass): void {
     this.stateValue = 'quarantined'
     this.failureValue = failure
@@ -531,6 +560,7 @@ export class ThunderBallWebGl2Engine {
   private rejectFrame(): ThunderWebGl2EngineResult {
     this.stateValue = 'quarantined'
     this.failureValue = 'frame-invalid'
+    this.failureStageValue = 'preflight'
     return this.result('blocked')
   }
 
@@ -564,6 +594,7 @@ export class ThunderBallWebGl2Engine {
       status,
       state: this.stateValue,
       failure: this.failureValue,
+      failureStage: this.failureStageValue,
     })
   }
 }

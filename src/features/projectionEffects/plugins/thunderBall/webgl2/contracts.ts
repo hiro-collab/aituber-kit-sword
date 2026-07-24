@@ -36,6 +36,23 @@ export const THUNDER_WEBGL2_PASS_GRAPH = Object.freeze([
 
 export type ThunderWebGl2Pass = (typeof THUNDER_WEBGL2_PASS_GRAPH)[number]
 
+export const THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE =
+  'data-thunder-webgl2-failure-stage'
+
+export const THUNDER_WEBGL2_GPU_FAILURE_STAGES = Object.freeze([
+  'none',
+  'preflight',
+  'raw',
+  'blur',
+  'bloom',
+  'temporal',
+  'presentation',
+  'context-lost',
+] as const)
+
+export type ThunderWebGl2GpuFailureStage =
+  (typeof THUNDER_WEBGL2_GPU_FAILURE_STAGES)[number]
+
 export interface ThunderWebGl2Point {
   x: number
   y: number
@@ -138,6 +155,7 @@ export interface ThunderWebGl2EngineResult {
   status: ThunderWebGl2EngineStatus
   state: ThunderWebGl2EngineState
   failure: ThunderWebGl2FailureClass | null
+  failureStage?: ThunderWebGl2GpuFailureStage
 }
 
 export interface ThunderWebGl2ResourceCounts {
@@ -153,6 +171,7 @@ export interface ThunderWebGl2ResourceCounts {
 export interface ThunderWebGl2EngineAudit {
   state: ThunderWebGl2EngineState
   failure: ThunderWebGl2FailureClass | null
+  failureStage?: ThunderWebGl2GpuFailureStage
   width: number
   height: number
   drawCount: number

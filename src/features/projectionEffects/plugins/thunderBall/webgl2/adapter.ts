@@ -6,12 +6,14 @@ import type {
 import { ThunderBallRenderer, type ThunderBallSurface } from '../renderer'
 import {
   THUNDER_WEBGL2_MAX_DRAIN_MS,
+  THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE,
   THUNDER_WEBGL2_PASS_GRAPH,
   THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT,
   THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT,
   THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT,
   type ThunderWebGl2EngineFrame,
   type ThunderWebGl2EngineResult,
+  type ThunderWebGl2GpuFailureStage,
   type ThunderWebGl2SourceBirth,
   ThunderWebGl2RendererResult,
   ThunderWebGl2RendererState,
@@ -400,6 +402,23 @@ function isThunderWebGl2AdapterSurface(
   )
 }
 
+function normalizeFailureStage(
+  stage: ThunderWebGl2GpuFailureStage | undefined
+): ThunderWebGl2GpuFailureStage {
+  switch (stage) {
+    case 'preflight':
+    case 'raw':
+    case 'blur':
+    case 'bloom':
+    case 'temporal':
+    case 'presentation':
+    case 'context-lost':
+      return stage
+    default:
+      return 'none'
+  }
+}
+
 class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
   private renderer: ThunderBallWebGl2Renderer | null = null
   private mappedEngine: MappedThunderWebGl2EngineBoundary | null = null
@@ -417,7 +436,13 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
   start(
     options: Readonly<ThunderWebGl2StartOptions> = {}
   ): ThunderWebGl2RendererResult {
-    return this.ensureRenderer().start(options)
+    const renderer = this.ensureRenderer()
+    const result = renderer.start(options)
+    this.publishFailureStage(
+      renderer,
+      result.state === 'running' && result.failure === null
+    )
+    return result
   }
 
   renderFrame(
@@ -425,34 +450,40 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
   ): ThunderWebGl2RendererResult {
     const renderer = this.ensureRenderer()
     const { width, height } = this.syncCanvasSize()
-    return renderer.renderFrame({ ...options, width, height })
+    const result = renderer.renderFrame({ ...options, width, height })
+    this.publishFailureStage(renderer)
+    return result
   }
 
   stop(
     options: Readonly<ThunderWebGl2StopOptions> = {}
   ): ThunderWebGl2RendererResult {
-    return (
+    const result =
       this.renderer?.stop(options) ?? fixedThunderWebGl2AdapterResult('stopped')
-    )
+    this.publishFailureStage(this.renderer)
+    return result
   }
 
   reset(): ThunderWebGl2RendererResult {
-    return (
+    const result =
       this.renderer?.reset() ?? fixedThunderWebGl2AdapterResult('idle', 'reset')
-    )
+    this.publishFailureStage(this.renderer)
+    return result
   }
 
   emergencyStop(): ThunderWebGl2RendererResult {
-    return (
+    const result =
       this.renderer?.emergencyStop() ??
       fixedThunderWebGl2AdapterResult('stopped', 'emergency-stopped')
-    )
+    this.publishFailureStage(this.renderer)
+    return result
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     const result = this.renderer?.dispose()
+    this.publishFailureStage(this.renderer)
     if (result && result.state !== 'disposed') {
       this.disposed = false
       throw new ThunderWebGl2AdapterError()
@@ -499,6 +530,23 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
     if (this.canvas.width !== width) this.canvas.width = width
     if (this.canvas.height !== height) this.canvas.height = height
     return { width, height }
+  }
+
+  private publishFailureStage(
+    renderer: ThunderBallWebGl2Renderer | null,
+    allowClear = false
+  ): void {
+    if (!renderer) return
+    const stage = normalizeFailureStage(renderer.snapshot().engine.failureStage)
+    if (stage === 'none' && !allowClear) return
+    try {
+      this.canvas.setAttribute(
+        THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE,
+        stage
+      )
+    } catch {
+      // The diagnostic surface must never widen renderer failure authority.
+    }
   }
 }
 
