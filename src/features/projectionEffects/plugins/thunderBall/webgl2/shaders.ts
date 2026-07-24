@@ -39,12 +39,23 @@ void main() {
   float sourceEnergy = clamp(uSourceEnergy, 0.0, 1.0);
   float coreEnergy = core * uTone.z;
   float haloEnergy = halo * uTone.w;
-  vec3 coreColor = vec3(1.0) * coreEnergy;
+  float carriedEnergy = sourceEnergy * longitudinalEnergy;
+  float coverage = 1.0 - pow(1.0 - carriedEnergy, 4.0);
+  float sourceCoreBoost = mix(0.62, 1.6, sourceFlare);
+  vec3 coreTint = mix(
+    vec3(0.22, 0.63, 1.0),
+    vec3(0.88, 0.95, 1.0),
+    sourceFlare
+  );
+  vec3 coreColor = coreTint * coreEnergy * sourceCoreBoost;
   vec3 haloColor = vec3(0.12, 0.84, 1.0) * haloEnergy * 0.38;
   vec3 color = (coreColor + haloColor)
-    * sourceEnergy * longitudinalEnergy;
+    * carriedEnergy;
   float alpha = clamp(
-    max(core, halo * 0.28) * sourceEnergy * longitudinalEnergy,
+    max(
+      core * coverage * mix(0.52, 1.0, sourceFlare),
+      halo * coverage * 0.1
+    ),
     0.0,
     1.0
   );
@@ -152,11 +163,7 @@ void main() {
     vec3(1.0 / clamp(uGamma, 0.6, 1.4))
   );
   float visibleEnergy = max(mapped.r, max(mapped.g, mapped.b));
-  float alpha = clamp(
-    visibleEnergy * (0.32 + visibleEnergy * 0.9),
-    0.0,
-    1.0
-  );
+  float alpha = 1.0 - pow(1.0 - clamp(visibleEnergy, 0.0, 1.0), 2.0);
   outColor = vec4(mapped, alpha);
 }
 `
@@ -223,11 +230,30 @@ export function resolveThunderWebGl2RawOracle(
   const coreEnergy = core * clamp(input.coreLuminance, 0, 4)
   const haloEnergy = halo * clamp(input.haloLuminance, 0, 2)
   const energy = sourceEnergy * longitudinalEnergy
+  const coverage = 1 - Math.pow(1 - energy, 4)
+  const sourceCoreBoost = mix(0.62, 1.6, sourceFlare)
+  const coreTint = [
+    mix(0.22, 0.88, sourceFlare),
+    mix(0.63, 0.95, sourceFlare),
+    1,
+  ] as const
   return Object.freeze({
-    red: (coreEnergy + haloEnergy * 0.12 * 0.38) * energy,
-    green: (coreEnergy + haloEnergy * 0.84 * 0.38) * energy,
-    blue: (coreEnergy + haloEnergy * 0.38) * energy,
-    alpha: clamp(Math.max(core, halo * 0.28) * energy, 0, 1),
+    red:
+      (coreEnergy * coreTint[0] * sourceCoreBoost + haloEnergy * 0.12 * 0.38) *
+      energy,
+    green:
+      (coreEnergy * coreTint[1] * sourceCoreBoost + haloEnergy * 0.84 * 0.38) *
+      energy,
+    blue:
+      (coreEnergy * coreTint[2] * sourceCoreBoost + haloEnergy * 0.38) * energy,
+    alpha: clamp(
+      Math.max(
+        core * coverage * mix(0.52, 1, sourceFlare),
+        halo * coverage * 0.1
+      ),
+      0,
+      1
+    ),
   })
 }
 
@@ -287,7 +313,7 @@ export function resolveThunderWebGl2CompositeOracle(
     1 / clamp(input.gamma, 0.6, 1.4)
   )
   return Object.freeze({
-    alpha: clamp(mappedEnergy * (0.32 + mappedEnergy * 0.9), 0, 1),
+    alpha: 1 - Math.pow(1 - clamp(mappedEnergy, 0, 1), 2),
     bloomEnergy,
     mappedEnergy,
   })

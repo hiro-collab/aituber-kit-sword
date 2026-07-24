@@ -206,6 +206,11 @@ describe('Thunder Ball WebGL2 host adapter', () => {
     const weak = mapThunderWebGl2EngineFrame(recipeFrame, weakConfig)
     const strong = mapThunderWebGl2EngineFrame(recipeFrame, strongConfig)
     const off = mapThunderWebGl2EngineFrame(recipeFrame, offConfig)
+    const moved = mapThunderWebGl2EngineFrame(recipeFrame, {
+      ...weakConfig,
+      centerX: 0.24,
+      centerY: 0.43,
+    })
 
     expect(plannedParameters).toMatchObject({
       centerX: 0,
@@ -235,9 +240,32 @@ describe('Thunder Ball WebGL2 host adapter', () => {
     expect(off.tone).toEqual({ ...weak.tone, feedback: 0 })
     expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
     const connectivity = sourceNearRibbonConnectivity(weak.ribbons, 960, 540)
+    const envelope = ribbonEnvelope(weak.ribbons, 960, 540)
     expect(connectivity.largestComponent / 21).toBeGreaterThanOrEqual(0.6)
-    expect(connectivity.width).toBeLessThanOrEqual(960 * 0.35)
-    expect(connectivity.height).toBeLessThanOrEqual(540 * 0.35)
+    expect(connectivity.width).toBeGreaterThan(60)
+    expect(connectivity.width).toBeLessThanOrEqual(136)
+    expect(connectivity.height).toBeGreaterThan(28)
+    expect(connectivity.height).toBeLessThanOrEqual(84)
+    expect(envelope.width).toBeGreaterThan(60)
+    expect(envelope.width).toBeLessThanOrEqual(70)
+    expect(envelope.height).toBeGreaterThan(28)
+    expect(envelope.height).toBeLessThanOrEqual(42)
+    expect(envelope.width * 2).toBeGreaterThan(120)
+    expect(envelope.width * 2).toBeLessThanOrEqual(140)
+    expect(envelope.height * 2).toBeGreaterThan(55)
+    expect(envelope.height * 2).toBeLessThanOrEqual(84)
+    expect(
+      moved.ribbons.every((ribbon, ribbonIndex) =>
+        ribbon.every((sample, sampleIndex) => {
+          const stationary = weak.ribbons[ribbonIndex]?.[sampleIndex]
+          return (
+            stationary !== undefined &&
+            Math.abs(sample.centerX - stationary.centerX - 0.24) < 1e-10 &&
+            Math.abs(sample.centerY - stationary.centerY - 0.18) < 1e-10
+          )
+        })
+      )
+    ).toBe(true)
   })
 
   it('does not republish active temporal history on the first zero-intensity frame', () => {
@@ -675,6 +703,29 @@ function sourceNearRibbonConnectivity(
     height:
       Math.max(...boxes.map(({ maxY }) => maxY)) -
       Math.min(...boxes.map(({ minY }) => minY)),
+  }
+}
+
+function ribbonEnvelope(
+  ribbons: ThunderWebGl2EngineFrame['ribbons'],
+  width: number,
+  height: number
+) {
+  const xs = ribbons.flatMap((ribbon) =>
+    ribbon.flatMap(({ leftX, rightX }) => [
+      ((leftX + 1) * width) / 2,
+      ((rightX + 1) * width) / 2,
+    ])
+  )
+  const ys = ribbons.flatMap((ribbon) =>
+    ribbon.flatMap(({ leftY, rightY }) => [
+      ((1 - leftY) * height) / 2,
+      ((1 - rightY) * height) / 2,
+    ])
+  )
+  return {
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
   }
 }
 

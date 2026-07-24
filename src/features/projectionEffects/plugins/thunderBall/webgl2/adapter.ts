@@ -83,6 +83,7 @@ const DEFAULT_LINE_WIDTH = 4
 const DEFAULT_MASTER_INTENSITY = 0.82
 const DEFAULT_BLOOM_GAIN = 0.65
 const DEFAULT_WRINKLE_STRENGTH = 0.08
+const THUNDER_WEBGL2_FILMING_ENVELOPE_SCALE = 0.42
 const MAX_DRAIN_PRESENTATIONS = 6
 const DRAIN_WAIT_GRACE_MS = 50
 const MAX_CANVAS_SIZE = 8192
@@ -660,7 +661,9 @@ export function mapThunderWebGl2EngineFrame(
   frame: Readonly<ThunderWebGl2EngineFrame>,
   config: Readonly<ThunderWebGl2AdapterConfig>
 ): ThunderWebGl2EngineFrame {
-  const spatialScale = config.orbRadius / DEFAULT_ORB_RADIUS
+  const spatialScale =
+    (config.orbRadius / DEFAULT_ORB_RADIUS) *
+    THUNDER_WEBGL2_FILMING_ENVELOPE_SCALE
   const wrinkleScale =
     config.wrinkleStrength / Math.max(DEFAULT_WRINKLE_STRENGTH, 1e-6)
   const widthScale = config.lineWidth / DEFAULT_LINE_WIDTH

@@ -438,8 +438,10 @@ describe('Thunder Ball WebGL2 engine', () => {
     expect(sourceCore.red).toBeGreaterThan(1)
     expect(sourceCore.green).toBeGreaterThanOrEqual(sourceCore.red)
     expect(sourceCore.blue).toBeGreaterThanOrEqual(sourceCore.green)
-    expect(sourceCore.alpha).toBeGreaterThan(0.55)
-    expect(sourceCore.red).toBeGreaterThan(branchCore.red * 1.8)
+    expect(sourceCore.alpha).toBeGreaterThanOrEqual(0.88)
+    expect(sourceCore.alpha).toBeLessThanOrEqual(1)
+    expect(1 - sourceCore.alpha).toBeLessThanOrEqual(0.12)
+    expect(sourceCore.red).toBeGreaterThan(branchCore.red * 4)
     expect(branchHalo.blue).toBeGreaterThan(branchHalo.green)
     expect(branchHalo.green).toBeGreaterThan(branchHalo.red)
     expect(branchHalo.alpha).toBeGreaterThan(0)
@@ -464,7 +466,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       distance(haloOverGreen, [0.04, 0.22, 0.38])
     )
     expect(THUNDER_WEBGL2_RIBBON_FRAGMENT_SHADER).toContain(
-      'vec3 coreColor = vec3(1.0)'
+      'float coverage = 1.0 - pow(1.0 - carriedEnergy, 4.0)'
     )
   })
 
@@ -544,7 +546,7 @@ describe('Thunder Ball WebGL2 engine', () => {
         .sort((left, right) => left - right)
     )
     expect(THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER).toContain(
-      'visibleEnergy * (0.32 + visibleEnergy * 0.9)'
+      '1.0 - pow(1.0 - clamp(visibleEnergy, 0.0, 1.0), 2.0)'
     )
     expect(THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER).not.toContain(
       'accumulated.a'
