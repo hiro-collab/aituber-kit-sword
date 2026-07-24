@@ -5,6 +5,7 @@
 import {
   PROJECTION_EFFECT_INTENT_CHANNEL,
   PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+  deliverProjectionEffectIntent,
   publishProjectionEffectExecutionReceipt,
   publishProjectionEffectIntent,
   readProjectionEffectIntent,
@@ -16,6 +17,53 @@ import { CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256 } from '../projection
 const EVENT_ID = 'evt_0123456789abcdef0123456789abcdef'
 const TURN_ID = 'turn_projection_phase1'
 const SESSION_ID = 'session_projection_phase1'
+
+type TestChannel = {
+  listeners: Set<(event: MessageEvent) => void>
+  closed: boolean
+}
+
+function createChannelHarness(
+  shouldDrop: (value: unknown) => boolean = () => false
+) {
+  const channels = new Set<TestChannel>()
+  const close = jest.fn()
+  const createBroadcastChannel = jest.fn((name: string) => {
+    expect(name).toBe(PROJECTION_EFFECT_INTENT_CHANNEL)
+    const state: TestChannel = { listeners: new Set(), closed: false }
+    channels.add(state)
+    return {
+      postMessage(value: unknown) {
+        if (state.closed || shouldDrop(value)) return
+        for (const peer of channels) {
+          if (peer === state || peer.closed) continue
+          for (const listener of peer.listeners) {
+            listener({ data: value } as MessageEvent)
+          }
+        }
+      },
+      addEventListener(
+        _type: 'message',
+        listener: (event: MessageEvent) => void
+      ) {
+        state.listeners.add(listener)
+      },
+      removeEventListener(
+        _type: 'message',
+        listener: (event: MessageEvent) => void
+      ) {
+        state.listeners.delete(listener)
+      },
+      close() {
+        state.closed = true
+        state.listeners.clear()
+        channels.delete(state)
+        close()
+      },
+    }
+  })
+  return { channels, close, createBroadcastChannel }
+}
 
 const canonicalEvent = (data: Record<string, unknown>) => ({
   schema_version: 'thought-core.event.v0',
@@ -413,6 +461,150 @@ describe('canonical projection effect intent v1', () => {
     expect(listeners.size).toBe(0)
   })
 
+  it('quarantines a partially registered receiver without exposing native setup failures', () => {
+    const privateMarker = 'PRIVATE_RECEIVER_SETUP_DETAIL'
+    const receive = jest.fn()
+    const postMessage = jest.fn()
+    const removeChannelListener = jest.fn()
+    const close = jest.fn()
+    let channelListener: ((event: MessageEvent) => void) | undefined
+    const removeWindowListener = jest.spyOn(window, 'removeEventListener')
+    try {
+      let dispose: (() => void) | undefined
+      expect(() => {
+        dispose = subscribeProjectionEffectIntents(receive, {
+          createBroadcastChannel: () => ({
+            postMessage,
+            addEventListener(_type, listener) {
+              channelListener = listener
+              throw new Error(privateMarker)
+            },
+            removeEventListener: removeChannelListener,
+            close,
+          }),
+        })
+      }).not.toThrow()
+
+      expect(removeWindowListener).toHaveBeenCalledWith(
+        'sword:projection-effect-intent-v1',
+        expect.any(Function)
+      )
+      expect(removeChannelListener).toHaveBeenCalledWith(
+        'message',
+        channelListener
+      )
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(
+        publishProjectionEffectExecutionReceipt({
+          schemaVersion: 1,
+          eventId: EVENT_ID,
+          status: 'completed',
+          resultClass: 'started',
+        })
+      ).toBe(false)
+      window.dispatchEvent(
+        new CustomEvent('sword:projection-effect-intent-v1', {
+          detail: {
+            schemaVersion: 1,
+            eventId: EVENT_ID,
+            turnId: TURN_ID,
+            action: 'reset',
+          },
+        })
+      )
+      channelListener?.({
+        data: {
+          schemaVersion: 1,
+          kind: 'probe',
+          origin: window.location.origin,
+          eventId: EVENT_ID,
+        },
+      } as MessageEvent)
+      expect(receive).not.toHaveBeenCalled()
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(() => dispose?.()).not.toThrow()
+    } finally {
+      removeWindowListener.mockRestore()
+    }
+  })
+
+  it('attempts every receiver cleanup independently and leaves late handlers inert', () => {
+    const privateMarker = 'PRIVATE_RECEIVER_TEARDOWN_DETAIL'
+    const receive = jest.fn()
+    const postMessage = jest.fn()
+    const removeChannelListener = jest.fn(() => {
+      throw new Error(privateMarker)
+    })
+    const close = jest.fn(() => {
+      throw new Error(privateMarker)
+    })
+    let channelListener: ((event: MessageEvent) => void) | undefined
+    const originalRemoveWindowListener = window.removeEventListener.bind(window)
+    const removeWindowListener = jest
+      .spyOn(window, 'removeEventListener')
+      .mockImplementation(((
+        ...args: Parameters<typeof window.removeEventListener>
+      ) => {
+        originalRemoveWindowListener(...args)
+        throw new Error(privateMarker)
+      }) as typeof window.removeEventListener)
+    try {
+      const dispose = subscribeProjectionEffectIntents(receive, {
+        createBroadcastChannel: () => ({
+          postMessage,
+          addEventListener(_type, listener) {
+            channelListener = listener
+          },
+          removeEventListener: removeChannelListener,
+          close,
+        }),
+      })
+
+      expect(() => dispose()).not.toThrow()
+      expect(removeWindowListener).toHaveBeenCalled()
+      expect(removeChannelListener).toHaveBeenCalledWith(
+        'message',
+        channelListener
+      )
+      expect(close).toHaveBeenCalledTimes(1)
+      channelListener?.({
+        data: {
+          schemaVersion: 1,
+          kind: 'probe',
+          origin: window.location.origin,
+          eventId: EVENT_ID,
+        },
+      } as MessageEvent)
+      channelListener?.({
+        data: {
+          schemaVersion: 1,
+          kind: 'intent',
+          origin: window.location.origin,
+          intent: {
+            schemaVersion: 1,
+            eventId: EVENT_ID,
+            turnId: TURN_ID,
+            action: 'reset',
+          },
+        },
+      } as MessageEvent)
+      expect(receive).not.toHaveBeenCalled()
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(() => dispose()).not.toThrow()
+      expect(
+        publishProjectionEffectExecutionReceipt({
+          schemaVersion: 1,
+          eventId: EVENT_ID,
+          status: 'completed',
+          resultClass: 'started',
+        })
+      ).toBe(false)
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      removeWindowListener.mockRestore()
+    }
+  })
+
   it('fails closed at the live reservation cap and permits only expired IDs', () => {
     let timestamp = 0
     const receive = jest.fn()
@@ -476,38 +668,454 @@ describe('canonical projection effect intent v1', () => {
     dispose()
   })
 
-  it('publishes only a fixed execution receipt', () => {
-    const receipts: unknown[] = []
-    const listener = (event: Event) => {
-      if (event instanceof CustomEvent) receipts.push(event.detail)
-    }
-    window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, listener)
-    expect(
+  it('waits for a fresh receiver, ingress acknowledgement, and matching execution receipt', async () => {
+    const harness = createChannelHarness()
+    const receive = jest.fn((intent: { eventId: string }) => {
       publishProjectionEffectExecutionReceipt(
         {
           schemaVersion: 1,
-          eventId: EVENT_ID,
+          eventId: intent.eventId,
           status: 'completed',
           resultClass: 'started',
         },
+        { createBroadcastChannel: harness.createBroadcastChannel }
+      )
+    })
+    const dispose = subscribeProjectionEffectIntents(receive, {
+      createBroadcastChannel: harness.createBroadcastChannel,
+    })
+    const intent = {
+      schemaVersion: 2,
+      eventId: EVENT_ID,
+      turnId: TURN_ID,
+      action: 'start',
+      plan: performancePlan(),
+    } as const
+
+    await expect(
+      deliverProjectionEffectIntent(intent, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+    ).resolves.toEqual({
+      schemaVersion: 1,
+      eventId: EVENT_ID,
+      status: 'completed',
+      resultClass: 'started',
+    })
+    expect(receive).toHaveBeenCalledTimes(1)
+    dispose()
+    expect(harness.channels.size).toBe(0)
+  })
+
+  it('fails closed when no receiver becomes ready', async () => {
+    jest.useFakeTimers()
+    try {
+      const harness = createChannelHarness()
+      const delivery = deliverProjectionEffectIntent(
         {
-          createBroadcastChannel: () => ({
-            postMessage() {},
-            addEventListener() {},
-            removeEventListener() {},
-            close() {},
-          }),
+          schemaVersion: 1,
+          eventId: EVENT_ID,
+          turnId: TURN_ID,
+          action: 'reset',
+        },
+        { createBroadcastChannel: harness.createBroadcastChannel }
+      )
+      await jest.advanceTimersByTimeAsync(501)
+      await expect(delivery).resolves.toMatchObject({
+        status: 'rejected',
+        resultClass: 'receiver_unavailable',
+      })
+      expect(harness.channels.size).toBe(0)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('collapses transport setup failures to fixed non-echoing delivery results', async () => {
+    const privateMarker = 'PRIVATE_TRANSPORT_SETUP_DETAIL'
+    const intent = {
+      schemaVersion: 1,
+      eventId: EVENT_ID,
+      turnId: TURN_ID,
+      action: 'reset',
+    } as const
+    const close = jest.fn()
+
+    const constructorFailure = await deliverProjectionEffectIntent(intent, {
+      createBroadcastChannel() {
+        throw new Error(privateMarker)
+      },
+    })
+    const listenerFailure = await deliverProjectionEffectIntent(intent, {
+      createBroadcastChannel: () => ({
+        postMessage() {},
+        addEventListener() {
+          throw new Error(privateMarker)
+        },
+        removeEventListener() {},
+        close,
+      }),
+    })
+
+    expect(constructorFailure).toMatchObject({
+      status: 'rejected',
+      resultClass: 'transport_unavailable',
+    })
+    expect(listenerFailure).toMatchObject({
+      status: 'rejected',
+      resultClass: 'delivery_unconfirmed',
+    })
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(
+      JSON.stringify({ constructorFailure, listenerFailure })
+    ).not.toContain(privateMarker)
+  })
+
+  it('does not report success when transport teardown is unproved', async () => {
+    const privateMarker = 'PRIVATE_TRANSPORT_CLOSE_DETAIL'
+    const harness = createChannelHarness()
+    let channelCount = 0
+    const createBroadcastChannel = (name: string) => {
+      const channel = harness.createBroadcastChannel(name)
+      channelCount += 1
+      if (channelCount !== 2) return channel
+      return {
+        ...channel,
+        close() {
+          channel.close()
+          throw new Error(privateMarker)
+        },
+      }
+    }
+    const receive = jest.fn((intent: { eventId: string }) => {
+      publishProjectionEffectExecutionReceipt(
+        {
+          schemaVersion: 1,
+          eventId: intent.eventId,
+          status: 'completed',
+          resultClass: 'started',
+        },
+        { createBroadcastChannel }
+      )
+    })
+    const dispose = subscribeProjectionEffectIntents(receive, {
+      createBroadcastChannel,
+    })
+
+    const result = await deliverProjectionEffectIntent(
+      {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        turnId: TURN_ID,
+        action: 'start',
+        effectId: 'fire',
+      },
+      { createBroadcastChannel }
+    )
+
+    expect(result).toMatchObject({
+      status: 'rejected',
+      resultClass: 'delivery_unconfirmed',
+    })
+    expect(JSON.stringify(result)).not.toContain(privateMarker)
+    expect(receive).toHaveBeenCalledTimes(1)
+    dispose()
+    expect(harness.channels.size).toBe(0)
+  })
+
+  it.each([
+    ['first intent', 'intent'],
+    ['first ingress acknowledgement', 'intent_ack'],
+  ])(
+    'retries a dropped %s with the same ID but invokes the receiver once',
+    async (_label, droppedKind) => {
+      let dropped = false
+      const harness = createChannelHarness((value) => {
+        const kind =
+          typeof value === 'object' && value !== null
+            ? (value as { kind?: unknown }).kind
+            : null
+        if (!dropped && kind === droppedKind) {
+          dropped = true
+          return true
+        }
+        return false
+      })
+      const receive = jest.fn((intent: { eventId: string }) => {
+        publishProjectionEffectExecutionReceipt(
+          {
+            schemaVersion: 1,
+            eventId: intent.eventId,
+            status: 'completed',
+            resultClass: 'started',
+          },
+          { createBroadcastChannel: harness.createBroadcastChannel }
+        )
+      })
+      const dispose = subscribeProjectionEffectIntents(receive, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+
+      await expect(
+        deliverProjectionEffectIntent(
+          {
+            schemaVersion: 1,
+            eventId: EVENT_ID,
+            turnId: TURN_ID,
+            action: 'start',
+            effectId: 'fire',
+          },
+          { createBroadcastChannel: harness.createBroadcastChannel }
+        )
+      ).resolves.toMatchObject({
+        status: 'completed',
+        resultClass: 'started',
+      })
+      expect(dropped).toBe(true)
+      expect(receive).toHaveBeenCalledTimes(1)
+      dispose()
+    }
+  )
+
+  it('never redispatches a duplicate and never acknowledges an ID collision', async () => {
+    jest.useFakeTimers()
+    try {
+      const harness = createChannelHarness()
+      const receive = jest.fn((intent: { eventId: string }) => {
+        publishProjectionEffectExecutionReceipt(
+          {
+            schemaVersion: 1,
+            eventId: intent.eventId,
+            status: 'completed',
+            resultClass: 'started',
+          },
+          { createBroadcastChannel: harness.createBroadcastChannel }
+        )
+      })
+      const dispose = subscribeProjectionEffectIntents(receive, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      const intent = {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        turnId: TURN_ID,
+        action: 'start',
+        effectId: 'fire',
+      } as const
+      await deliverProjectionEffectIntent(intent, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+
+      const duplicate = deliverProjectionEffectIntent(intent, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      await jest.advanceTimersByTimeAsync(1_501)
+      await expect(duplicate).resolves.toMatchObject({
+        status: 'rejected',
+        resultClass: 'delivery_unconfirmed',
+      })
+      const collision = deliverProjectionEffectIntent(
+        { ...intent, effectId: 'thunderBall' },
+        { createBroadcastChannel: harness.createBroadcastChannel }
+      )
+      await jest.advanceTimersByTimeAsync(501)
+      await expect(collision).resolves.toMatchObject({
+        status: 'rejected',
+        resultClass: 'delivery_unconfirmed',
+      })
+      expect(receive).toHaveBeenCalledTimes(1)
+      dispose()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['host rejection', 'rejected', 'host_rejected'],
+    ['cleanup uncertainty', 'cleanup_unproved', 'cleanup_unproved'],
+  ] as const)(
+    'returns the fixed %s receipt without retrying the receiver',
+    async (_label, status, resultClass) => {
+      const harness = createChannelHarness()
+      const receive = jest.fn((intent: { eventId: string }) => {
+        publishProjectionEffectExecutionReceipt(
+          {
+            schemaVersion: 1,
+            eventId: intent.eventId,
+            status,
+            resultClass,
+          },
+          { createBroadcastChannel: harness.createBroadcastChannel }
+        )
+      })
+      const dispose = subscribeProjectionEffectIntents(receive, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      await expect(
+        deliverProjectionEffectIntent(
+          {
+            schemaVersion: 1,
+            eventId: EVENT_ID,
+            turnId: TURN_ID,
+            action: 'start',
+            effectId: 'thunderBall',
+          },
+          { createBroadcastChannel: harness.createBroadcastChannel }
+        )
+      ).resolves.toMatchObject({ status, resultClass })
+      expect(receive).toHaveBeenCalledTimes(1)
+      dispose()
+    }
+  )
+
+  it('fails after an ingress acknowledgement without execution and cancels on abort', async () => {
+    jest.useFakeTimers()
+    try {
+      const harness = createChannelHarness()
+      const receive = jest.fn()
+      const dispose = subscribeProjectionEffectIntents(receive, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      const intent = {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        turnId: TURN_ID,
+        action: 'reset',
+      } as const
+      const delivery = deliverProjectionEffectIntent(intent, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      await jest.advanceTimersByTimeAsync(1_501)
+      await expect(delivery).resolves.toMatchObject({
+        status: 'rejected',
+        resultClass: 'delivery_unconfirmed',
+      })
+      expect(receive).toHaveBeenCalledTimes(1)
+
+      const controller = new AbortController()
+      const aborted = deliverProjectionEffectIntent(
+        { ...intent, eventId: 'evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+        {
+          createBroadcastChannel: harness.createBroadcastChannel,
+          signal: controller.signal,
         }
       )
-    ).toBe(true)
-    expect(receipts).toEqual([
-      {
+      controller.abort()
+      await expect(aborted).resolves.toMatchObject({
+        status: 'rejected',
+        resultClass: 'delivery_aborted',
+      })
+      dispose()
+      const lateSender = harness.createBroadcastChannel(
+        PROJECTION_EFFECT_INTENT_CHANNEL
+      )
+      lateSender.postMessage({
+        schemaVersion: 1,
+        kind: 'intent',
+        origin: window.location.origin,
+        intent: {
+          ...intent,
+          eventId: 'evt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+      })
+      expect(receive).toHaveBeenCalledTimes(1)
+      lateSender.close()
+      expect(harness.channels.size).toBe(0)
+      expect(jest.getTimerCount()).toBe(0)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('publishes a fixed execution receipt through the active receiver-owned channel only', () => {
+    const harness = createChannelHarness()
+    const receipts: unknown[] = []
+    const peerReceipts: unknown[] = []
+    const listener = (event: Event) => {
+      if (event instanceof CustomEvent) receipts.push(event.detail)
+    }
+    const dispose = subscribeProjectionEffectIntents(jest.fn(), {
+      createBroadcastChannel: harness.createBroadcastChannel,
+    })
+    const secondReceive = jest.fn()
+    const disposeSecond = subscribeProjectionEffectIntents(secondReceive, {
+      createBroadcastChannel: harness.createBroadcastChannel,
+    })
+    expect(harness.createBroadcastChannel).toHaveBeenCalledTimes(1)
+    const peer = harness.createBroadcastChannel(
+      PROJECTION_EFFECT_INTENT_CHANNEL
+    )
+    peer.addEventListener('message', (event) => {
+      const value = event.data as { kind?: unknown; receipt?: unknown }
+      if (value.kind === 'receipt') peerReceipts.push(value.receipt)
+    })
+    const perReceiptChannel = jest.fn(() => {
+      throw new Error('PRIVATE_PER_RECEIPT_CHANNEL')
+    })
+    window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, listener)
+    try {
+      const receipt = {
         schemaVersion: 1,
         eventId: EVENT_ID,
         status: 'completed',
         resultClass: 'started',
-      },
-    ])
-    window.removeEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, listener)
+      } as const
+      expect(
+        publishProjectionEffectExecutionReceipt(receipt, {
+          createBroadcastChannel: perReceiptChannel,
+        })
+      ).toBe(true)
+      expect(perReceiptChannel).not.toHaveBeenCalled()
+      expect(peerReceipts).toEqual([receipt])
+      expect(receipts).toEqual([receipt])
+      expect(secondReceive).not.toHaveBeenCalled()
+      expect(harness.close).not.toHaveBeenCalled()
+
+      disposeSecond()
+      dispose()
+      expect(publishProjectionEffectExecutionReceipt(receipt)).toBe(false)
+      expect(peerReceipts).toEqual([receipt])
+    } finally {
+      window.removeEventListener(
+        PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+        listener
+      )
+      disposeSecond()
+      dispose()
+      peer.close()
+    }
+    expect(harness.channels.size).toBe(0)
+  })
+
+  it('quarantines the active receiver when owned-channel receipt posting fails', () => {
+    const privateMarker = 'PRIVATE_RECEIPT_POST_DETAIL'
+    const receive = jest.fn()
+    const close = jest.fn()
+    const dispose = subscribeProjectionEffectIntents(receive, {
+      createBroadcastChannel: () => ({
+        postMessage() {
+          throw new Error(privateMarker)
+        },
+        addEventListener() {},
+        removeEventListener() {},
+        close,
+      }),
+    })
+    const receipt = {
+      schemaVersion: 1,
+      eventId: EVENT_ID,
+      status: 'completed',
+      resultClass: 'started',
+    } as const
+
+    let result = true
+    expect(() => {
+      result = publishProjectionEffectExecutionReceipt(receipt)
+    }).not.toThrow()
+    expect(result).toBe(false)
+    expect(publishProjectionEffectExecutionReceipt(receipt)).toBe(false)
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(receive).not.toHaveBeenCalled()
+    expect(() => dispose()).not.toThrow()
   })
 })

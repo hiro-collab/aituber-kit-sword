@@ -11,10 +11,64 @@ import {
 } from '../../../features/chat/thoughtCoreChat'
 import { MOTION_STIMULUS_RECEIVER_EVENT } from '../../../features/motionRuntime/motionStimulusReceiver'
 import { createAcceptedPreparedSampleSpeechEnvelope } from '../../../utils/preparedSampleBrowserStt'
-import { subscribeProjectionEffectIntents } from '../../../features/projectionEffects/projectionEffectIntent'
+import {
+  publishProjectionEffectExecutionReceipt,
+  subscribeProjectionEffectIntents,
+} from '../../../features/projectionEffects/projectionEffectIntent'
 import { TextDecoder, TextEncoder } from 'util'
 ;(global as any).TextEncoder = TextEncoder
 ;(global as any).TextDecoder = TextDecoder
+
+function installProjectionEffectChannel() {
+  const original = global.BroadcastChannel
+  const channels = new Set<MockProjectionEffectChannel>()
+  class MockProjectionEffectChannel {
+    private readonly listeners = new Set<(event: MessageEvent) => void>()
+    private closed = false
+
+    constructor(_name: string) {
+      channels.add(this)
+    }
+
+    postMessage(value: unknown) {
+      if (this.closed) return
+      for (const peer of channels) {
+        if (peer === this || peer.closed) continue
+        for (const listener of peer.listeners) {
+          listener({ data: value } as MessageEvent)
+        }
+      }
+    }
+
+    addEventListener(
+      _type: 'message',
+      listener: (event: MessageEvent) => void
+    ) {
+      this.listeners.add(listener)
+    }
+
+    removeEventListener(
+      _type: 'message',
+      listener: (event: MessageEvent) => void
+    ) {
+      this.listeners.delete(listener)
+    }
+
+    close() {
+      this.closed = true
+      this.listeners.clear()
+      channels.delete(this)
+    }
+  }
+  global.BroadcastChannel = MockProjectionEffectChannel as any
+  return {
+    getChannelCount: () => channels.size,
+    restore() {
+      for (const channel of [...channels]) channel.close()
+      global.BroadcastChannel = original
+    },
+  }
+}
 
 function createSseResponse(events: unknown[]) {
   const encoder = new TextEncoder()
@@ -275,10 +329,17 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
   })
 
   it('publishes one deduplicated fixed intent and preserves speech', async () => {
+    const channelHarness = installProjectionEffectChannel()
     const received: unknown[] = []
-    const dispose = subscribeProjectionEffectIntents((intent) =>
+    const dispose = subscribeProjectionEffectIntents((intent) => {
       received.push(intent)
-    )
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: intent.eventId,
+        status: 'completed',
+        resultClass: 'started',
+      })
+    })
     const safeIntentEvent = {
       type: 'accepted.presentation.projection_effect_intent',
       data: {
@@ -317,13 +378,21 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
       },
     ])
     dispose()
+    channelHarness.restore()
   })
 
   it('publishes one deduplicated text-free v2 plan and ignores malformed plans', async () => {
+    const channelHarness = installProjectionEffectChannel()
     const received: unknown[] = []
-    const dispose = subscribeProjectionEffectIntents((intent) =>
+    const dispose = subscribeProjectionEffectIntents((intent) => {
       received.push(intent)
-    )
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: intent.eventId,
+        status: 'completed',
+        resultClass: 'started',
+      })
+    })
     const plan = {
       schemaVersion: 1,
       planId: 'planv1_0123456789abcdef0123456789abcdef',
@@ -387,6 +456,131 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
     ])
     expect(JSON.stringify(received)).not.toContain('PRIVATE_PLAN_MARKER')
     dispose()
+    channelHarness.restore()
+  })
+
+  it('errors the stream with a fixed result when no Avatar receiver is ready', async () => {
+    jest.useFakeTimers()
+    const channelHarness = installProjectionEffectChannel()
+    try {
+      global.fetch = jest.fn().mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.projection_effect_intent',
+            data: {
+              intent: {
+                schemaVersion: 1,
+                eventId: 'evt_11111111111111111111111111111111',
+                turnId: 'turn_projection_unavailable',
+                action: 'start',
+                effectId: 'fire',
+              },
+            },
+          },
+        ])
+      ) as any
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: '炎を出して' } as any],
+        '',
+        'session-projection-effect'
+      )
+      const result = expect(readTextStream(stream)).rejects.toThrow(
+        'projection_effect_delivery_failed'
+      )
+      await jest.advanceTimersByTimeAsync(501)
+
+      await result
+      expect(channelHarness.getChannelCount()).toBe(0)
+      expect(jest.getTimerCount()).toBe(0)
+    } finally {
+      channelHarness.restore()
+      jest.useRealTimers()
+    }
+  })
+
+  it('errors the stream with a fixed result when Avatar rejects execution', async () => {
+    const channelHarness = installProjectionEffectChannel()
+    const receive = jest.fn((intent: { eventId: string }) => {
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: intent.eventId,
+        status: 'rejected',
+        resultClass: 'host_rejected',
+      })
+    })
+    const dispose = subscribeProjectionEffectIntents(receive)
+    try {
+      global.fetch = jest.fn().mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.projection_effect_intent',
+            data: {
+              intent: {
+                schemaVersion: 1,
+                eventId: 'evt_22222222222222222222222222222222',
+                turnId: 'turn_projection_rejected',
+                action: 'start',
+                effectId: 'thunderBall',
+              },
+            },
+          },
+        ])
+      ) as any
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: '雷を出して' } as any],
+        '',
+        'session-projection-effect'
+      )
+      await expect(readTextStream(stream)).rejects.toThrow(
+        'projection_effect_delivery_failed'
+      )
+      expect(receive).toHaveBeenCalledTimes(1)
+    } finally {
+      dispose()
+      channelHarness.restore()
+    }
+  })
+
+  it('aborts an in-flight delivery when its public stream is cancelled', async () => {
+    jest.useFakeTimers()
+    const channelHarness = installProjectionEffectChannel()
+    try {
+      global.fetch = jest.fn().mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.projection_effect_intent',
+            data: {
+              intent: {
+                schemaVersion: 1,
+                eventId: 'evt_33333333333333333333333333333333',
+                turnId: 'turn_projection_cancelled',
+                action: 'reset',
+              },
+            },
+          },
+        ])
+      ) as any
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: 'リセットして' } as any],
+        '',
+        'session-projection-effect'
+      )
+      const reader = stream.getReader()
+      await Promise.resolve()
+      await expect(reader.cancel()).rejects.toThrow(
+        'projection_effect_delivery_failed'
+      )
+      await jest.runAllTimersAsync()
+
+      expect(channelHarness.getChannelCount()).toBe(0)
+      expect(jest.getTimerCount()).toBe(0)
+    } finally {
+      channelHarness.restore()
+      jest.useRealTimers()
+    }
   })
 })
 
@@ -433,6 +627,133 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
       { conversationAttemptRef, assistantSpeech: '返答' },
       expect.objectContaining({ deadlineMs: 30_000 })
     )
+  })
+
+  it('waits for the Avatar execution receipt before completing a planned response', async () => {
+    const channelHarness = installProjectionEffectChannel()
+    const received: unknown[] = []
+    const dispose = subscribeProjectionEffectIntents((intent) => {
+      received.push(intent)
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: intent.eventId,
+        status: 'completed',
+        resultClass: 'started',
+      })
+    })
+    const plannedIntent = {
+      schemaVersion: 2,
+      eventId: 'evt_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      turnId: 'turn_projection_planned',
+      action: 'start',
+      plan: {
+        schemaVersion: 1,
+        planId: 'planv1_0123456789abcdef0123456789abcdef',
+        sessionId: 'session_projection_phase1',
+        revision: 1,
+        action: 'start',
+        effectId: 'thunderBall',
+        position: { x: 0, y: 0.35 },
+        strength: 0.4,
+        durationMs: 5_000,
+        seed: 42,
+        keyframes: [
+          { atMs: 0, position: { x: 0, y: 0 }, strength: 0.4 },
+          { atMs: 5_000, position: { x: 0, y: 0.35 }, strength: 0.4 },
+        ],
+      },
+    } as const
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            delta: '雷を上へ動かします。',
+          },
+        },
+        {
+          type: 'accepted.presentation.projection_effect_intent',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            intent: plannedIntent,
+          },
+        },
+        {
+          type: 'accepted.presentation.completed',
+          data: { conversation_attempt_ref: conversationAttemptRef },
+        },
+      ])
+    )
+
+    await expect(
+      requestAcceptedPreparedSamplePresentation(
+        envelope,
+        jest.fn(async () => {}),
+        {
+          signal: new AbortController().signal,
+          deadlineMs: 30_000,
+        }
+      )
+    ).resolves.toBeUndefined()
+    expect(received).toEqual([plannedIntent])
+    dispose()
+    channelHarness.restore()
+  })
+
+  it('fails fixed when Avatar rejects an otherwise valid planned response', async () => {
+    const channelHarness = installProjectionEffectChannel()
+    const receive = jest.fn((intent: { eventId: string }) => {
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: intent.eventId,
+        status: 'rejected',
+        resultClass: 'host_rejected',
+      })
+    })
+    const dispose = subscribeProjectionEffectIntents(receive)
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            delta: '炎を出します。',
+          },
+        },
+        {
+          type: 'accepted.presentation.projection_effect_intent',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            intent: {
+              schemaVersion: 1,
+              eventId: 'evt_ffffffffffffffffffffffffffffffff',
+              turnId: 'turn_projection_simple',
+              action: 'start',
+              effectId: 'fire',
+            },
+          },
+        },
+        {
+          type: 'accepted.presentation.completed',
+          data: { conversation_attempt_ref: conversationAttemptRef },
+        },
+      ])
+    )
+
+    await expect(
+      requestAcceptedPreparedSamplePresentation(
+        envelope,
+        jest.fn(async () => {}),
+        {
+          signal: new AbortController().signal,
+          deadlineMs: 30_000,
+        }
+      )
+    ).rejects.toThrow('accepted_prepared_sample_request_failed')
+    expect(receive).toHaveBeenCalledTimes(1)
+    dispose()
+    channelHarness.restore()
   })
 
   it('waits for a rendered motion lifecycle and a 12-second no-late window', async () => {

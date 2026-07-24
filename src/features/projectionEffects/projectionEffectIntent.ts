@@ -22,6 +22,11 @@ const CORE_EVENT_ID = /^evt_[0-9a-f]{32}$/
 const SAFE_TURN_OR_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const MAX_SEEN_INTENTS = 256
 const SEEN_INTENT_TTL_MS = 5 * 60 * 1000
+const DELIVERY_PROBE_TIMEOUT_MS = 250
+const DELIVERY_INGRESS_TIMEOUT_MS = 250
+const DELIVERY_EXECUTION_TIMEOUT_MS = 1_500
+const MAX_DELIVERY_ATTEMPTS = 2
+const MAX_DELIVERY_INBOX = 16
 
 export type ProjectionEffectStartIntent = Readonly<{
   schemaVersion: 1
@@ -73,6 +78,20 @@ export type ProjectionEffectPublicationReceipt = Readonly<{
   resultClass: 'published' | 'intent_invalid' | 'transport_unavailable'
 }>
 
+export type ProjectionEffectDeliveryResult =
+  | ProjectionEffectExecutionReceipt
+  | Readonly<{
+      schemaVersion: 1
+      eventId: string | null
+      status: 'rejected'
+      resultClass:
+        | 'intent_invalid'
+        | 'transport_unavailable'
+        | 'receiver_unavailable'
+        | 'delivery_unconfirmed'
+        | 'delivery_aborted'
+    }>
+
 type BroadcastChannelLike = {
   postMessage(value: unknown): void
   addEventListener(
@@ -89,6 +108,7 @@ type BroadcastChannelLike = {
 export type ProjectionEffectIntentTransportOptions = Readonly<{
   now?: () => number
   createBroadcastChannel?: (name: string) => BroadcastChannelLike
+  signal?: AbortSignal
 }>
 
 export type ProjectionEffectRequestedEventContext = Readonly<{
@@ -110,6 +130,40 @@ type ProjectionEffectReceiptEnvelope = Readonly<{
   origin: string
   receipt: ProjectionEffectExecutionReceipt
 }>
+
+type ProjectionEffectProbeEnvelope = Readonly<{
+  schemaVersion: 1
+  kind: 'probe'
+  origin: string
+  eventId: string
+}>
+
+type ProjectionEffectReadyEnvelope = Readonly<{
+  schemaVersion: 1
+  kind: 'ready'
+  origin: string
+  eventId: string
+}>
+
+type ProjectionEffectIngressAckEnvelope = Readonly<{
+  schemaVersion: 1
+  kind: 'intent_ack'
+  origin: string
+  eventId: string
+  fingerprint: string
+}>
+
+type ProjectionEffectDeliveryMessage =
+  | ProjectionEffectReadyEnvelope
+  | ProjectionEffectIngressAckEnvelope
+  | ProjectionEffectReceiptEnvelope
+
+type ActiveProjectionEffectReceiver = Readonly<{
+  token: symbol
+  publishReceipt: (receipt: ProjectionEffectExecutionReceipt) => boolean
+}>
+
+let activeProjectionEffectReceiver: ActiveProjectionEffectReceiver | null = null
 
 export function readProjectionEffectRequestedEvent(
   value: unknown,
@@ -268,28 +322,209 @@ export function publishProjectionEffectIntent(
   })
 }
 
+export async function deliverProjectionEffectIntent(
+  value: unknown,
+  options: ProjectionEffectIntentTransportOptions = {}
+): Promise<ProjectionEffectDeliveryResult> {
+  const intent = readProjectionEffectIntent(value)
+  if (!intent) return deliveryFailure(null, 'intent_invalid')
+  const pageWindow = currentWindow()
+  if (!pageWindow) {
+    return deliveryFailure(intent.eventId, 'transport_unavailable')
+  }
+  let channel: BroadcastChannelLike | null = null
+  try {
+    channel = createChannel(options)
+  } catch {
+    return deliveryFailure(intent.eventId, 'transport_unavailable')
+  }
+  if (!channel) {
+    return deliveryFailure(intent.eventId, 'transport_unavailable')
+  }
+  const deliveryChannel = channel
+
+  const origin = pageWindow.location.origin
+  const fingerprint = fingerprintIntent(intent)
+  const inbox: ProjectionEffectDeliveryMessage[] = []
+  let disposed = false
+  let aborted = false
+  let wake: (() => void) | null = null
+  let channelListenerRegistrationAttempted = false
+  let abortListenerRegistrationAttempted = false
+  let teardownUnproved = false
+  const receiveChannel = (event: MessageEvent) => {
+    if (disposed) return
+    const message = readDeliveryMessage(event.data, origin, intent.eventId)
+    if (!message || inbox.length >= MAX_DELIVERY_INBOX) return
+    inbox.push(message)
+    wake?.()
+  }
+  const abort = () => {
+    aborted = true
+    wake?.()
+  }
+
+  const waitFor = async (
+    predicate: (message: ProjectionEffectDeliveryMessage) => boolean,
+    timeoutMs: number
+  ): Promise<ProjectionEffectDeliveryMessage | null> => {
+    const take = () => {
+      const index = inbox.findIndex(predicate)
+      return index < 0 ? null : (inbox.splice(index, 1)[0] ?? null)
+    }
+    const existing = take()
+    if (existing || aborted) return existing
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs)
+      wake = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
+    wake = null
+    return take()
+  }
+
+  const execute = async (): Promise<ProjectionEffectDeliveryResult> => {
+    if (options.signal?.aborted) {
+      aborted = true
+      return deliveryFailure(intent.eventId, 'delivery_aborted')
+    }
+    try {
+      let ready = false
+      const probe: ProjectionEffectProbeEnvelope = Object.freeze({
+        schemaVersion: 1,
+        kind: 'probe',
+        origin,
+        eventId: intent.eventId,
+      })
+      for (
+        let attempt = 0;
+        attempt < MAX_DELIVERY_ATTEMPTS && !ready && !aborted;
+        attempt += 1
+      ) {
+        deliveryChannel.postMessage(probe)
+        ready = Boolean(
+          await waitFor(
+            (message) =>
+              message.kind === 'ready' && message.eventId === intent.eventId,
+            DELIVERY_PROBE_TIMEOUT_MS
+          )
+        )
+      }
+      if (aborted) return deliveryFailure(intent.eventId, 'delivery_aborted')
+      if (!ready) {
+        return deliveryFailure(intent.eventId, 'receiver_unavailable')
+      }
+
+      const envelope: ProjectionEffectIntentEnvelope = Object.freeze({
+        schemaVersion: 1,
+        kind: 'intent',
+        origin,
+        intent,
+      })
+      let ingressConfirmed = false
+      for (
+        let attempt = 0;
+        attempt < MAX_DELIVERY_ATTEMPTS && !ingressConfirmed && !aborted;
+        attempt += 1
+      ) {
+        if (attempt === 0) {
+          pageWindow.dispatchEvent(
+            new CustomEvent(PROJECTION_EFFECT_INTENT_WINDOW_EVENT, {
+              detail: intent,
+            })
+          )
+        }
+        deliveryChannel.postMessage(envelope)
+        ingressConfirmed = Boolean(
+          await waitFor(
+            (message) =>
+              message.kind === 'intent_ack' &&
+              message.eventId === intent.eventId &&
+              message.fingerprint === fingerprint,
+            DELIVERY_INGRESS_TIMEOUT_MS
+          )
+        )
+      }
+      if (aborted) return deliveryFailure(intent.eventId, 'delivery_aborted')
+      if (!ingressConfirmed) {
+        return deliveryFailure(intent.eventId, 'delivery_unconfirmed')
+      }
+
+      const execution = await waitFor(
+        (message) =>
+          message.kind === 'receipt' &&
+          message.receipt.eventId === intent.eventId,
+        DELIVERY_EXECUTION_TIMEOUT_MS
+      )
+      if (aborted) return deliveryFailure(intent.eventId, 'delivery_aborted')
+      return execution?.kind === 'receipt'
+        ? execution.receipt
+        : deliveryFailure(intent.eventId, 'delivery_unconfirmed')
+    } catch {
+      return deliveryFailure(
+        intent.eventId,
+        aborted ? 'delivery_aborted' : 'delivery_unconfirmed'
+      )
+    }
+  }
+
+  let result: ProjectionEffectDeliveryResult = deliveryFailure(
+    intent.eventId,
+    'delivery_unconfirmed'
+  )
+  try {
+    channelListenerRegistrationAttempted = true
+    channel.addEventListener('message', receiveChannel)
+    abortListenerRegistrationAttempted = Boolean(options.signal)
+    options.signal?.addEventListener('abort', abort, { once: true })
+    result = await execute()
+  } catch {
+    result = deliveryFailure(intent.eventId, 'delivery_unconfirmed')
+  } finally {
+    disposed = true
+    wake = null
+    if (abortListenerRegistrationAttempted) {
+      try {
+        options.signal?.removeEventListener('abort', abort)
+      } catch {
+        teardownUnproved = true
+      }
+    }
+    if (channelListenerRegistrationAttempted) {
+      try {
+        channel.removeEventListener('message', receiveChannel)
+      } catch {
+        teardownUnproved = true
+      }
+    }
+    try {
+      channel.close()
+    } catch {
+      teardownUnproved = true
+    }
+    inbox.length = 0
+  }
+  return teardownUnproved
+    ? deliveryFailure(intent.eventId, 'delivery_unconfirmed')
+    : result
+}
+
 export function publishProjectionEffectExecutionReceipt(
   value: ProjectionEffectExecutionReceipt,
   options: ProjectionEffectIntentTransportOptions = {}
 ): boolean {
   const receipt = readProjectionEffectExecutionReceipt(value)
   const pageWindow = currentWindow()
-  if (!receipt || !pageWindow) return false
-  pageWindow.dispatchEvent(
-    new CustomEvent(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, { detail: receipt })
-  )
-  const channel = createChannel(options)
-  if (channel) {
-    const envelope: ProjectionEffectReceiptEnvelope = Object.freeze({
-      schemaVersion: 1,
-      kind: 'receipt',
-      origin: pageWindow.location.origin,
-      receipt,
-    })
-    channel.postMessage(envelope)
-    channel.close()
+  const receiver = activeProjectionEffectReceiver
+  void options
+  if (!receipt || !pageWindow || !receiver) return false
+  try {
+    return receiver.publishReceipt(receipt)
+  } catch {
+    return false
   }
-  return true
 }
 
 export function subscribeProjectionEffectIntents(
@@ -298,9 +533,119 @@ export function subscribeProjectionEffectIntents(
 ): () => void {
   const pageWindow = currentWindow()
   if (!pageWindow) return () => undefined
+  if (activeProjectionEffectReceiver) return () => undefined
+  const receiverToken = Symbol('projection-effect-receiver')
+  activeProjectionEffectReceiver = Object.freeze({
+    token: receiverToken,
+    publishReceipt: () => false,
+  })
   const now = options.now ?? Date.now
   const seen = new Map<string, { fingerprint: string; seenAt: number }>()
   let disposed = false
+  let channel: BroadcastChannelLike | null = null
+  let windowListenerRegistrationAttempted = false
+  let channelListenerRegistrationAttempted = false
+  let cleanupAttempted = false
+  let receiveWindow: (event: Event) => void
+  let receiveChannel: (event: MessageEvent) => void
+
+  const cleanup = () => {
+    if (cleanupAttempted) return
+    cleanupAttempted = true
+    disposed = true
+    if (activeProjectionEffectReceiver?.token === receiverToken) {
+      activeProjectionEffectReceiver = null
+    }
+    if (windowListenerRegistrationAttempted) {
+      try {
+        pageWindow.removeEventListener(
+          PROJECTION_EFFECT_INTENT_WINDOW_EVENT,
+          receiveWindow
+        )
+      } catch {
+        // A disposed handler is inert even if the platform cannot remove it.
+      }
+    }
+    if (channelListenerRegistrationAttempted && channel) {
+      try {
+        channel.removeEventListener('message', receiveChannel)
+      } catch {
+        // Remaining channel handlers are guarded by disposed.
+      }
+    }
+    if (channel) {
+      try {
+        channel.close()
+      } catch {
+        // Teardown never exposes native or private platform details.
+      }
+    }
+    channel = null
+    seen.clear()
+  }
+
+  const publishReceipt = (
+    receipt: ProjectionEffectExecutionReceipt
+  ): boolean => {
+    if (
+      disposed ||
+      cleanupAttempted ||
+      activeProjectionEffectReceiver?.token !== receiverToken
+    ) {
+      return false
+    }
+    const envelope: ProjectionEffectReceiptEnvelope = Object.freeze({
+      schemaVersion: 1,
+      kind: 'receipt',
+      origin: pageWindow.location.origin,
+      receipt,
+    })
+    let peerPublished = false
+    if (channel) {
+      try {
+        channel.postMessage(envelope)
+        peerPublished = true
+      } catch {
+        cleanup()
+        return false
+      }
+    }
+    try {
+      pageWindow.dispatchEvent(
+        new CustomEvent(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, {
+          detail: receipt,
+        })
+      )
+    } catch {
+      if (!peerPublished) {
+        cleanup()
+        return false
+      }
+      // The receiver-owned peer receipt is already valid and authoritative.
+    }
+    return true
+  }
+
+  const acknowledge = (
+    intent: ProjectionEffectIntent,
+    fingerprint: string
+  ): boolean => {
+    if (disposed || !channel) return false
+    const envelope: ProjectionEffectIngressAckEnvelope = Object.freeze({
+      schemaVersion: 1,
+      kind: 'intent_ack',
+      origin: pageWindow.location.origin,
+      eventId: intent.eventId,
+      fingerprint,
+    })
+    try {
+      channel.postMessage(envelope)
+      return true
+    } catch {
+      cleanup()
+      return false
+    }
+  }
   const accept = (value: unknown) => {
     if (disposed) return
     const intent = readProjectionEffectIntent(value)
@@ -312,40 +657,69 @@ export function subscribeProjectionEffectIntents(
     const fingerprint = fingerprintIntent(intent)
     const previous = seen.get(intent.eventId)
     if (previous) {
-      // Same event is delivered by both transports. A changed payload under the
-      // same authoritative event ID is a collision and is also rejected.
+      if (previous.fingerprint === fingerprint && channel) {
+        acknowledge(intent, fingerprint)
+      }
       return
     }
     // Never evict a live reservation: that would make a still-live event ID
     // replayable before its authoritative TTL expires.
     if (seen.size >= MAX_SEEN_INTENTS) return
     seen.set(intent.eventId, { fingerprint, seenAt: timestamp })
+    const requiresAcknowledgement = channel !== null
+    if (requiresAcknowledgement && !acknowledge(intent, fingerprint)) {
+      seen.delete(intent.eventId)
+      return
+    }
+    if (disposed) return
     receive(intent)
   }
-  const receiveWindow = (event: Event) => {
+  receiveWindow = (event: Event) => {
+    if (disposed) return
     if (event instanceof CustomEvent) accept(event.detail)
   }
-  const receiveChannel = (event: MessageEvent) => {
+  receiveChannel = (event: MessageEvent) => {
+    if (disposed) return
+    const probe = readProbeEnvelope(event.data, pageWindow.location.origin)
+    if (probe && channel) {
+      try {
+        channel.postMessage(
+          Object.freeze({
+            schemaVersion: 1,
+            kind: 'ready',
+            origin: pageWindow.location.origin,
+            eventId: probe.eventId,
+          }) satisfies ProjectionEffectReadyEnvelope
+        )
+      } catch {
+        cleanup()
+      }
+      return
+    }
     const envelope = readIntentEnvelope(event.data, pageWindow.location.origin)
     if (envelope) accept(envelope.intent)
   }
-  const channel = createChannel(options)
-  pageWindow.addEventListener(
-    PROJECTION_EFFECT_INTENT_WINDOW_EVENT,
-    receiveWindow
-  )
-  channel?.addEventListener('message', receiveChannel)
-  return () => {
-    if (disposed) return
-    disposed = true
-    pageWindow.removeEventListener(
+  try {
+    channel = createChannel(options)
+    windowListenerRegistrationAttempted = true
+    pageWindow.addEventListener(
       PROJECTION_EFFECT_INTENT_WINDOW_EVENT,
       receiveWindow
     )
-    channel?.removeEventListener('message', receiveChannel)
-    channel?.close()
-    seen.clear()
+    if (channel) {
+      channelListenerRegistrationAttempted = true
+      channel.addEventListener('message', receiveChannel)
+    }
+    if (!disposed) {
+      activeProjectionEffectReceiver = Object.freeze({
+        token: receiverToken,
+        publishReceipt,
+      })
+    }
+  } catch {
+    cleanup()
   }
+  return cleanup
 }
 
 function projectCanonicalIntent(
@@ -470,6 +844,86 @@ function readIntentEnvelope(
     : null
 }
 
+function readProbeEnvelope(
+  value: unknown,
+  expectedOrigin: string
+): ProjectionEffectProbeEnvelope | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['schemaVersion', 'kind', 'origin', 'eventId']) ||
+    value.schemaVersion !== 1 ||
+    value.kind !== 'probe' ||
+    value.origin !== expectedOrigin ||
+    typeof value.eventId !== 'string' ||
+    !CORE_EVENT_ID.test(value.eventId)
+  ) {
+    return null
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'probe',
+    origin: expectedOrigin,
+    eventId: value.eventId,
+  })
+}
+
+function readDeliveryMessage(
+  value: unknown,
+  expectedOrigin: string,
+  expectedEventId: string
+): ProjectionEffectDeliveryMessage | null {
+  if (!isRecord(value) || value.origin !== expectedOrigin) return null
+  if (
+    value.kind === 'ready' &&
+    hasExactKeys(value, ['schemaVersion', 'kind', 'origin', 'eventId']) &&
+    value.schemaVersion === 1 &&
+    value.eventId === expectedEventId
+  ) {
+    return Object.freeze({
+      schemaVersion: 1,
+      kind: 'ready',
+      origin: expectedOrigin,
+      eventId: expectedEventId,
+    })
+  }
+  if (
+    value.kind === 'intent_ack' &&
+    hasExactKeys(value, [
+      'schemaVersion',
+      'kind',
+      'origin',
+      'eventId',
+      'fingerprint',
+    ]) &&
+    value.schemaVersion === 1 &&
+    value.eventId === expectedEventId &&
+    typeof value.fingerprint === 'string'
+  ) {
+    return Object.freeze({
+      schemaVersion: 1,
+      kind: 'intent_ack',
+      origin: expectedOrigin,
+      eventId: expectedEventId,
+      fingerprint: value.fingerprint,
+    })
+  }
+  if (
+    value.kind === 'receipt' &&
+    hasExactKeys(value, ['schemaVersion', 'kind', 'origin', 'receipt']) &&
+    value.schemaVersion === 1
+  ) {
+    const receipt = readProjectionEffectExecutionReceipt(value.receipt)
+    if (!receipt || receipt.eventId !== expectedEventId) return null
+    return Object.freeze({
+      schemaVersion: 1,
+      kind: 'receipt',
+      origin: expectedOrigin,
+      receipt,
+    })
+  }
+  return null
+}
+
 function fingerprintIntent(intent: ProjectionEffectIntent): string {
   if (intent.schemaVersion === 2) {
     return `${intent.turnId}\u0000${intent.action}\u0000${JSON.stringify(
@@ -479,6 +933,23 @@ function fingerprintIntent(intent: ProjectionEffectIntent): string {
   return intent.action === 'start'
     ? `${intent.turnId}\u0000${intent.action}\u0000${intent.effectId}`
     : `${intent.turnId}\u0000${intent.action}`
+}
+
+function deliveryFailure(
+  eventId: string | null,
+  resultClass:
+    | 'intent_invalid'
+    | 'transport_unavailable'
+    | 'receiver_unavailable'
+    | 'delivery_unconfirmed'
+    | 'delivery_aborted'
+): ProjectionEffectDeliveryResult {
+  return Object.freeze({
+    schemaVersion: 1,
+    eventId,
+    status: 'rejected',
+    resultClass,
+  })
 }
 
 function createChannel(

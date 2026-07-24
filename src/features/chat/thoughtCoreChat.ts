@@ -11,8 +11,9 @@ import { safeConversationAttemptRef } from '@/utils/speechOutputParitySummary'
 import type { AcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampleBrowserStt'
 import {
   PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT,
-  publishProjectionEffectIntent,
+  deliverProjectionEffectIntent,
   readProjectionEffectIntent,
+  type ProjectionEffectDeliveryResult,
   type ProjectionEffectIntent,
 } from '@/features/projectionEffects/projectionEffectIntent'
 
@@ -56,6 +57,7 @@ const ACCEPTED_PRESENTATION_ASSISTANT_EVENT =
   'accepted.presentation.assistant_delta'
 const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
 const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
+const PROJECTION_EFFECT_DELIVERY_FAILED = 'projection_effect_delivery_failed'
 const ACCEPTED_PRESENTATION_MOTION_POLL_INTERVAL_MS = 100
 const ACCEPTED_PRESENTATION_NO_LATE_MOTION_MS = 12_000
 
@@ -1138,7 +1140,10 @@ export async function requestAcceptedPreparedSamplePresentation(
       )
     }
     for (const intent of projectionEffectIntents) {
-      if (publishProjectionEffectIntent(intent).status !== 'published') {
+      const delivery = await deliverProjectionEffectIntent(intent, {
+        signal: options.signal,
+      })
+      if (!projectionEffectDeliverySucceeded(intent, delivery)) {
         throw new Error()
       }
     }
@@ -1177,9 +1182,14 @@ export async function getThoughtCoreChatResponseStream(
       )
     }
 
+    const projectionDeliveryAbortController = new AbortController()
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let outputCancelled = false
+
     return new ReadableStream({
       async start(controller) {
         let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+        let projectionDeliveryFailed = false
         try {
           if (!response.body) {
             throw new Error('API response from Thought Core is empty', {
@@ -1188,8 +1198,10 @@ export async function getThoughtCoreChatResponseStream(
           }
 
           reader = response.body.getReader()
+          activeReader = reader
           const decoder = new TextDecoder('utf-8')
           let buffer = ''
+          const deliveredProjectionIntents = new Map<string, string>()
 
           while (true) {
             const { done, value } = await reader.read()
@@ -1229,7 +1241,26 @@ export async function getThoughtCoreChatResponseStream(
                 }
                 if (eventType === PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT) {
                   const intent = readProjectionEffectIntent(data.intent)
-                  if (intent) void publishProjectionEffectIntent(intent)
+                  if (intent) {
+                    const fingerprint = JSON.stringify(intent)
+                    const previous = deliveredProjectionIntents.get(
+                      intent.eventId
+                    )
+                    if (previous === fingerprint) continue
+                    if (previous !== undefined) {
+                      throw new Error(PROJECTION_EFFECT_DELIVERY_FAILED)
+                    }
+                    deliveredProjectionIntents.set(intent.eventId, fingerprint)
+                    const delivery = await deliverProjectionEffectIntent(
+                      intent,
+                      {
+                        signal: projectionDeliveryAbortController.signal,
+                      }
+                    )
+                    if (!projectionEffectDeliverySucceeded(intent, delivery)) {
+                      throw new Error(PROJECTION_EFFECT_DELIVERY_FAILED)
+                    }
+                  }
                 }
 
                 if (
@@ -1250,11 +1281,32 @@ export async function getThoughtCoreChatResponseStream(
                   )
                 }
               } catch (error) {
+                if (
+                  error instanceof Error &&
+                  error.message === PROJECTION_EFFECT_DELIVERY_FAILED
+                ) {
+                  throw error
+                }
                 console.error('Error parsing Thought Core SSE:', error)
               }
             }
           }
         } catch (error) {
+          if (outputCancelled) return
+          if (
+            error instanceof Error &&
+            error.message === PROJECTION_EFFECT_DELIVERY_FAILED
+          ) {
+            projectionDeliveryFailed = true
+            projectionDeliveryAbortController.abort()
+            try {
+              await reader?.cancel(PROJECTION_EFFECT_DELIVERY_FAILED)
+            } catch {
+              // The public stream error below is the sole fixed failure surface.
+            }
+            controller.error(new Error(PROJECTION_EFFECT_DELIVERY_FAILED))
+            return
+          }
           console.error('Error fetching Thought Core API response:', error)
 
           toastStore.getState().addToast({
@@ -1263,11 +1315,30 @@ export async function getThoughtCoreChatResponseStream(
             tag: 'thought-core-api-error',
           })
         } finally {
-          controller.close()
+          if (!outputCancelled && !projectionDeliveryFailed) {
+            controller.close()
+          }
           if (reader) {
-            reader.releaseLock()
+            try {
+              reader.releaseLock()
+            } catch {
+              // Reader teardown uncertainty is not exposed through native text.
+            }
+          }
+          if (activeReader === reader) {
+            activeReader = undefined
           }
         }
+      },
+      async cancel() {
+        outputCancelled = true
+        projectionDeliveryAbortController.abort()
+        try {
+          await activeReader?.cancel(PROJECTION_EFFECT_DELIVERY_FAILED)
+        } catch {
+          // The fixed cancellation below is the only public failure detail.
+        }
+        throw new Error(PROJECTION_EFFECT_DELIVERY_FAILED)
       },
     })
   } catch (error: any) {
@@ -1285,4 +1356,16 @@ export async function getThoughtCoreChatResponseStream(
     })
     throw error
   }
+}
+
+function projectionEffectDeliverySucceeded(
+  intent: ProjectionEffectIntent,
+  result: ProjectionEffectDeliveryResult
+): boolean {
+  if (result.status !== 'completed' || result.eventId !== intent.eventId) {
+    return false
+  }
+  if (intent.action === 'start') return result.resultClass === 'started'
+  if (intent.action === 'stop') return result.resultClass === 'stopped'
+  return result.resultClass === 'reset'
 }
