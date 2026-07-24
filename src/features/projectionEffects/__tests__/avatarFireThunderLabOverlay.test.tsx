@@ -2,9 +2,9 @@ import { createRef } from 'react'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import {
   AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES,
+  AvatarFireThunderEffectLayer,
   AvatarFireThunderLabOverlay,
   MAX_PENDING_PROJECTION_EFFECT_INTENTS,
-  type AvatarFireThunderLabOverlayProps,
 } from '../browser/avatarFireThunderLabOverlay'
 import type {
   FireThunderLabCanvasLayerProps,
@@ -159,10 +159,25 @@ describe('AvatarFireThunderLabOverlay', () => {
     expect(container.querySelectorAll('canvas')).toHaveLength(3)
   })
 
+  it('exposes the two-canvas effect surface without mounting another avatar', () => {
+    const { container } = render(<AvatarFireThunderEffectLayer />)
+
+    expect(
+      screen.queryByTestId('avatar-fire-thunder-avatar-layer')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByTestId('mock-vrm-viewer-canvas')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getAllByTestId('avatar-fire-thunder-effect-layer')
+    ).toHaveLength(1)
+    expect(container.querySelectorAll('canvas')).toHaveLength(2)
+  })
+
   it('forwards the existing controller and reduced-motion contract', async () => {
     const controllerRef = createRef<FireThunderLabController>()
     render(
-      <AvatarFireThunderLabOverlay ref={controllerRef} reducedMotion={true} />
+      <AvatarFireThunderEffectLayer ref={controllerRef} reducedMotion={true} />
     )
 
     expect(screen.getByTestId('fire-thunder-lab-layer')).toHaveAttribute(
@@ -187,7 +202,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     const requestFrame = jest.spyOn(window, 'requestAnimationFrame')
     const setTimer = jest.spyOn(window, 'setTimeout')
 
-    const { unmount } = render(<AvatarFireThunderLabOverlay />)
+    const { unmount } = render(<AvatarFireThunderEffectLayer />)
     unmount()
 
     expect(requestFrame).not.toHaveBeenCalled()
@@ -205,7 +220,7 @@ describe('AvatarFireThunderLabOverlay', () => {
           resolveStart = () => resolve(hostResult('started'))
         })
     )
-    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
 
     act(() => {
       publishProjectionEffectIntent({
@@ -249,7 +264,7 @@ describe('AvatarFireThunderLabOverlay', () => {
 
   it('deduplicates intents and ignores disabled or unmounted receivers', async () => {
     const enabled = render(
-      <AvatarFireThunderLabOverlay intentReceiverEnabled={true} />
+      <AvatarFireThunderEffectLayer intentReceiverEnabled={true} />
     )
     const duplicate = {
       action: 'start' as const,
@@ -275,7 +290,7 @@ describe('AvatarFireThunderLabOverlay', () => {
 
     enabled.unmount()
     mockLabController.start.mockClear()
-    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={false} />)
+    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={false} />)
     act(() => {
       publishProjectionEffectIntent({
         ...duplicate,
@@ -300,7 +315,7 @@ describe('AvatarFireThunderLabOverlay', () => {
             })
         })
     )
-    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
     const acceptedPlan = performancePlan()
 
     act(() => {
@@ -355,7 +370,7 @@ describe('AvatarFireThunderLabOverlay', () => {
       status: 'busy',
       hostResult: null,
     })
-    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
 
     act(() => {
       publishProjectionEffectIntent({
@@ -386,7 +401,7 @@ describe('AvatarFireThunderLabOverlay', () => {
   it('rejects new and replayed live IDs at cap, then accepts after expiry', async () => {
     const now = jest.spyOn(Date, 'now').mockReturnValue(1_000)
     try {
-      render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+      render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
       const resetIntent = (index: number) => ({
         schemaVersion: 1 as const,
         eventId: `evt_${index.toString(16).padStart(32, '0')}`,
@@ -437,7 +452,7 @@ describe('AvatarFireThunderLabOverlay', () => {
           resolveFirst = () => resolve(hostResult('reset'))
         })
     )
-    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
 
     act(() => {
       for (
@@ -511,7 +526,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     }
     window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
     mockLabController.start.mockRejectedValueOnce(new Error('private failure'))
-    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
 
     act(() => {
       publishProjectionEffectIntent({
@@ -562,7 +577,7 @@ describe('AvatarFireThunderLabOverlay', () => {
         })
     )
     const mounted = render(
-      <AvatarFireThunderLabOverlay intentReceiverEnabled={true} />
+      <AvatarFireThunderEffectLayer intentReceiverEnabled={true} />
     )
     act(() => {
       publishProjectionEffectIntent({

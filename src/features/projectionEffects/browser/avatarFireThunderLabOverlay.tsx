@@ -34,17 +34,17 @@ export const AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES = {
 // dedupe cap is separate and must not be used as execution-queue capacity.
 export const MAX_PENDING_PROJECTION_EFFECT_INTENTS = 16
 
-export type AvatarFireThunderLabOverlayProps = Pick<
+export type AvatarFireThunderEffectLayerProps = Pick<
   FireThunderLabCanvasLayerProps,
   'onStatusChange' | 'reducedMotion'
 > & {
   intentReceiverEnabled?: boolean
 }
 
-export const AvatarFireThunderLabOverlay = forwardRef<
+export const AvatarFireThunderEffectLayer = forwardRef<
   FireThunderLabController,
-  AvatarFireThunderLabOverlayProps
->(function AvatarFireThunderLabOverlay(
+  AvatarFireThunderEffectLayerProps
+>(function AvatarFireThunderEffectLayer(
   { intentReceiverEnabled = false, onStatusChange, reducedMotion = false },
   forwardedRef
 ) {
@@ -171,6 +171,30 @@ export const AvatarFireThunderLabOverlay = forwardRef<
 
   return (
     <div
+      className="pointer-events-none absolute inset-0 z-10"
+      data-testid="avatar-fire-thunder-effect-layer"
+      data-projection-anchor-contract="fixed-stage-relative"
+    >
+      <FireThunderLabCanvasLayer
+        ref={controllerRef}
+        onStatusChange={onStatusChange}
+        visualParameterOverrides={AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES}
+        reducedMotion={reducedMotion}
+      />
+    </div>
+  )
+})
+
+AvatarFireThunderEffectLayer.displayName = 'AvatarFireThunderEffectLayer'
+
+export type AvatarFireThunderLabOverlayProps = AvatarFireThunderEffectLayerProps
+
+export const AvatarFireThunderLabOverlay = forwardRef<
+  FireThunderLabController,
+  AvatarFireThunderLabOverlayProps
+>(function AvatarFireThunderLabOverlay(props, forwardedRef) {
+  return (
+    <div
       className="pointer-events-none absolute inset-0 isolate"
       data-testid="avatar-fire-thunder-overlay"
     >
@@ -180,18 +204,7 @@ export const AvatarFireThunderLabOverlay = forwardRef<
       >
         <VrmViewer />
       </div>
-      <div
-        className="pointer-events-none absolute inset-0 z-10"
-        data-testid="avatar-fire-thunder-effect-layer"
-        data-projection-anchor-contract="fixed-stage-relative"
-      >
-        <FireThunderLabCanvasLayer
-          ref={controllerRef}
-          onStatusChange={onStatusChange}
-          visualParameterOverrides={AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES}
-          reducedMotion={reducedMotion}
-        />
-      </div>
+      <AvatarFireThunderEffectLayer ref={forwardedRef} {...props} />
     </div>
   )
 })

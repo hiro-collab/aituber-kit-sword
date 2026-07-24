@@ -40,10 +40,8 @@ import {
   requestAcceptedPreparedSamplePresentation,
 } from '@/features/chat/thoughtCoreChat'
 import { presentAcceptedPreparedSampleAssistantResponse } from '@/features/chat/handlers'
-import {
-  FluidFireRelayCanvasLayer,
-  resolveProjectionEffectSelection,
-} from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
+import { resolveProjectionEffectSelection } from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
+import { AvatarFireThunderEffectLayer } from '@/features/projectionEffects/browser/avatarFireThunderLabOverlay'
 import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
 import {
   createProjectionStageCaptureHandleSession,
@@ -284,10 +282,6 @@ const ProjectionVisual = () => {
     >
       <Meta />
       <ProjectionVisualDisplayStateBridge mode={displayStateBridgeMode} />
-      <FluidFireRelayCanvasLayer
-        enabled={projectionEffectId === 'fluidFireRelay'}
-        parameters={projectionEffects.fluidFireRelay}
-      />
       {shouldRenderHud && (
         <ProjectionVisualHud
           variant={isDisplayOnlyMode ? 'passive' : 'operator'}
@@ -304,6 +298,7 @@ const ProjectionVisual = () => {
           onDanceLifecycleAcceptanceReady={handleDanceLifecycleAcceptanceReady}
         />
       )}
+      <AvatarFireThunderEffectLayer intentReceiverEnabled={isStageOutputMode} />
       <ProjectionVisualStimulusRefBridge
         enabled={modelType === 'vrm'}
         stimulusRef={projectionVisualStimulusRef}

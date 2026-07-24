@@ -66,7 +66,7 @@ describe('Avatar Fire Thunder lab page', () => {
     )
     expect(
       screen.getByTestId('mock-avatar-fire-thunder-overlay')
-    ).toHaveAttribute('data-intent-receiver-enabled', 'true')
+    ).toHaveAttribute('data-intent-receiver-enabled', 'false')
 
     fireEvent.click(screen.getByTestId('avatar-fire-button'))
     fireEvent.click(screen.getByTestId('avatar-thunder-button'))
