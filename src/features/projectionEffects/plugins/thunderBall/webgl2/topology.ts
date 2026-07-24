@@ -6,6 +6,7 @@ import {
   type ThunderWebGl2Connection,
   type ThunderWebGl2Point,
   type ThunderWebGl2RibbonSample,
+  type ThunderWebGl2SourceBirth,
   type ThunderWebGl2Tone,
   type ThunderWebGl2Topology,
 } from './contracts'
@@ -27,10 +28,15 @@ export interface ThunderWebGl2RibbonOptions {
   haloWidth?: number
   displacement?: number
   reducedMotion?: boolean
+  sourceBirth?: Readonly<ThunderWebGl2SourceBirth>
 }
 
 const NORMAL_CADENCE_MS = 96
 const REDUCED_CADENCE_MS = 192
+const SOURCE_BIRTH_INTERVAL_MS = 10
+const NORMAL_SOURCE_LIFE_MS = 213
+const REDUCED_SOURCE_LIFE_MS = 320
+const DEFAULT_TOPOLOGY_RADIUS = 0.42
 
 export function thunderWebGl2CadenceMs(reducedMotion: boolean): number {
   return reducedMotion ? REDUCED_CADENCE_MS : NORMAL_CADENCE_MS
@@ -44,6 +50,9 @@ export function resolveThunderWebGl2Tone(
     haloWidth: reducedMotion ? 0.58 : 0.72,
     coreLuminance: reducedMotion ? 1.7 : 2.4,
     haloLuminance: reducedMotion ? 0.48 : 0.82,
+    bloomGain: reducedMotion ? 0.32 : 0.78,
+    exposure: reducedMotion ? 1.05 : 1.28,
+    gamma: reducedMotion ? 0.92 : 0.78,
     feedback: reducedMotion ? 0.32 : 0.72,
     pulse: reducedMotion ? 0.06 : 0.18,
   })
@@ -59,27 +68,26 @@ export function createThunderWebGl2Topology(
   const epoch = Math.floor(nowMs / cadenceMs)
   const bornAtMs = epoch * cadenceMs
   const center = finitePoint(options.center ?? { x: 0, y: 0 })
-  const radius = clamp(finiteOr(options.radius, 0.72), 0.05, 1.5)
+  const radius = clamp(
+    finiteOr(options.radius, DEFAULT_TOPOLOGY_RADIUS),
+    0.05,
+    1.5
+  )
   const random = mulberry32(mixSeed(seed, epoch, 0x54484e44))
   const candidates = createCandidates(center, radius, random)
-  const sourceOrder = shuffledIndices(
-    THUNDER_WEBGL2_CANDIDATE_COUNT,
-    random
-  ).slice(0, THUNDER_WEBGL2_SOURCE_COUNT)
+  const sources = createSourceBirths(center, radius, seed, nowMs, reducedMotion)
   const tone = resolveThunderWebGl2Tone(reducedMotion)
-  const connections = sourceOrder.map((pIndex, sourceOrderIndex) => {
-    const qIndex = nearestCandidateIndex(candidates, pIndex)
-    const connectionSeed = mixSeed(seed, epoch, sourceOrderIndex + 1)
-    const lifeRandom = mulberry32(connectionSeed)()
-    const source = candidates[pIndex] as ThunderWebGl2Candidate
+  const connections = sources.map((source, sourceIndex) => {
+    const qIndex = nearestCandidateIndex(candidates, source)
+    const connectionSeed = mixSeed(seed, epoch, sourceIndex + 1)
     const target = candidates[qIndex] as ThunderWebGl2Candidate
     return Object.freeze({
-      pIndex,
+      pIndex: source.index,
       qIndex,
       source,
       target,
-      bornAtMs,
-      lifeMs: (reducedMotion ? 280 : 180) + lifeRandom * 220,
+      bornAtMs: source.bornAtMs,
+      lifeMs: source.lifeMs,
       seed: connectionSeed,
       ribbon: createThunderWebGl2Ribbon(source, target, {
         seed: connectionSeed,
@@ -87,6 +95,7 @@ export function createThunderWebGl2Topology(
         haloWidth: tone.haloWidth * 0.028,
         displacement: reducedMotion ? 0.035 : 0.075,
         reducedMotion,
+        sourceBirth: source,
       }),
     } satisfies ThunderWebGl2Connection)
   })
@@ -97,6 +106,7 @@ export function createThunderWebGl2Topology(
     bornAtMs,
     cadenceMs,
     candidates: Object.freeze(candidates),
+    sources: Object.freeze(sources),
     connections: Object.freeze(connections),
   })
 }
@@ -172,8 +182,9 @@ export function createThunderWebGl2Ribbon(
       const taper =
         index === 0 || index === segmentCount
           ? 0
-          : Math.pow(Math.max(0, endpointEnvelope), 0.72)
-      const width = haloWidth * taper
+          : Math.pow(Math.max(0, endpointEnvelope), 0.82)
+      const sourceFlare = Math.exp(-Math.pow((along - 0.16) / 0.16, 2))
+      const width = haloWidth * taper * (0.38 + sourceFlare * 1.9)
 
       return Object.freeze({
         along,
@@ -185,6 +196,7 @@ export function createThunderWebGl2Ribbon(
         rightX: centerX - perpendicularX * width,
         rightY: centerY - perpendicularY * width,
         width,
+        sourceBirth: index === 0 ? options.sourceBirth : undefined,
       })
     })
   )
@@ -192,10 +204,15 @@ export function createThunderWebGl2Ribbon(
 
 export function nearestThunderWebGl2Candidate(
   candidates: readonly Readonly<ThunderWebGl2Candidate>[],
-  pIndex: number
+  sourceValue: number | Readonly<ThunderWebGl2Point>
 ): Readonly<ThunderWebGl2Candidate> | null {
-  if (pIndex < 0 || pIndex >= candidates.length) return null
-  const qIndex = nearestCandidateIndex(candidates, pIndex)
+  if (
+    typeof sourceValue === 'number' &&
+    (sourceValue < 0 || sourceValue >= candidates.length)
+  ) {
+    return null
+  }
+  const qIndex = nearestCandidateIndex(candidates, sourceValue)
   return candidates[qIndex] ?? null
 }
 
@@ -218,16 +235,53 @@ function createCandidates(
   })
 }
 
+function createSourceBirths(
+  center: Readonly<ThunderWebGl2Point>,
+  radius: number,
+  seed: number,
+  sampleNowMs: number,
+  reducedMotion: boolean
+): ThunderWebGl2SourceBirth[] {
+  const newestBirthId = Math.floor(sampleNowMs / SOURCE_BIRTH_INTERVAL_MS)
+  const lifeMs = reducedMotion ? REDUCED_SOURCE_LIFE_MS : NORMAL_SOURCE_LIFE_MS
+  return Array.from({ length: THUNDER_WEBGL2_SOURCE_COUNT }, (_, index) => {
+    const birthId = newestBirthId - index
+    const bornAtMs = Math.max(0, birthId * SOURCE_BIRTH_INTERVAL_MS)
+    const ageMs = clamp(sampleNowMs - bornAtMs, 0, lifeMs)
+    const random = mulberry32(mixSeed(seed, birthId, index + 0x534f5552))
+    const angle = random() * Math.PI * 2
+    const localRadius = radius * (0.08 + random() * 0.24)
+    const driftAngle = angle + (random() - 0.5) * Math.PI * 0.72
+    const drift =
+      radius * (ageMs / Math.max(lifeMs, 1)) * (reducedMotion ? 0.07 : 0.14)
+    return Object.freeze({
+      index,
+      x:
+        center.x + Math.cos(angle) * localRadius + Math.cos(driftAngle) * drift,
+      y:
+        center.y + Math.sin(angle) * localRadius + Math.sin(driftAngle) * drift,
+      bornAtMs,
+      lifeMs,
+      ageMs,
+      radius: clamp(radius * (0.055 + random() * 0.025), 0.005, 0.12),
+      energy: clamp(1 - (ageMs / Math.max(lifeMs, 1)) * 0.68, 0.24, 1),
+    })
+  })
+}
+
 function nearestCandidateIndex(
   candidates: readonly Readonly<ThunderWebGl2Candidate>[],
-  pIndex: number
+  sourceValue: number | Readonly<ThunderWebGl2Point>
 ): number {
-  const source = candidates[pIndex]
-  if (!source) return pIndex
-  let bestIndex = pIndex
+  const source =
+    typeof sourceValue === 'number' ? candidates[sourceValue] : sourceValue
+  if (!source) return 0
+  let bestIndex = 0
   let bestDistance = Number.POSITIVE_INFINITY
   for (const candidate of candidates) {
-    if (candidate.index === pIndex) continue
+    if (typeof sourceValue === 'number' && candidate.index === sourceValue) {
+      continue
+    }
     const dx = candidate.x - source.x
     const dy = candidate.y - source.y
     const distance = dx * dx + dy * dy
@@ -240,17 +294,6 @@ function nearestCandidateIndex(
     }
   }
   return bestIndex
-}
-
-function shuffledIndices(count: number, random: () => number): number[] {
-  const values = Array.from({ length: count }, (_, index) => index)
-  for (let index = values.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(random() * (index + 1))
-    const current = values[index] as number
-    values[index] = values[swapIndex] as number
-    values[swapIndex] = current
-  }
-  return values
 }
 
 function mulberry32(seed: number): () => number {

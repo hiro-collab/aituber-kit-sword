@@ -1,11 +1,20 @@
 import {
+  THUNDER_WEBGL2_BLUR_SCALES,
+  THUNDER_WEBGL2_BLUR_WEIGHTS,
   THUNDER_WEBGL2_MAX_RESOURCE_COUNT,
   THUNDER_WEBGL2_PASS_GRAPH,
   type ThunderWebGl2EngineFrame,
   type ThunderWebGl2ResourceKind,
 } from '../plugins/thunderBall/webgl2/contracts'
+import {
+  mapThunderParametersToWebGl2AdapterConfig,
+  mapThunderWebGl2EngineFrame,
+} from '../plugins/thunderBall/webgl2/adapter'
 import { ThunderBallWebGl2Engine } from '../plugins/thunderBall/webgl2/engine'
-import { THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER } from '../plugins/thunderBall/webgl2/shaders'
+import {
+  resolveThunderWebGl2CompositeOracle,
+  THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER,
+} from '../plugins/thunderBall/webgl2/shaders'
 import {
   createThunderWebGl2Topology,
   resolveThunderWebGl2Tone,
@@ -97,39 +106,74 @@ describe('Thunder Ball WebGL2 engine', () => {
       width: 640,
       height: 360,
     })
-    const topology = createThunderWebGl2Topology({ seed: 7, nowMs: 0 })
+    const frame = createValidEngineFrame(7, 0)
 
     expect(engine.audit()).toMatchObject({
       state: 'ready',
       failure: null,
       passGraph: THUNDER_WEBGL2_PASS_GRAPH,
+      blurScales: THUNDER_WEBGL2_BLUR_SCALES,
+      blurWeights: THUNDER_WEBGL2_BLUR_WEIGHTS,
       resources: { total: THUNDER_WEBGL2_MAX_RESOURCE_COUNT },
     })
-    expect(
-      engine.render({
-        ribbons: topology.connections.map(({ ribbon }) => ribbon),
-        tone: resolveThunderWebGl2Tone(false),
-      })
-    ).toMatchObject({ status: 'rendered', state: 'ready' })
-    expect(fake.drawArrays).toHaveBeenCalledTimes(
-      topology.connections.length + 8
-    )
+    expect(engine.render(frame)).toMatchObject({
+      status: 'rendered',
+      state: 'ready',
+    })
+    expect(fake.drawArrays).toHaveBeenCalledTimes(frame.ribbons.length + 8)
     expect(fake.blurSteps).toHaveBeenCalledTimes(6)
     expect(
       fake.blurSteps.mock.calls.map(([, stepX, stepY]) => [stepX, stepY])
     ).toEqual([
-      [1 / 640, 0],
-      [0, 1 / 360],
-      [2 / 640, 0],
-      [0, 2 / 360],
-      [4 / 640, 0],
-      [0, 4 / 360],
+      [1 / 640, 1 / 360],
+      [2 / 640, 2 / 360],
+      [4 / 640, 4 / 360],
+      [8 / 640, 8 / 360],
+      [16 / 640, 16 / 360],
+      [32 / 640, 32 / 360],
     ])
     expect(fake.blitFramebuffer).toHaveBeenCalledTimes(1)
     expect(engine.audit().passGraph).toHaveLength(9)
     expect(engine.audit().resources.total).toBe(
       THUNDER_WEBGL2_MAX_RESOURCE_COUNT
     )
+  })
+
+  it('retains six weighted blur energies and maps weak core energy without full-frame washout', () => {
+    const off = resolveThunderWebGl2CompositeOracle({
+      rawEnergy: 0,
+      blurEnergies: [0, 0, 0, 0, 0, 0],
+      bloomGain: 0,
+      historyEnergy: 0,
+      feedback: 0,
+      exposure: 1,
+      gamma: 1,
+    })
+    const weak = resolveThunderWebGl2CompositeOracle({
+      rawEnergy: 0.42,
+      blurEnergies: [0.38, 0.31, 0.24, 0.18, 0.12, 0.08],
+      bloomGain: 0.4,
+      historyEnergy: 0.1,
+      feedback: 0.72,
+      exposure: 1.1,
+      gamma: 0.82,
+    })
+    const strong = resolveThunderWebGl2CompositeOracle({
+      rawEnergy: 0.86,
+      blurEnergies: [0.72, 0.6, 0.46, 0.32, 0.2, 0.12],
+      bloomGain: 0.78,
+      historyEnergy: 0.2,
+      feedback: 0.72,
+      exposure: 1.28,
+      gamma: 0.78,
+    })
+
+    expect(off).toEqual({ alpha: 0, bloomEnergy: 0, mappedEnergy: 0 })
+    expect(weak.bloomEnergy).toBeGreaterThan(0)
+    expect(weak.mappedEnergy).toBeGreaterThan(0)
+    expect(weak.mappedEnergy).toBeLessThan(strong.mappedEnergy)
+    expect(strong.alpha).toBeGreaterThan(weak.alpha)
+    expect(strong.alpha).toBeLessThanOrEqual(1)
   })
 
   it('recreates size resources without growing the live resource ceiling', () => {
@@ -226,12 +270,9 @@ describe('Thunder Ball WebGL2 engine', () => {
       width: 10,
       height: 10,
     })
-    const topology = createThunderWebGl2Topology({ seed: 1, nowMs: 0 })
+    const frame = createValidEngineFrame(1, 0)
     fake.armDrawFailure()
-    const failed = engine.render({
-      ribbons: topology.connections.map(({ ribbon }) => ribbon),
-      tone: resolveThunderWebGl2Tone(false),
-    })
+    const failed = engine.render(frame)
 
     expect(failed).toEqual({
       status: 'blocked',
@@ -304,6 +345,44 @@ describe('Thunder Ball WebGL2 engine', () => {
         ),
       }),
     ],
+    [
+      'source over-count',
+      (
+        frame: Readonly<ThunderWebGl2EngineFrame>
+      ): ThunderWebGl2EngineFrame => ({
+        ...frame,
+        sources: Object.freeze([
+          ...(frame.sources ?? []),
+          frame.sources?.[0] as NonNullable<
+            ThunderWebGl2EngineFrame['sources']
+          >[number],
+        ]),
+      }),
+    ],
+    [
+      'one nonfinite source',
+      (
+        frame: Readonly<ThunderWebGl2EngineFrame>
+      ): ThunderWebGl2EngineFrame => ({
+        ...frame,
+        sources: Object.freeze(
+          (frame.sources ?? []).map((source, index) =>
+            index === 0
+              ? Object.freeze({ ...source, x: Number.POSITIVE_INFINITY })
+              : source
+          )
+        ),
+      }),
+    ],
+    [
+      'mismatched pass graph',
+      (
+        frame: Readonly<ThunderWebGl2EngineFrame>
+      ): ThunderWebGl2EngineFrame => ({
+        ...frame,
+        passGraph: Object.freeze(THUNDER_WEBGL2_PASS_GRAPH.slice(0, -1)),
+      }),
+    ],
   ] as const)(
     'rejects %s before GL work and latches a fixed non-echoing quarantine',
     (_label, mutate) => {
@@ -313,11 +392,7 @@ describe('Thunder Ball WebGL2 engine', () => {
         width: 640,
         height: 360,
       })
-      const topology = createThunderWebGl2Topology({ seed: 17, nowMs: 0 })
-      const validFrame: ThunderWebGl2EngineFrame = {
-        ribbons: topology.connections.map(({ ribbon }) => ribbon),
-        tone: resolveThunderWebGl2Tone(false),
-      }
+      const validFrame = createValidEngineFrame(17, 0)
       const invalidFrame = mutate(validFrame)
       fake.armDrawFailure()
 
@@ -415,6 +490,20 @@ describe('Thunder Ball WebGL2 engine', () => {
     expect(engine.audit().resources.total).toBe(0)
   })
 })
+
+function createValidEngineFrame(
+  seed: number,
+  nowMs: number
+): ThunderWebGl2EngineFrame {
+  const topology = createThunderWebGl2Topology({ seed, nowMs })
+  return mapThunderWebGl2EngineFrame(
+    {
+      ribbons: topology.connections.map(({ ribbon }) => ribbon),
+      tone: resolveThunderWebGl2Tone(false),
+    },
+    mapThunderParametersToWebGl2AdapterConfig({ seed })
+  )
+}
 
 function resourceRecord(): Record<ThunderWebGl2ResourceKind, FakeResource[]> {
   return {

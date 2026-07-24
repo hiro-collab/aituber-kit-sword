@@ -7,12 +7,20 @@ export const THUNDER_WEBGL2_RIBBON_SIDES = 2
 export const THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT = 4
 export const THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT = 4
 export const THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT = 0.12
+export const THUNDER_WEBGL2_SOURCE_RADIUS_LIMIT = 0.24
 export const THUNDER_WEBGL2_VERTICES_PER_CONNECTION =
   THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT * THUNDER_WEBGL2_RIBBON_SIDES
 export const THUNDER_WEBGL2_TOTAL_RIBBON_VERTICES =
   THUNDER_WEBGL2_SOURCE_COUNT * THUNDER_WEBGL2_VERTICES_PER_CONNECTION
 export const THUNDER_WEBGL2_MAX_DRAIN_MS = 5_000
 export const THUNDER_WEBGL2_MAX_RESOURCE_COUNT = 19
+export const THUNDER_WEBGL2_BLUR_STAGE_COUNT = 6
+export const THUNDER_WEBGL2_BLUR_SCALES = Object.freeze([
+  1, 2, 4, 8, 16, 32,
+] as const)
+export const THUNDER_WEBGL2_BLUR_WEIGHTS = Object.freeze([
+  0.34, 0.24, 0.17, 0.12, 0.08, 0.05,
+] as const)
 
 export const THUNDER_WEBGL2_PASS_GRAPH = Object.freeze([
   'raw',
@@ -37,6 +45,15 @@ export interface ThunderWebGl2Candidate extends ThunderWebGl2Point {
   index: number
 }
 
+export interface ThunderWebGl2SourceBirth extends ThunderWebGl2Point {
+  index: number
+  bornAtMs: number
+  lifeMs: number
+  ageMs: number
+  radius: number
+  energy: number
+}
+
 export interface ThunderWebGl2RibbonSample {
   along: number
   centerX: number
@@ -47,12 +64,13 @@ export interface ThunderWebGl2RibbonSample {
   rightX: number
   rightY: number
   width: number
+  sourceBirth?: Readonly<ThunderWebGl2SourceBirth>
 }
 
 export interface ThunderWebGl2Connection {
   pIndex: number
   qIndex: number
-  source: Readonly<ThunderWebGl2Candidate>
+  source: Readonly<ThunderWebGl2SourceBirth>
   target: Readonly<ThunderWebGl2Candidate>
   bornAtMs: number
   lifeMs: number
@@ -66,6 +84,7 @@ export interface ThunderWebGl2Topology {
   bornAtMs: number
   cadenceMs: number
   candidates: readonly Readonly<ThunderWebGl2Candidate>[]
+  sources: readonly Readonly<ThunderWebGl2SourceBirth>[]
   connections: readonly Readonly<ThunderWebGl2Connection>[]
 }
 
@@ -74,6 +93,9 @@ export interface ThunderWebGl2Tone {
   haloWidth: number
   coreLuminance: number
   haloLuminance: number
+  bloomGain: number
+  exposure: number
+  gamma: number
   feedback: number
   pulse: number
 }
@@ -137,6 +159,8 @@ export interface ThunderWebGl2EngineAudit {
   resizeCount: number
   feedbackIndex: 0 | 1
   passGraph: readonly ThunderWebGl2Pass[]
+  blurScales?: readonly number[]
+  blurWeights?: readonly number[]
   resources: Readonly<ThunderWebGl2ResourceCounts>
   cleanupAttemptedKinds: readonly ThunderWebGl2ResourceKind[]
 }
@@ -144,6 +168,8 @@ export interface ThunderWebGl2EngineAudit {
 export interface ThunderWebGl2EngineFrame {
   ribbons: readonly (readonly Readonly<ThunderWebGl2RibbonSample>[])[]
   tone: Readonly<ThunderWebGl2Tone>
+  sources?: readonly Readonly<ThunderWebGl2SourceBirth>[]
+  passGraph?: readonly ThunderWebGl2Pass[]
 }
 
 export type ThunderWebGl2RendererState =

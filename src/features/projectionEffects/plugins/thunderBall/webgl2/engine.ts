@@ -1,4 +1,8 @@
 import {
+  THUNDER_WEBGL2_BLUR_SCALES,
+  THUNDER_WEBGL2_BLUR_STAGE_COUNT,
+  THUNDER_WEBGL2_BLUR_WEIGHTS,
+  THUNDER_WEBGL2_MAX_DRAIN_MS,
   THUNDER_WEBGL2_MAX_RESOURCE_COUNT,
   THUNDER_WEBGL2_PASS_GRAPH,
   THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT,
@@ -7,6 +11,7 @@ import {
   THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT,
   THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT,
   THUNDER_WEBGL2_SOURCE_COUNT,
+  THUNDER_WEBGL2_SOURCE_RADIUS_LIMIT,
   THUNDER_WEBGL2_TOTAL_RIBBON_VERTICES,
   type ThunderWebGl2EngineAudit,
   type ThunderWebGl2EngineFrame,
@@ -141,55 +146,50 @@ export class ThunderBallWebGl2Engine {
         clamp(frame.tone.coreLuminance, 0, 4),
         clamp(frame.tone.haloLuminance, 0, 2)
       )
-      for (const ribbon of frame.ribbons) {
+      for (
+        let ribbonIndex = 0;
+        ribbonIndex < frame.ribbons.length;
+        ribbonIndex += 1
+      ) {
+        const ribbon = frame.ribbons[ribbonIndex] as Readonly<
+          ThunderWebGl2EngineFrame['ribbons'][number]
+        >
         const vertices = flattenRibbon(ribbon)
         if (vertices.length === 0) continue
+        gl.uniform1f(
+          gl.getUniformLocation(programs.ribbon, 'uSourceEnergy'),
+          clamp(frame.sources?.[ribbonIndex]?.energy ?? 0, 0, 1)
+        )
         gl.bindBuffer(gl.ARRAY_BUFFER, this.ribbonBuffer)
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW)
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertices.length / 4)
       }
       gl.disable(gl.BLEND)
 
-      this.runBlurPass(
-        targets.raw.texture,
-        targets.blurA.framebuffer,
-        1 / this.widthValue,
-        0
-      )
-      this.runBlurPass(
-        targets.blurA.texture,
-        targets.blurB.framebuffer,
-        0,
-        1 / this.heightValue
-      )
-      this.runBlurPass(
-        targets.blurB.texture,
-        targets.blurA.framebuffer,
-        2 / this.widthValue,
-        0
-      )
-      this.runBlurPass(
-        targets.blurA.texture,
-        targets.blurB.framebuffer,
-        0,
-        2 / this.heightValue
-      )
-      this.runBlurPass(
-        targets.blurB.texture,
-        targets.blurA.framebuffer,
-        4 / this.widthValue,
-        0
-      )
-      this.runBlurPass(
-        targets.blurA.texture,
-        targets.blurB.framebuffer,
-        0,
-        4 / this.heightValue
-      )
+      let previousBlur = targets.raw.texture
+      for (
+        let stageIndex = 0;
+        stageIndex < THUNDER_WEBGL2_BLUR_STAGE_COUNT;
+        stageIndex += 1
+      ) {
+        const target = stageIndex % 2 === 0 ? targets.blurA : targets.blurB
+        const scale = THUNDER_WEBGL2_BLUR_SCALES[stageIndex] as number
+        this.runBlurPass(
+          targets.raw.texture,
+          previousBlur,
+          target.framebuffer,
+          scale / this.widthValue,
+          scale / this.heightValue,
+          THUNDER_WEBGL2_BLUR_WEIGHTS[stageIndex] as number,
+          stageIndex === 0 ? 0 : 1
+        )
+        previousBlur = target.texture
+      }
       this.runBloomPass(
         targets.raw.texture,
-        targets.blurB.texture,
-        targets.bloom.framebuffer
+        previousBlur,
+        targets.bloom.framebuffer,
+        clamp(frame.tone.bloomGain, 0, 2)
       )
 
       const historyRead =
@@ -200,7 +200,9 @@ export class ThunderBallWebGl2Engine {
         targets.bloom.texture,
         historyRead.texture,
         historyWrite,
-        clamp(frame.tone.feedback, 0, 0.82)
+        clamp(frame.tone.feedback, 0, 0.82),
+        clamp(frame.tone.exposure, 0.5, 2),
+        clamp(frame.tone.gamma, 0.6, 1.4)
       )
       this.feedbackIndexValue = this.feedbackIndexValue === 0 ? 1 : 0
       if (gl.getError() !== gl.NO_ERROR) throw new Error('native draw failure')
@@ -290,6 +292,8 @@ export class ThunderBallWebGl2Engine {
       resizeCount: this.resizeCountValue,
       feedbackIndex: this.feedbackIndexValue,
       passGraph: THUNDER_WEBGL2_PASS_GRAPH,
+      blurScales: THUNDER_WEBGL2_BLUR_SCALES,
+      blurWeights: THUNDER_WEBGL2_BLUR_WEIGHTS,
       resources: Object.freeze(
         this.resources?.counts() ?? emptyResourceCounts()
       ),
@@ -441,25 +445,35 @@ export class ThunderBallWebGl2Engine {
   }
 
   private runBlurPass(
-    source: WebGLTexture,
+    raw: WebGLTexture,
+    previous: WebGLTexture,
     target: WebGLFramebuffer,
     stepX: number,
-    stepY: number
+    stepY: number,
+    stageWeight: number,
+    previousWeight: number
   ): void {
     const gl = this.gl as WebGL2RenderingContext
     const program = (this.programs as ThunderPrograms).blur
     gl.bindFramebuffer(gl.FRAMEBUFFER, target)
     gl.useProgram(program)
     gl.bindVertexArray(this.fullscreenVao)
-    bindTexture(gl, program, 'uSource', source, 0)
+    bindTexture(gl, program, 'uRaw', raw, 0)
+    bindTexture(gl, program, 'uPrevious', previous, 1)
     gl.uniform2f(gl.getUniformLocation(program, 'uTexelStep'), stepX, stepY)
+    gl.uniform1f(gl.getUniformLocation(program, 'uStageWeight'), stageWeight)
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uPreviousWeight'),
+      previousWeight
+    )
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
   private runBloomPass(
     raw: WebGLTexture,
     blurred: WebGLTexture,
-    target: WebGLFramebuffer
+    target: WebGLFramebuffer,
+    bloomGain: number
   ): void {
     const gl = this.gl as WebGL2RenderingContext
     const program = (this.programs as ThunderPrograms).bloom
@@ -468,6 +482,7 @@ export class ThunderBallWebGl2Engine {
     gl.bindVertexArray(this.fullscreenVao)
     bindTexture(gl, program, 'uRaw', raw, 0)
     bindTexture(gl, program, 'uBlurred', blurred, 1)
+    gl.uniform1f(gl.getUniformLocation(program, 'uBloomGain'), bloomGain)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
@@ -475,7 +490,9 @@ export class ThunderBallWebGl2Engine {
     current: WebGLTexture,
     history: WebGLTexture,
     target: Readonly<RenderTarget>,
-    feedback: number
+    feedback: number,
+    exposure: number,
+    gamma: number
   ): void {
     const gl = this.gl as WebGL2RenderingContext
     const program = (this.programs as ThunderPrograms).temporal
@@ -485,6 +502,8 @@ export class ThunderBallWebGl2Engine {
     bindTexture(gl, program, 'uCurrent', current, 0)
     bindTexture(gl, program, 'uHistory', history, 1)
     gl.uniform1f(gl.getUniformLocation(program, 'uFeedback'), feedback)
+    gl.uniform1f(gl.getUniformLocation(program, 'uExposure'), exposure)
+    gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), gamma)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer)
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null)
@@ -750,27 +769,106 @@ function isBoundedEngineFrame(
   frame: Readonly<ThunderWebGl2EngineFrame>
 ): boolean {
   const ribbons = frame.ribbons
-  if (!Array.isArray(ribbons) || ribbons.length > THUNDER_WEBGL2_SOURCE_COUNT) {
+  const sources = frame.sources
+  if (
+    !Array.isArray(ribbons) ||
+    ribbons.length !== THUNDER_WEBGL2_SOURCE_COUNT ||
+    !Array.isArray(sources) ||
+    sources.length !== THUNDER_WEBGL2_SOURCE_COUNT ||
+    !isExactPassGraph(frame.passGraph) ||
+    !isBoundedTone(frame.tone)
+  ) {
     return false
   }
 
+  const sourceIndices = new Set<number>()
   let totalVertices = 0
   for (let ribbonIndex = 0; ribbonIndex < ribbons.length; ribbonIndex += 1) {
     const ribbon = ribbons[ribbonIndex]
+    const source = sources[ribbonIndex]
     if (
       !Array.isArray(ribbon) ||
-      ribbon.length !== THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT
+      ribbon.length !== THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT ||
+      !isBoundedSourceBirth(source) ||
+      sourceIndices.has(source.index)
     ) {
       return false
     }
+    sourceIndices.add(source.index)
     totalVertices += ribbon.length * THUNDER_WEBGL2_RIBBON_SIDES
     if (totalVertices > THUNDER_WEBGL2_TOTAL_RIBBON_VERTICES) return false
 
     for (let sampleIndex = 0; sampleIndex < ribbon.length; sampleIndex += 1) {
-      if (!isBoundedRibbonSample(ribbon[sampleIndex])) return false
+      const sample = ribbon[sampleIndex]
+      if (
+        !isBoundedRibbonSample(sample) ||
+        (sampleIndex === 0 &&
+          (!isBoundedSourceBirth(sample.sourceBirth) ||
+            sample.sourceBirth.index !== source.index ||
+            sample.sourceBirth.x !== source.x ||
+            sample.sourceBirth.y !== source.y)) ||
+        (sampleIndex > 0 && sample.sourceBirth !== undefined)
+      ) {
+        return false
+      }
     }
   }
   return true
+}
+
+function isExactPassGraph(
+  value: ThunderWebGl2EngineFrame['passGraph']
+): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === THUNDER_WEBGL2_PASS_GRAPH.length &&
+    value.every((pass, index) => pass === THUNDER_WEBGL2_PASS_GRAPH[index])
+  )
+}
+
+function isBoundedTone(
+  tone: Readonly<ThunderWebGl2EngineFrame['tone']>
+): boolean {
+  return (
+    boundedFinite(tone.coreWidth, 0.01, 0.4) &&
+    boundedFinite(tone.haloWidth, 0.2, 1) &&
+    boundedFinite(tone.coreLuminance, 0, 4) &&
+    boundedFinite(tone.haloLuminance, 0, 2) &&
+    boundedFinite(tone.bloomGain, 0, 2) &&
+    boundedFinite(tone.exposure, 0.5, 2) &&
+    boundedFinite(tone.gamma, 0.6, 1.4) &&
+    boundedFinite(tone.feedback, 0, 0.82) &&
+    boundedFinite(tone.pulse, 0, 1)
+  )
+}
+
+function isBoundedSourceBirth(
+  value: unknown
+): value is NonNullable<ThunderWebGl2EngineFrame['sources']>[number] {
+  if (value === null || typeof value !== 'object') return false
+  const source = value as Partial<
+    NonNullable<ThunderWebGl2EngineFrame['sources']>[number]
+  >
+  return (
+    typeof source.index === 'number' &&
+    Number.isInteger(source.index) &&
+    boundedFinite(source.index, 0, THUNDER_WEBGL2_SOURCE_COUNT - 1) &&
+    boundedFinite(
+      source.x,
+      -THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT,
+      THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT
+    ) &&
+    boundedFinite(
+      source.y,
+      -THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT,
+      THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT
+    ) &&
+    boundedFinite(source.bornAtMs, 0, Number.MAX_SAFE_INTEGER) &&
+    boundedFinite(source.lifeMs, 1, THUNDER_WEBGL2_MAX_DRAIN_MS) &&
+    boundedFinite(source.ageMs, 0, source.lifeMs ?? 0) &&
+    boundedFinite(source.radius, 0.001, THUNDER_WEBGL2_SOURCE_RADIUS_LIMIT) &&
+    boundedFinite(source.energy, 0, 1)
+  )
 }
 
 function isBoundedRibbonSample(value: unknown): boolean {

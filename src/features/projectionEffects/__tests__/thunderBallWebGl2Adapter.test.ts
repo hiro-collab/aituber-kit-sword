@@ -6,11 +6,21 @@ import {
   ThunderBallWebGl2Adapter,
   ThunderWebGl2AdapterError,
   fixedThunderWebGl2AdapterResult,
+  mapThunderWebGl2EngineFrame,
   mapThunderParametersToWebGl2AdapterConfig,
   normalizeThunderWebGl2AdapterSurface,
   type ThunderWebGl2AdapterSurface,
 } from '../plugins/thunderBall/webgl2/adapter'
-import type { ThunderWebGl2RendererResult } from '../plugins/thunderBall/webgl2/contracts'
+import {
+  THUNDER_WEBGL2_PASS_GRAPH,
+  type ThunderWebGl2EngineFrame,
+  type ThunderWebGl2RendererResult,
+} from '../plugins/thunderBall/webgl2/contracts'
+import { resolveThunderWebGl2CompositeOracle } from '../plugins/thunderBall/webgl2/shaders'
+import {
+  createThunderWebGl2Topology,
+  resolveThunderWebGl2Tone,
+} from '../plugins/thunderBall/webgl2/topology'
 
 const PRIVATE_ERROR = 'private://driver/C:/secret/thunder-adapter.bin'
 
@@ -101,6 +111,108 @@ describe('Thunder Ball WebGL2 host adapter', () => {
       frameCount: 2,
       quarantined: false,
       started: true,
+    })
+  })
+
+  it('maps the 21 source births, requested center, orb envelope, and weak core energy', () => {
+    const topology = createThunderWebGl2Topology({ seed: 88, nowMs: 240 })
+    const frame = {
+      ribbons: topology.connections.map(({ ribbon }) => ribbon),
+      tone: resolveThunderWebGl2Tone(false),
+    }
+    const weakConfig = mapThunderParametersToWebGl2AdapterConfig({
+      bloomGain: 0.65,
+      centerX: 0.3,
+      centerY: -0.2,
+      masterIntensity: 0.4,
+      orbRadius: 0.42,
+    })
+    const weak = mapThunderWebGl2EngineFrame(frame, weakConfig)
+    const expanded = mapThunderWebGl2EngineFrame(
+      frame,
+      mapThunderParametersToWebGl2AdapterConfig({
+        centerX: 0.3,
+        centerY: -0.2,
+        masterIntensity: 0.4,
+        orbRadius: 0.84,
+      })
+    )
+    const off = mapThunderWebGl2EngineFrame(
+      frame,
+      mapThunderParametersToWebGl2AdapterConfig({
+        masterIntensity: 0,
+      })
+    )
+
+    expect(weak.sources).toHaveLength(21)
+    expect(weak.passGraph).toBe(THUNDER_WEBGL2_PASS_GRAPH)
+    expect(
+      weak.sources?.every(
+        (source) =>
+          source.energy > 0 &&
+          Math.abs(source.x - weakConfig.centerX) < weakConfig.orbRadius &&
+          Math.abs(source.y - weakConfig.centerY) < weakConfig.orbRadius
+      )
+    ).toBe(true)
+    expect(weak.tone.coreLuminance).toBeGreaterThan(0)
+    expect(weak.tone.bloomGain).toBeGreaterThan(0)
+    expect(sourceEnvelope(expanded.sources, { x: 0.3, y: -0.2 })).toBeCloseTo(
+      sourceEnvelope(weak.sources, { x: 0.3, y: -0.2 }) * 2,
+      10
+    )
+    expect(off.tone).toMatchObject({
+      bloomGain: 0,
+      coreLuminance: 0,
+      feedback: 0,
+      haloLuminance: 0,
+    })
+    expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
+  })
+
+  it('does not republish active temporal history on the first zero-intensity frame', () => {
+    const topology = createThunderWebGl2Topology({ seed: 91, nowMs: 240 })
+    const frame = {
+      ribbons: topology.connections.map(({ ribbon }) => ribbon),
+      tone: resolveThunderWebGl2Tone(false),
+    }
+    const active = mapThunderWebGl2EngineFrame(
+      frame,
+      mapThunderParametersToWebGl2AdapterConfig({
+        masterIntensity: 0.82,
+      })
+    )
+    const off = mapThunderWebGl2EngineFrame(
+      frame,
+      mapThunderParametersToWebGl2AdapterConfig({
+        masterIntensity: 0,
+      })
+    )
+    const firstOffFrame = resolveThunderWebGl2CompositeOracle({
+      rawEnergy: off.tone.coreLuminance,
+      blurEnergies: [0, 0, 0, 0, 0, 0],
+      bloomGain: off.tone.bloomGain,
+      historyEnergy: active.tone.coreLuminance,
+      feedback: off.tone.feedback,
+      exposure: off.tone.exposure,
+      gamma: off.tone.gamma,
+    })
+
+    expect(active.tone).toMatchObject({
+      bloomGain: expect.any(Number),
+      feedback: expect.any(Number),
+    })
+    expect(active.tone.bloomGain).toBeGreaterThan(0)
+    expect(active.tone.feedback).toBeGreaterThan(0)
+    expect(off.tone).toMatchObject({
+      bloomGain: 0,
+      coreLuminance: 0,
+      feedback: 0,
+      haloLuminance: 0,
+    })
+    expect(firstOffFrame).toEqual({
+      alpha: 0,
+      bloomEnergy: 0,
+      mappedEnergy: 0,
     })
   })
 
@@ -261,4 +373,15 @@ function stopContext(
   fadeMs: number
 ): ProjectionEffectStopContext {
   return { mode, fadeMs }
+}
+
+function sourceEnvelope(
+  sources: ThunderWebGl2EngineFrame['sources'],
+  center: Readonly<{ x: number; y: number }>
+): number {
+  return Math.max(
+    ...(sources ?? []).map((source) =>
+      Math.hypot(source.x - center.x, source.y - center.y)
+    )
+  )
 }

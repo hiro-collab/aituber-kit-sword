@@ -22,28 +22,40 @@ describe('Thunder Ball WebGL2 topology', () => {
     expect(first).toEqual(same)
     expect(first).not.toEqual(different)
     expect(first.candidates).toHaveLength(THUNDER_WEBGL2_CANDIDATE_COUNT)
+    expect(first.sources).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT)
     expect(first.connections).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT)
-    expect(new Set(first.connections.map(({ pIndex }) => pIndex)).size).toBe(
+    expect(new Set(first.sources.map(({ index }) => index)).size).toBe(
       THUNDER_WEBGL2_SOURCE_COUNT
     )
+    expect(
+      first.sources.every(
+        (source) =>
+          source.lifeMs > 0 &&
+          source.ageMs >= 0 &&
+          source.ageMs <= source.lifeMs &&
+          source.radius > 0 &&
+          source.energy >= 0 &&
+          source.energy <= 1
+      )
+    ).toBe(true)
   })
 
-  it('orders every p-to-q connection to the deterministic nearest neighbor', () => {
+  it('orders every bounded source birth to the deterministic nearest candidate', () => {
     const topology = createThunderWebGl2Topology({ seed: 19, nowMs: 96 })
 
     for (const connection of topology.connections) {
       const nearest = nearestThunderWebGl2Candidate(
         topology.candidates,
-        connection.pIndex
+        connection.source
       )
-      expect(connection.qIndex).not.toBe(connection.pIndex)
       expect(connection.source.index).toBe(connection.pIndex)
       expect(connection.target.index).toBe(connection.qIndex)
       expect(connection.qIndex).toBe(nearest?.index)
+      expect(connection.ribbon[0]?.sourceBirth).toEqual(connection.source)
     }
   })
 
-  it('builds an endpoint-fixed tapered nominal 30x2 ribbon with displaced interior', () => {
+  it('builds a fixed-endpoint 30x2 ribbon with interior wrinkle and source flare', () => {
     const source = { x: -0.5, y: -0.2 }
     const target = { x: 0.62, y: 0.44 }
     const ribbon = createThunderWebGl2Ribbon(source, target, {
@@ -70,6 +82,7 @@ describe('Thunder Ball WebGL2 topology', () => {
         .slice(1, -1)
         .some((sample) => Math.abs(sample.displacement) > 0.0001)
     ).toBe(true)
+    expect(ribbon[5]?.width ?? 0).toBeGreaterThan(ribbon[15]?.width ?? 0)
     expect(
       ribbon.every(
         (sample) =>
@@ -98,7 +111,7 @@ describe('Thunder Ball WebGL2 topology', () => {
     expect(THUNDER_WEBGL2_TOTAL_RIBBON_VERTICES).toBe(1260)
   })
 
-  it('changes only at bounded cadence epochs without constant rotation', () => {
+  it('keeps candidate crackle on bounded epochs while short-lived sources advance', () => {
     const cadence = thunderWebGl2CadenceMs(false)
     const beforeBoundary = createThunderWebGl2Topology({
       seed: 404,
@@ -114,7 +127,8 @@ describe('Thunder Ball WebGL2 topology', () => {
       nowMs: cadence * 2,
     })
 
-    expect(beforeBoundary).toEqual(sameEpoch)
+    expect(beforeBoundary.candidates).toEqual(sameEpoch.candidates)
+    expect(beforeBoundary.sources).not.toEqual(sameEpoch.sources)
     expect(next.epoch).toBe(sameEpoch.epoch + 1)
     expect(next.connections).not.toEqual(sameEpoch.connections)
     const firstDelta = normalizedAngle(
@@ -124,6 +138,48 @@ describe('Thunder Ball WebGL2 topology', () => {
       angle(later.candidates[0]) - angle(next.candidates[0])
     )
     expect(firstDelta).not.toBeCloseTo(secondDelta, 4)
+  })
+
+  it('translates the full source/candidate system and scales its envelope with orb radius', () => {
+    const origin = createThunderWebGl2Topology({
+      seed: 411,
+      nowMs: 240,
+      center: { x: 0, y: 0 },
+      radius: 0.2,
+    })
+    const translated = createThunderWebGl2Topology({
+      seed: 411,
+      nowMs: 240,
+      center: { x: 0.31, y: -0.24 },
+      radius: 0.2,
+    })
+    const expanded = createThunderWebGl2Topology({
+      seed: 411,
+      nowMs: 240,
+      center: { x: 0, y: 0 },
+      radius: 0.6,
+    })
+
+    for (let index = 0; index < THUNDER_WEBGL2_SOURCE_COUNT; index += 1) {
+      expect(
+        (translated.sources[index]?.x ?? 0) - (origin.sources[index]?.x ?? 0)
+      ).toBeCloseTo(0.31, 10)
+      expect(
+        (translated.sources[index]?.y ?? 0) - (origin.sources[index]?.y ?? 0)
+      ).toBeCloseTo(-0.24, 10)
+    }
+    expect(maxRadius(expanded.sources)).toBeCloseTo(
+      maxRadius(origin.sources) * 3,
+      10
+    )
+    expect(expanded.sources[0]?.radius ?? 0).toBeCloseTo(
+      (origin.sources[0]?.radius ?? 0) * 3,
+      10
+    )
+    expect(maxRadius(expanded.candidates)).toBeCloseTo(
+      maxRadius(origin.candidates) * 3,
+      10
+    )
   })
 
   it('keeps tone finite/bounded with a thinner core and reduced cadence/feedback', () => {
@@ -150,4 +206,10 @@ function angle(point: Readonly<{ x: number; y: number }> | undefined): number {
 
 function normalizedAngle(value: number): number {
   return Math.atan2(Math.sin(value), Math.cos(value))
+}
+
+function maxRadius(
+  points: readonly Readonly<{ x: number; y: number }>[]
+): number {
+  return Math.max(...points.map((point) => Math.hypot(point.x, point.y)))
 }

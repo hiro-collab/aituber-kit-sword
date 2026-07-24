@@ -6,11 +6,13 @@ import type {
 import { ThunderBallRenderer, type ThunderBallSurface } from '../renderer'
 import {
   THUNDER_WEBGL2_MAX_DRAIN_MS,
+  THUNDER_WEBGL2_PASS_GRAPH,
   THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT,
   THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT,
   THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT,
   type ThunderWebGl2EngineFrame,
   type ThunderWebGl2EngineResult,
+  type ThunderWebGl2SourceBirth,
   ThunderWebGl2RendererResult,
   ThunderWebGl2RendererState,
 } from './contracts'
@@ -515,7 +517,7 @@ class MappedThunderWebGl2EngineBoundary implements ThunderWebGl2EngineBoundary {
   }
 
   render(frame: Readonly<ThunderWebGl2EngineFrame>): ThunderWebGl2EngineResult {
-    return this.engine.render(mapEngineFrame(frame, this.config))
+    return this.engine.render(mapThunderWebGl2EngineFrame(frame, this.config))
   }
 
   resize(width: number, height: number): ThunderWebGl2EngineResult {
@@ -606,7 +608,7 @@ class LegacyThunderAdapterSurface implements ThunderWebGl2AdapterSurface {
   }
 }
 
-function mapEngineFrame(
+export function mapThunderWebGl2EngineFrame(
   frame: Readonly<ThunderWebGl2EngineFrame>,
   config: Readonly<ThunderWebGl2AdapterConfig>
 ): ThunderWebGl2EngineFrame {
@@ -614,6 +616,7 @@ function mapEngineFrame(
   const wrinkleScale =
     config.wrinkleStrength / Math.max(DEFAULT_WRINKLE_STRENGTH, 1e-6)
   const widthScale = config.lineWidth / DEFAULT_LINE_WIDTH
+  const sources: ThunderWebGl2SourceBirth[] = []
   const ribbons = frame.ribbons.map((ribbon) => {
     const source = ribbon[0]
     const target = ribbon[ribbon.length - 1]
@@ -642,6 +645,24 @@ function mapEngineFrame(
           (sample.rightX - sample.centerX) * spatialScale * widthScale
         const rightOffsetY =
           (sample.rightY - sample.centerY) * spatialScale * widthScale
+        const sourceBirth = sample.sourceBirth
+          ? Object.freeze({
+              ...sample.sourceBirth,
+              x: centerX,
+              y: centerY,
+              radius: clamp(
+                sample.sourceBirth.radius * spatialScale * widthScale,
+                0,
+                THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT
+              ),
+              energy: clamp(
+                sample.sourceBirth.energy * config.masterIntensity,
+                0,
+                1
+              ),
+            })
+          : undefined
+        if (sourceBirth) sources.push(sourceBirth)
         return Object.freeze({
           along: sample.along,
           centerX,
@@ -660,6 +681,7 @@ function mapEngineFrame(
             0,
             THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT
           ),
+          sourceBirth,
         })
       })
     )
@@ -669,13 +691,27 @@ function mapEngineFrame(
   const bloomScale = config.bloomGain / Math.max(DEFAULT_BLOOM_GAIN, 1e-6)
   return Object.freeze({
     ribbons: Object.freeze(ribbons),
+    sources: Object.freeze(sources),
+    passGraph: THUNDER_WEBGL2_PASS_GRAPH,
     tone: Object.freeze({
       ...frame.tone,
       coreLuminance: frame.tone.coreLuminance * intensityScale,
       haloLuminance: config.postProcessing
-        ? frame.tone.haloLuminance * intensityScale * bloomScale
+        ? frame.tone.haloLuminance * intensityScale
         : 0,
-      feedback: config.postProcessing ? frame.tone.feedback : 0,
+      bloomGain: config.postProcessing
+        ? frame.tone.bloomGain * bloomScale * config.masterIntensity
+        : 0,
+      exposure: clamp(
+        frame.tone.exposure * (0.82 + config.masterIntensity * 0.36),
+        0.5,
+        2
+      ),
+      gamma: clamp(frame.tone.gamma, 0.6, 1.4),
+      feedback:
+        config.postProcessing && config.masterIntensity > 0
+          ? frame.tone.feedback
+          : 0,
     }),
   })
 }
