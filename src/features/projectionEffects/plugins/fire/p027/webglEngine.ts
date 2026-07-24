@@ -239,6 +239,13 @@ export class FireP027WebGlEngine implements FireP027Surface {
       Math.max(0.001, controls.turbulencePeriod)
     )
     gl.uniform4f(
+      uniform(gl, this.stateProgram, 'uOriginCenter'),
+      controls.originCenterX,
+      controls.originCenterY,
+      controls.originCenterZ,
+      0
+    )
+    gl.uniform4f(
       uniform(gl, this.stateProgram, 'uConfig'),
       controls.particleSeed,
       Math.max(0, controls.lifeVarianceSeconds),
@@ -621,21 +628,26 @@ export function generateFireP027FallbackOrigins(
 ): FireP027OriginPoint[] {
   const random = mulberry32(Math.round(controls.originSeed) + 0x50303237)
   const points: FireP027OriginPoint[] = []
-  const count = 42
+  const pairCount = 21
   const goldenAngle = Math.PI * (3 - Math.sqrt(5))
-  for (let index = 0; index < count; index += 1) {
-    const y = 1 - (index / Math.max(1, count - 1)) * 2
+  for (let index = 0; index < pairCount; index += 1) {
+    const y = 1 - ((index + 0.5) / pairCount) * 2
     const radial = Math.sqrt(Math.max(0, 1 - y * y))
     const theta = index * goldenAngle + (random() - 0.5) * 0.16
     const shell = 0.55 + random() * 0.45
+    const localX =
+      Math.abs(Math.cos(theta)) * radial * shell * controls.originRadiusX
+    const localY = y * shell * controls.originRadiusY
+    const localZ = Math.sin(theta) * radial * shell * controls.originRadiusZ
     points.push({
-      x:
-        controls.originCenterX +
-        Math.cos(theta) * radial * shell * controls.originRadiusX,
-      y: controls.originCenterY + y * shell * controls.originRadiusY,
-      z:
-        controls.originCenterZ +
-        Math.sin(theta) * radial * shell * controls.originRadiusZ,
+      x: controls.originCenterX + localX,
+      y: controls.originCenterY + localY,
+      z: controls.originCenterZ + localZ,
+    })
+    points.push({
+      x: controls.originCenterX - localX,
+      y: controls.originCenterY + localY,
+      z: controls.originCenterZ + localZ,
     })
   }
   return points

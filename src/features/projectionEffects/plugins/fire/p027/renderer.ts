@@ -229,13 +229,23 @@ export function mapFireParametersToP027Controls(
   )
   const bloomGain = clamp(numberParameter(parameters, 'bloomGain', 0.64), 0, 2)
   const postProcessing = parameters.postProcessing !== false
+  const active = masterIntensity > 0
+  const normalizedStrength = clamp(masterIntensity / 0.92, 0, 1)
+  const densityGain = active ? 0.55 + normalizedStrength * 0.45 : 0
   const emissionGain = clamp(
-    masterIntensity * (postProcessing ? 1 + bloomGain * 0.32 : 1),
+    active
+      ? (0.72 + normalizedStrength * 0.68) *
+          (postProcessing ? 1 + bloomGain * 0.24 : 1)
+      : 0,
     0,
     2
   )
   const coverageGain = clamp(
-    masterIntensity * (postProcessing ? 0.82 + bloomGain * 0.06 : 0.88),
+    active
+      ? 0.88 +
+          normalizedStrength * 0.1 +
+          (postProcessing ? bloomGain * 0.01 : 0)
+      : 0,
     0,
     1
   )
@@ -252,7 +262,10 @@ export function mapFireParametersToP027Controls(
   const particleSeed = seed === 0 ? 1 : deriveP027Seed(seed, 0x1b873593)
 
   return {
-    birthPerSecond: Math.min(requestedBirth * budgetScale, capacityBirth),
+    birthPerSecond: Math.min(
+      requestedBirth * budgetScale * densityGain,
+      capacityBirth
+    ),
     lifeSeconds,
     sizeX,
     sizeY: sizeX * 1.12,
@@ -320,7 +333,7 @@ function integerParameter(
 function deriveP027Seed(seed: number, salt: number): number {
   let mixed = Math.imul(seed ^ salt, 0x85ebca6b)
   mixed = Math.imul(mixed ^ (mixed >>> 13), 0xc2b2ae35)
-  return (mixed ^ (mixed >>> 16)) & 0x7fffffff
+  return ((mixed ^ (mixed >>> 16)) >>> 0) % 10001
 }
 
 function waitForTimer(durationMs: number, signal?: AbortSignal): Promise<void> {

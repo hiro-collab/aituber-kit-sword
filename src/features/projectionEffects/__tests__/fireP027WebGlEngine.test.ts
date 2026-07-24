@@ -27,6 +27,7 @@ interface FakeP027WebGl2 {
   deleteAttempts: Record<ResourceKind, FakeResource[]>
   drawCalls: jest.Mock
   successfulDeletes: Record<ResourceKind, FakeResource[]>
+  uniform4f: jest.Mock
 }
 
 const RESOURCE_KINDS: readonly ResourceKind[] = [
@@ -116,6 +117,7 @@ function createFakeP027WebGl2(
     VERTEX_SHADER: 38,
   }
   const drawCalls = jest.fn()
+  const uniform4f = jest.fn()
   const gl = {
     ...constants,
     activeTexture: jest.fn(),
@@ -170,7 +172,10 @@ function createFakeP027WebGl2(
     getProgramParameter: jest.fn(() => true),
     getShaderInfoLog: jest.fn(() => null),
     getShaderParameter: jest.fn(() => true),
-    getUniformLocation: jest.fn(() => ({})),
+    getUniformLocation: jest.fn(
+      (_program: WebGLProgram, name: string) =>
+        name as unknown as WebGLUniformLocation
+    ),
     linkProgram: jest.fn(),
     readBuffer: jest.fn(),
     readPixels: jest.fn(),
@@ -180,7 +185,7 @@ function createFakeP027WebGl2(
     texStorage3D: jest.fn(),
     texSubImage2D: jest.fn(),
     uniform1i: jest.fn(),
-    uniform4f: jest.fn(),
+    uniform4f,
     useProgram: jest.fn(),
     vertexAttribPointer: jest.fn(),
     viewport: jest.fn(),
@@ -203,6 +208,7 @@ function createFakeP027WebGl2(
     deleteAttempts,
     drawCalls,
     successfulDeletes,
+    uniform4f,
   }
 }
 
@@ -262,6 +268,60 @@ describe('P027 Fire WebGL engine boundary', () => {
       expect(point.y).toBeCloseTo(original[index]?.y ?? 0)
       expect(point.z).toBeCloseTo(original[index]?.z ?? 0)
     })
+  })
+
+  it('keeps fallback origins in exact local-X pairs around the emitter center', () => {
+    const controls = {
+      ...FIRE_P027_DEFAULT_CONTROLS,
+      originCenterX: 0.27,
+      originCenterY: -0.14,
+      originCenterZ: 0.08,
+      originSeed: 413,
+    }
+    const origins = generateFireP027FallbackOrigins(controls)
+
+    for (let index = 0; index < origins.length; index += 2) {
+      const positive = origins[index]!
+      const negative = origins[index + 1]!
+      expect(positive.x + negative.x).toBeCloseTo(
+        controls.originCenterX * 2,
+        12
+      )
+      expect(positive.y).toBeCloseTo(negative.y, 12)
+      expect(positive.z).toBeCloseTo(negative.z, 12)
+    }
+  })
+
+  it('uploads the emitter center used for local turbulence sampling', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+    const controls = {
+      ...FIRE_P027_DEFAULT_CONTROLS,
+      originCenterX: 0.25,
+      originCenterY: -0.14,
+      originCenterZ: 0.08,
+    }
+
+    engine.step(
+      {
+        start: 0,
+        count: 1,
+        generationBase: 0,
+        logicalUpdate: 0,
+        dtSeconds: 1 / 60,
+      },
+      1,
+      controls
+    )
+
+    expect(fake.uniform4f).toHaveBeenCalledWith(
+      'uOriginCenter',
+      0.25,
+      -0.14,
+      0.08,
+      0
+    )
+    engine.dispose()
   })
 
   it('deletes every allocated identity exactly once and double-dispose is idempotent', () => {

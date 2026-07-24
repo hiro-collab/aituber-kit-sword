@@ -10,14 +10,14 @@ const FIRE_P027_LUMA_G = 0.7152
 const FIRE_P027_LUMA_B = 0.0722
 const FIRE_P027_ALPHA_LUMA_START = 0.015
 const FIRE_P027_ALPHA_LUMA_END = 0.18
-const FIRE_P027_DISPLAY_EXPOSURE = 1.35
+const FIRE_P027_DISPLAY_EXPOSURE = 1.6
 const FIRE_P027_DISPLAY_GAMMA = 2.2
-const FIRE_P027_DISPLAY_ALPHA_GAIN = 0.55
+const FIRE_P027_DISPLAY_ALPHA_GAIN = 0.82
 const FIRE_P027_DISPLAY_ALPHA_LUMA_START = 0.01
 const FIRE_P027_DISPLAY_ALPHA_LUMA_END = 0.08
-const FIRE_P027_CORE_LUMA_START = 0.55
-const FIRE_P027_CORE_LUMA_END = 0.92
-const FIRE_P027_CORE_MIX = 0.72
+const FIRE_P027_CORE_LUMA_START = 0.48
+const FIRE_P027_CORE_LUMA_END = 0.82
+const FIRE_P027_CORE_MIX = 0.78
 const FIRE_P027_CORE_COLOR = {
   r: 1,
   g: 0.96,
@@ -96,6 +96,45 @@ export function toneMapFireP027DisplaySample(
   }
 }
 
+export interface FireP027VectorSample {
+  x: number
+  y: number
+  z: number
+}
+
+/**
+ * CPU reference for the emitter-local turbulence field used by the state
+ * shader. The X component is odd under local-X reflection while Y/Z are even,
+ * so paired fallback origins cannot acquire an unexplained persistent side
+ * wind. Seed is intentionally bounded before it reaches GLSL float uniforms.
+ */
+export function sampleFireP027LocalTurbulence(
+  localPosition: Readonly<FireP027VectorSample>,
+  period: number,
+  seed: number
+): FireP027VectorSample {
+  const safePeriod = Math.max(0.001, finiteOr(period, 0.001))
+  const p = {
+    x: finiteOr(localPosition.x, 0) / safePeriod,
+    y: finiteOr(localPosition.y, 0) / safePeriod,
+    z: finiteOr(localPosition.z, 0) / safePeriod,
+  }
+  const mirrored = { x: -p.x, y: p.y, z: p.z }
+  const xA = coherentNoise1(p, seed + 11)
+  const xB = coherentNoise1(mirrored, seed + 11)
+  const yOffset = { x: 37.2, y: 17.1, z: 53.7 }
+  const zOffset = { x: 71.9, y: 41.3, z: 29.4 }
+  const yA = coherentNoise1(addVector(p, yOffset), seed + 23)
+  const yB = coherentNoise1(addVector(mirrored, yOffset), seed + 23)
+  const zA = coherentNoise1(addVector(p, zOffset), seed + 47)
+  const zB = coherentNoise1(addVector(mirrored, zOffset), seed + 47)
+  return {
+    x: (xA - xB) * 0.5,
+    y: (yA + yB) * 0.5,
+    z: (zA + zB) * 0.5,
+  }
+}
+
 export const FIRE_P027_FULLSCREEN_VERTEX_SHADER = `#version 300 es
 precision highp float;
 out vec2 vUV;
@@ -125,6 +164,7 @@ uniform vec4 uTimeLife;
 uniform vec4 uForceMass;
 uniform vec4 uWindDrag;
 uniform vec4 uTurbulence;
+uniform vec4 uOriginCenter;
 uniform vec4 uConfig;
 uniform vec4 uGateLag;
 uniform int uOriginCount;
@@ -163,10 +203,14 @@ float coherentNoise1(vec3 p, float seed) {
 }
 
 vec3 coherentVectorNoise(vec3 p, float seed) {
-  return vec3(
-    coherentNoise1(p, seed + 11.0),
-    coherentNoise1(p + vec3(37.2, 17.1, 53.7), seed + 23.0),
-    coherentNoise1(p + vec3(71.9, 41.3, 29.4), seed + 47.0));
+  vec3 mirrored = vec3(-p.x, p.y, p.z);
+  float xA = coherentNoise1(p, seed + 11.0);
+  float xB = coherentNoise1(mirrored, seed + 11.0);
+  float yA = coherentNoise1(p + vec3(37.2, 17.1, 53.7), seed + 23.0);
+  float yB = coherentNoise1(mirrored + vec3(37.2, 17.1, 53.7), seed + 23.0);
+  float zA = coherentNoise1(p + vec3(71.9, 41.3, 29.4), seed + 47.0);
+  float zB = coherentNoise1(mirrored + vec3(71.9, 41.3, 29.4), seed + 47.0);
+  return vec3((xA - xB) * 0.5, (yA + yB) * 0.5, (zA + zB) * 0.5);
 }
 
 int spawnOrdinal(int slot, int startSlot, int spawnCount, int slotCount) {
@@ -221,7 +265,8 @@ void main() {
         acceleration += (uWindDrag.rgb - velocity) / mass;
         acceleration -= drag * velocity / mass;
         float period = max(0.001, uTurbulence.w);
-        acceleration += coherentVectorNoise(previousPositionAge.rgb / period, uConfig.x)
+        vec3 localPosition = previousPositionAge.rgb - uOriginCenter.xyz;
+        acceleration += coherentVectorNoise(localPosition / period, uConfig.x)
           * uTurbulence.rgb / mass;
         velocity += acceleration * dt;
         vec3 position = previousPositionAge.rgb + velocity * dt;
@@ -309,11 +354,11 @@ void main() {
   alpha *= 1.0 - smoothstep(0.86, 1.16, abs(centered.y));
   float perforation = smoothstep(0.08, 0.38, abs(n1 - n0) + length(warped) * 0.28);
   alpha *= mix(0.28, 1.0, perforation);
-  alpha = pow(alpha, 1.7) * 0.45;
+  alpha = pow(alpha, 1.7) * 0.68;
   if (alpha < 0.004) alpha = 0.0;
   float body = pow(clamp(field * 1.55, 0.0, 1.0), 1.2);
   vec3 color = vec3(body, body * (0.22 + 0.55 * n0), 0.0);
-  color *= alpha * 2.1;
+  color *= alpha * 2.45;
   fragColor = vec4(color, alpha);
 }`
 
@@ -412,6 +457,86 @@ void main() {
 function toneMapChannel(value: number): number {
   const mapped = 1 - Math.exp(-nonNegative(value) * FIRE_P027_DISPLAY_EXPOSURE)
   return Math.pow(clamp01(mapped), 1 / FIRE_P027_DISPLAY_GAMMA)
+}
+
+function coherentNoise1(
+  position: Readonly<FireP027VectorSample>,
+  seed: number
+): number {
+  const cell = {
+    x: Math.floor(position.x),
+    y: Math.floor(position.y),
+    z: Math.floor(position.z),
+  }
+  const blend = {
+    x: quintic(fract(position.x)),
+    y: quintic(fract(position.y)),
+    z: quintic(fract(position.z)),
+  }
+  const offset = { x: seed * 19.19, y: seed * 7.73, z: seed * 31.17 }
+  const sample = (x: number, y: number, z: number) =>
+    hash31({
+      x: cell.x + x + offset.x,
+      y: cell.y + y + offset.y,
+      z: cell.z + z + offset.z,
+    })
+  const n000 = sample(0, 0, 0)
+  const n100 = sample(1, 0, 0)
+  const n010 = sample(0, 1, 0)
+  const n110 = sample(1, 1, 0)
+  const n001 = sample(0, 0, 1)
+  const n101 = sample(1, 0, 1)
+  const n011 = sample(0, 1, 1)
+  const n111 = sample(1, 1, 1)
+  const n00 = mixUnbounded(n000, n100, blend.x)
+  const n10 = mixUnbounded(n010, n110, blend.x)
+  const n01 = mixUnbounded(n001, n101, blend.x)
+  const n11 = mixUnbounded(n011, n111, blend.x)
+  return (
+    mixUnbounded(
+      mixUnbounded(n00, n10, blend.y),
+      mixUnbounded(n01, n11, blend.y),
+      blend.z
+    ) *
+      2 -
+    1
+  )
+}
+
+function hash31(position: Readonly<FireP027VectorSample>): number {
+  const p = {
+    x: fract(position.x * 0.1031),
+    y: fract(position.y * 0.1031),
+    z: fract(position.z * 0.1031),
+  }
+  const dot = p.x * (p.y + 33.33) + p.y * (p.z + 33.33) + p.z * (p.x + 33.33)
+  p.x += dot
+  p.y += dot
+  p.z += dot
+  return fract((p.x + p.y) * p.z)
+}
+
+function quintic(value: number): number {
+  return value * value * value * (value * (value * 6 - 15) + 10)
+}
+
+function addVector(
+  left: Readonly<FireP027VectorSample>,
+  right: Readonly<FireP027VectorSample>
+): FireP027VectorSample {
+  return {
+    x: left.x + right.x,
+    y: left.y + right.y,
+    z: left.z + right.z,
+  }
+}
+
+function mixUnbounded(left: number, right: number, amount: number): number {
+  return left * (1 - amount) + right * amount
+}
+
+function fract(value: number): number {
+  return value - Math.floor(value)
 }
 
 function luminance(

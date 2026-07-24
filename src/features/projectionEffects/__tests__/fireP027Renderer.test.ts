@@ -41,8 +41,16 @@ describe('P027 Fire renderer lifecycle', () => {
 
   it('separates visible emission from bounded coverage without changing the public vocabulary', () => {
     const bright = mapFireParametersToP027Controls({
+      emissionRate: 80,
       temperature: 1,
       masterIntensity: 1,
+      bloomGain: 2,
+      postProcessing: true,
+    })
+    const weak = mapFireParametersToP027Controls({
+      emissionRate: 80,
+      temperature: 1,
+      masterIntensity: 0.4,
       bloomGain: 2,
       postProcessing: true,
     })
@@ -55,9 +63,18 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(bright.tintR).toBeGreaterThan(bright.tintG)
     expect(bright.tintG).toBeGreaterThan(bright.tintB)
     expect(bright.tintR).toBeGreaterThan(bright.tintA)
-    expect(bright.tintA).toBeCloseTo(0.94)
+    expect(bright.tintA).toBe(1)
+    expect(weak.birthPerSecond).toBeLessThan(bright.birthPerSecond)
+    expect(weak.tintR).toBeLessThan(bright.tintR)
+    expect(weak.tintA).toBeGreaterThanOrEqual(0.9)
     expect(off).toEqual(
-      expect.objectContaining({ tintR: 0, tintG: 0, tintB: 0, tintA: 0 })
+      expect.objectContaining({
+        birthPerSecond: 0,
+        tintR: 0,
+        tintG: 0,
+        tintB: 0,
+        tintA: 0,
+      })
     )
   })
 
@@ -75,7 +92,10 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(changed.originSeed).not.toBe(first.originSeed)
     expect(changed.particleSeed).not.toBe(first.particleSeed)
     expect(first.originSeed).toBeGreaterThanOrEqual(0)
-    expect(first.particleSeed).toBeLessThanOrEqual(2_147_483_647)
+    expect(first.originSeed).toBeLessThanOrEqual(10000)
+    expect(first.particleSeed).toBeLessThanOrEqual(10000)
+    expect(Number.isInteger(first.originSeed)).toBe(true)
+    expect(Number.isInteger(first.particleSeed)).toBe(true)
   })
 
   it('updates GPU state at fixed 60 Hz, creates origins once, and draws once per host frame', () => {

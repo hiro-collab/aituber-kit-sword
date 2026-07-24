@@ -4,6 +4,7 @@ import {
   composeFireP027SpriteSample,
   toneMapFireP027DisplaySample,
 } from '../plugins/fire/p027/shaders'
+import { mapFireParametersToP027Controls } from '../plugins/fire/p027/renderer'
 
 const WHITE_TINT = { r: 1, g: 1, b: 1, a: 1 } as const
 
@@ -82,6 +83,48 @@ describe('P027 Fire visual compositing quality', () => {
     expect(core).not.toEqual({ r: 1, g: 1, b: 1, a: 1 })
   })
 
+  it('keeps an active weak core materially opaque over green while its edge stays transparent', () => {
+    const controls = mapFireParametersToP027Controls({
+      masterIntensity: 0.4,
+      temperature: 0.78,
+      bloomGain: 0.64,
+      postProcessing: true,
+    })
+    const tint = {
+      r: controls.tintR,
+      g: controls.tintG,
+      b: controls.tintB,
+      a: controls.tintA,
+    }
+    const coreContribution = composeFireP027SpriteSample(
+      { r: 1.45, g: 0.86, b: 0.12, a: 0.68 },
+      tint,
+      1
+    )
+    const core = toneMapFireP027DisplaySample(
+      multiplySample(coreContribution, 6)
+    )
+    const edge = toneMapFireP027DisplaySample(
+      composeFireP027SpriteSample(
+        { r: 0.003, g: 0.001, b: 0, a: 0.68 },
+        tint,
+        1
+      )
+    )
+    const greenBackground = { r: 0.02, g: 0.78, b: 0.05 }
+    const composite = sourceOver(core, greenBackground)
+
+    expect(controls.tintA).toBeGreaterThanOrEqual(0.9)
+    expect(core.a).toBeGreaterThanOrEqual(0.82)
+    expect(core.r).toBeGreaterThanOrEqual(core.g)
+    expect(core.g).toBeGreaterThan(core.b)
+    expect(composite.r).toBeGreaterThan(0.7)
+    expect(composite.r).toBeGreaterThan(composite.g - 0.05)
+    expect(composite.b).toBeGreaterThan(greenBackground.b)
+    expect(greenBackground.g * (1 - core.a)).toBeLessThan(0.08)
+    expect(edge.a).toBeLessThan(0.06)
+  })
+
   it('locks the shader to one premultiplication and luminance-correlated alpha', () => {
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).not.toContain(
       'sourceColor.rgb *= sourceColor.a'
@@ -91,3 +134,26 @@ describe('P027 Fire visual compositing quality', () => {
     expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('visibleAlpha')
   })
 })
+
+function multiplySample(
+  sample: Readonly<{ r: number; g: number; b: number; a: number }>,
+  count: number
+) {
+  return {
+    r: sample.r * count,
+    g: sample.g * count,
+    b: sample.b * count,
+    a: sample.a * count,
+  }
+}
+
+function sourceOver(
+  source: Readonly<{ r: number; g: number; b: number; a: number }>,
+  backdrop: Readonly<{ r: number; g: number; b: number }>
+) {
+  return {
+    r: source.r * source.a + backdrop.r * (1 - source.a),
+    g: source.g * source.a + backdrop.g * (1 - source.a),
+    b: source.b * source.a + backdrop.b * (1 - source.a),
+  }
+}
