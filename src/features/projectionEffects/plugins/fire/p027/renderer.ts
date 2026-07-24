@@ -41,6 +41,7 @@ const MAX_DRAIN_STEPS = 300
 const MAX_DRAIN_PRESENTATIONS = 6
 const DRAIN_WAIT_GRACE_MS = 50
 const FIRE_P027_WORLD_MOTION_SCALE = 0.04
+const FIRE_P027_TURBULENCE_MOTION_SCALE = 0.006
 
 export class FireP027Renderer implements ProjectionEffectRenderer {
   private readonly surface: FireP027Surface
@@ -235,7 +236,7 @@ export function mapFireParametersToP027Controls(
     ? clamp((masterIntensity - 0.35) / 0.65, 0, 1)
     : 0
   const targetOccupancy = active
-    ? FIRE_P027_SLOT_COUNT * (0.24 + normalizedStrength * 0.64)
+    ? FIRE_P027_SLOT_COUNT * (0.64 + normalizedStrength * 0.24)
     : 0
   const targetBirth = targetOccupancy / lifeSeconds
   const emissionGain = clamp(
@@ -283,8 +284,8 @@ export function mapFireParametersToP027Controls(
     ),
     inputLagSeconds: 0.1,
     originSeed,
-    originRadiusX: 0.12,
-    originRadiusY: 0.06,
+    originRadiusX: 0.036,
+    originRadiusY: 0.0235,
     originRadiusZ: 0.08,
     originCenterX:
       clamp(numberParameter(parameters, 'emitterX', 0), -1, 1) * 0.5,
@@ -297,9 +298,9 @@ export function mapFireParametersToP027Controls(
     windX: 0,
     windY: 3 * motionScale * FIRE_P027_WORLD_MOTION_SCALE,
     windZ: 0,
-    turbulenceX: 6 * turbulenceScale * FIRE_P027_WORLD_MOTION_SCALE,
-    turbulenceY: 6 * turbulenceScale * FIRE_P027_WORLD_MOTION_SCALE,
-    turbulenceZ: 6 * turbulenceScale * FIRE_P027_WORLD_MOTION_SCALE,
+    turbulenceX: 6 * turbulenceScale * FIRE_P027_TURBULENCE_MOTION_SCALE,
+    turbulenceY: 6 * turbulenceScale * FIRE_P027_TURBULENCE_MOTION_SCALE,
+    turbulenceZ: 6 * turbulenceScale * FIRE_P027_TURBULENCE_MOTION_SCALE,
     turbulencePeriod: 0.01,
     particleSeed,
     lifeVarianceSeconds: Math.min(0.12, lifeSeconds * 0.2),

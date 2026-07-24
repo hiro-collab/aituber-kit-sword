@@ -9,6 +9,7 @@ import {
   FireP027Renderer,
   mapFireParametersToP027Controls,
 } from '../plugins/fire/p027/renderer'
+import { generateFireP027FallbackOrigins } from '../plugins/fire/p027/webglEngine'
 import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
 
 const { FIRE_THUNDER_LAB_VISUAL_PARAMETERS } = jest.requireActual(
@@ -44,7 +45,7 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(controls.spriteHeightCssPx).toBeCloseTo(80.64)
     expect(controls.forceY).toBeCloseTo(0.16)
     expect(controls.windY).toBeCloseTo(0.12)
-    expect(controls.turbulenceX).toBeCloseTo(0.24)
+    expect(controls.turbulenceX).toBeCloseTo(0.036)
     expect(controls.resolutionScale).toBe(0.8)
     expect(controls.tintR).toBeGreaterThan(controls.tintA)
     expect(controls.tintG).toBeGreaterThan(controls.tintA)
@@ -128,15 +129,33 @@ describe('P027 Fire renderer lifecycle', () => {
       weak.birthPerSecond *
         Math.min(0.5, weak.lifeSeconds, correctedMaximumUpwardNoiseExitSeconds)
     )
+    const legacyMaximumLateralDisplacement = integrateHorizontalDisplacementCss(
+      {
+        turbulenceX: 0.367058823529412,
+        seconds: 0.9,
+        viewportWidth: 1280,
+      }
+    )
+    const correctedMaximumLateralDisplacement =
+      integrateHorizontalDisplacementCss({
+        turbulenceX: weak.turbulenceX,
+        seconds: 0.9,
+        viewportWidth: 1280,
+      })
 
     expect(legacyNoNoiseExitSeconds).toBeGreaterThanOrEqual(1 / 6)
     expect(legacyNoNoiseExitSeconds).toBeLessThanOrEqual(11 / 60)
     expect(correctedNoNoiseExitSeconds).toBeGreaterThanOrEqual(0.9)
     expect(correctedMaximumUpwardNoiseExitSeconds).toBeGreaterThanOrEqual(0.6)
-    expect(potentiallyVisibleBirthsAtHalfSecond).toBeGreaterThanOrEqual(19)
+    expect(potentiallyVisibleBirthsAtHalfSecond).toBeGreaterThanOrEqual(30)
+    expect(legacyMaximumLateralDisplacement).toBeGreaterThan(140)
+    expect(correctedMaximumLateralDisplacement).toBeGreaterThan(0)
+    expect(correctedMaximumLateralDisplacement).toBeLessThanOrEqual(25)
+    expect(weak.forceX).toBe(0)
+    expect(weak.windX).toBe(0)
     expect(weak).toEqual(
       expect.objectContaining({
-        birthPerSecond: expect.closeTo(38.77333333333333, 10),
+        birthPerSecond: expect.closeTo(60.37333333333333, 10),
         lifeSeconds: 1.8,
         spriteWidthCssPx: 49.344,
         spriteHeightCssPx: expect.closeTo(55.26528, 10),
@@ -144,7 +163,7 @@ describe('P027 Fire renderer lifecycle', () => {
         forceY: expect.closeTo(0.215172413793103, 10),
         windX: 0,
         windY: expect.closeTo(0.161379310344828, 10),
-        turbulenceY: expect.closeTo(0.367058823529412, 10),
+        turbulenceY: expect.closeTo(0.055058823529412, 10),
         tintR: expect.closeTo(0.9655687291392, 10),
         tintG: expect.closeTo(0.851945906496, 10),
         tintB: expect.closeTo(0.2229205893888, 10),
@@ -168,11 +187,11 @@ describe('P027 Fire renderer lifecycle', () => {
     const energy = (controls: typeof weak) =>
       controls.tintR + controls.tintG + controls.tintB
 
-    expect(occupancy(weak)).toBeGreaterThan(55)
-    expect(occupancy(weak)).toBeLessThan(80)
-    expect(occupancy(medium)).toBeGreaterThan(85)
-    expect(occupancy(medium)).toBeLessThan(110)
-    expect(occupancy(strong)).toBeGreaterThan(115)
+    expect(occupancy(weak)).toBeGreaterThanOrEqual(108)
+    expect(occupancy(weak)).toBeLessThanOrEqual(110)
+    expect(occupancy(medium)).toBeGreaterThanOrEqual(119)
+    expect(occupancy(medium)).toBeLessThanOrEqual(120)
+    expect(occupancy(strong)).toBeGreaterThanOrEqual(130)
     expect(occupancy(strong)).toBeLessThan(FIRE_P027_SLOT_COUNT)
     expect(occupancy(weak)).toBeLessThan(occupancy(medium))
     expect(occupancy(medium)).toBeLessThan(occupancy(strong))
@@ -198,6 +217,82 @@ describe('P027 Fire renderer lifecycle', () => {
         tintA: 0,
       })
     )
+  })
+
+  it('reuses compact mirrored origins into one connected weak body while retaining bounded wrinkle', () => {
+    const viewportWidths = [640, 1280, 1920]
+    const seeds = [0, 1, 42, 9_999]
+
+    for (const seed of seeds) {
+      const weak = controlsForPlanStrength(0.4, { x: 0, y: 0 }, seed)
+      const repeated = controlsForPlanStrength(0.4, { x: 0, y: 0 }, seed)
+      const origins = generateFireP027FallbackOrigins(weak)
+      const repeatedOrigins = generateFireP027FallbackOrigins(repeated)
+      const birthsAt900Ms = Math.floor(weak.birthPerSecond * 0.9)
+      const steadyOccupancy = weak.birthPerSecond * weak.lifeSeconds
+      const maxLateralDisplacementCss = integrateHorizontalDisplacementCss({
+        turbulenceX: weak.turbulenceX,
+        seconds: 0.9,
+        viewportWidth: 1280,
+      })
+
+      expect(origins).toHaveLength(42)
+      expect(repeatedOrigins).toEqual(origins)
+      expect(birthsAt900Ms).toBeGreaterThanOrEqual(54)
+      expect(birthsAt900Ms).toBeGreaterThan(origins.length)
+      expect(steadyOccupancy / origins.length).toBeGreaterThanOrEqual(2.5)
+      expect(maxLateralDisplacementCss).toBeGreaterThan(0)
+      expect(maxLateralDisplacementCss).toBeLessThanOrEqual(25)
+
+      for (let pair = 0; pair < origins.length; pair += 2) {
+        const positive = origins[pair]
+        const negative = origins[pair + 1]
+        expect(positive.x + negative.x).toBeCloseTo(weak.originCenterX * 2, 12)
+        expect(positive.y).toBeCloseTo(negative.y, 12)
+        expect(positive.z).toBeCloseTo(negative.z, 12)
+      }
+
+      for (const viewportWidth of viewportWidths) {
+        const localX = origins.map(
+          (origin) => (origin.x - weak.originCenterX) * viewportWidth
+        )
+        const localY = origins.map(
+          (origin) => (origin.y - weak.originCenterY) * viewportWidth
+        )
+        expect(Math.max(...localX) - Math.min(...localX)).toBeLessThanOrEqual(
+          weak.spriteWidthCssPx * 2.6
+        )
+        expect(Math.max(...localY) - Math.min(...localY)).toBeLessThanOrEqual(
+          weak.spriteHeightCssPx * 1.5
+        )
+      }
+
+      const zeroDisplacement = createBirthSpriteRects({
+        birthCount: birthsAt900Ms,
+        origins,
+        spriteWidth: weak.spriteWidthCssPx,
+        spriteHeight: weak.spriteHeightCssPx,
+        viewportWidth: 1280,
+        maxLateralDisplacementCss: 0,
+      })
+      const boundedWrinkle = createBirthSpriteRects({
+        birthCount: birthsAt900Ms,
+        origins,
+        spriteWidth: weak.spriteWidthCssPx,
+        spriteHeight: weak.spriteHeightCssPx,
+        viewportWidth: 1280,
+        maxLateralDisplacementCss,
+      })
+      const meanWrinkleX =
+        boundedWrinkle.reduce((sum, rect, index) => {
+          const origin = zeroDisplacement[index]
+          return sum + (rect.centerX - origin.centerX)
+        }, 0) / boundedWrinkle.length
+
+      expect(countConnectedComponents(zeroDisplacement)).toBe(1)
+      expect(countConnectedComponents(boundedWrinkle)).toBe(1)
+      expect(Math.abs(meanWrinkleX)).toBeLessThan(0.1)
+    }
   })
 
   it('maps the declared seed deterministically while preserving the manual default', () => {
@@ -319,20 +414,21 @@ function frame(
 
 function controlsForPlanStrength(
   strength: number,
-  position: ProjectionPerformancePlan['position'] = { x: 0, y: 0 }
+  position: ProjectionPerformancePlan['position'] = { x: 0, y: 0 },
+  seed = 42
 ) {
   const executor = new ProjectionPerformancePlanExecutor()
   const plan = {
     schemaVersion: 1,
-    planId: `fire-density-${String(strength).replace('.', '-')}`,
-    sessionId: 'fire-density-tone-p7',
+    planId: `fire-density-${String(strength).replace('.', '-')}-${seed}`,
+    sessionId: 'fire-density-coherence-p10',
     revision: 1,
     action: 'start',
     effectId: 'fire',
     position,
     strength,
     durationMs: 4_000,
-    seed: 42,
+    seed,
     keyframes: [{ atMs: 0, position, strength }],
   } as const satisfies ProjectionPerformancePlan
   const planned = executor.activate(plan)
@@ -363,6 +459,85 @@ function integrateVerticalExitSeconds(options: {
     }
   }
   return Number.POSITIVE_INFINITY
+}
+
+function integrateHorizontalDisplacementCss(options: {
+  turbulenceX: number
+  seconds: number
+  viewportWidth: number
+}): number {
+  let positionX = 0
+  let velocityX = 0
+  const steps = Math.round(options.seconds / FIRE_P027_FIXED_DT_SECONDS)
+  for (let step = 0; step < steps; step += 1) {
+    const accelerationX = options.turbulenceX - velocityX
+    velocityX += accelerationX * FIRE_P027_FIXED_DT_SECONDS
+    positionX += velocityX * FIRE_P027_FIXED_DT_SECONDS
+  }
+  return positionX * options.viewportWidth
+}
+
+interface SpriteRect {
+  centerX: number
+  centerY: number
+  height: number
+  width: number
+}
+
+function createBirthSpriteRects(options: {
+  birthCount: number
+  origins: ReturnType<typeof generateFireP027FallbackOrigins>
+  spriteWidth: number
+  spriteHeight: number
+  viewportWidth: number
+  maxLateralDisplacementCss: number
+}): SpriteRect[] {
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+  return Array.from({ length: options.birthCount }, (_, index) => {
+    const origin = options.origins[index % options.origins.length]
+    const phase = (index + 1) * goldenAngle
+    return {
+      centerX:
+        origin.x * options.viewportWidth +
+        Math.sin(phase) * options.maxLateralDisplacementCss,
+      centerY:
+        origin.y * options.viewportWidth +
+        Math.sin(phase * 0.5) * options.maxLateralDisplacementCss * 0.35,
+      width: options.spriteWidth,
+      height: options.spriteHeight,
+    }
+  })
+}
+
+function countConnectedComponents(rects: readonly SpriteRect[]): number {
+  const visited = new Set<number>()
+  let components = 0
+  for (let start = 0; start < rects.length; start += 1) {
+    if (visited.has(start)) continue
+    components += 1
+    const pending = [start]
+    visited.add(start)
+    while (pending.length > 0) {
+      const current = pending.pop()
+      if (current === undefined) break
+      for (let candidate = 0; candidate < rects.length; candidate += 1) {
+        if (visited.has(candidate)) continue
+        if (rectsOverlap(rects[current], rects[candidate])) {
+          visited.add(candidate)
+          pending.push(candidate)
+        }
+      }
+    }
+  }
+  return components
+}
+
+function rectsOverlap(left: SpriteRect, right: SpriteRect): boolean {
+  return (
+    Math.abs(left.centerX - right.centerX) <=
+      (left.width + right.width) * 0.5 &&
+    Math.abs(left.centerY - right.centerY) <= (left.height + right.height) * 0.5
+  )
 }
 
 function createSurface() {
