@@ -42,9 +42,9 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(controls.birthPerSecond).toBe(66)
     expect(controls.spriteWidthCssPx).toBe(72)
     expect(controls.spriteHeightCssPx).toBeCloseTo(80.64)
-    expect(controls.forceY).toBe(4)
-    expect(controls.windY).toBe(3)
-    expect(controls.turbulenceX).toBe(6)
+    expect(controls.forceY).toBeCloseTo(0.16)
+    expect(controls.windY).toBeCloseTo(0.12)
+    expect(controls.turbulenceX).toBeCloseTo(0.24)
     expect(controls.resolutionScale).toBe(0.8)
     expect(controls.tintR).toBeGreaterThan(controls.tintA)
     expect(controls.tintG).toBeGreaterThan(controls.tintA)
@@ -88,6 +88,67 @@ describe('P027 Fire renderer lifecycle', () => {
         tintG: 0,
         tintB: 0,
         tintA: 0,
+      })
+    )
+  })
+
+  it('keeps weak upper-right particles resident after scaling world motion exactly once', () => {
+    const weak = controlsForPlanStrength(0.4, { x: 0.5, y: 0.5 })
+    const viewportWidth = 1280
+    const viewportHeight = 720
+    const aspect = viewportWidth / viewportHeight
+    const initialCenterY = 0.5 * 0.28
+    const fullyExitedCenterY =
+      0.5 / aspect + weak.spriteHeightCssPx / viewportHeight / (2 * aspect)
+
+    const legacyNoNoiseExitSeconds = integrateVerticalExitSeconds({
+      initialCenterY,
+      fullyExitedCenterY,
+      forceY: 5.37931,
+      windY: 4.03448,
+      turbulenceY: 0,
+    })
+    const correctedNoNoiseExitSeconds = integrateVerticalExitSeconds({
+      initialCenterY,
+      fullyExitedCenterY,
+      forceY: weak.forceY,
+      windY: weak.windY,
+      turbulenceY: 0,
+    })
+    const correctedMaximumUpwardNoiseExitSeconds = integrateVerticalExitSeconds(
+      {
+        initialCenterY,
+        fullyExitedCenterY,
+        forceY: weak.forceY,
+        windY: weak.windY,
+        turbulenceY: weak.turbulenceY,
+      }
+    )
+    const potentiallyVisibleBirthsAtHalfSecond = Math.floor(
+      weak.birthPerSecond *
+        Math.min(0.5, weak.lifeSeconds, correctedMaximumUpwardNoiseExitSeconds)
+    )
+
+    expect(legacyNoNoiseExitSeconds).toBeGreaterThanOrEqual(1 / 6)
+    expect(legacyNoNoiseExitSeconds).toBeLessThanOrEqual(11 / 60)
+    expect(correctedNoNoiseExitSeconds).toBeGreaterThanOrEqual(0.9)
+    expect(correctedMaximumUpwardNoiseExitSeconds).toBeGreaterThanOrEqual(0.6)
+    expect(potentiallyVisibleBirthsAtHalfSecond).toBeGreaterThanOrEqual(19)
+    expect(weak).toEqual(
+      expect.objectContaining({
+        birthPerSecond: expect.closeTo(38.77333333333333, 10),
+        lifeSeconds: 1.8,
+        spriteWidthCssPx: 49.344,
+        spriteHeightCssPx: expect.closeTo(55.26528, 10),
+        forceX: 0,
+        forceY: expect.closeTo(0.215172413793103, 10),
+        windX: 0,
+        windY: expect.closeTo(0.161379310344828, 10),
+        turbulenceY: expect.closeTo(0.367058823529412, 10),
+        tintR: expect.closeTo(0.9655687291392, 10),
+        tintG: expect.closeTo(0.851945906496, 10),
+        tintB: expect.closeTo(0.2229205893888, 10),
+        tintA: expect.closeTo(0.80664, 10),
       })
     )
   })
@@ -256,7 +317,10 @@ function frame(
   }
 }
 
-function controlsForPlanStrength(strength: number) {
+function controlsForPlanStrength(
+  strength: number,
+  position: ProjectionPerformancePlan['position'] = { x: 0, y: 0 }
+) {
   const executor = new ProjectionPerformancePlanExecutor()
   const plan = {
     schemaVersion: 1,
@@ -265,11 +329,11 @@ function controlsForPlanStrength(strength: number) {
     revision: 1,
     action: 'start',
     effectId: 'fire',
-    position: { x: 0, y: 0 },
+    position,
     strength,
     durationMs: 4_000,
     seed: 42,
-    keyframes: [{ atMs: 0, position: { x: 0, y: 0 }, strength }],
+    keyframes: [{ atMs: 0, position, strength }],
   } as const satisfies ProjectionPerformancePlan
   const planned = executor.activate(plan)
   if (!planned) throw new Error('Fire strength fixture was rejected')
@@ -278,6 +342,27 @@ function controlsForPlanStrength(strength: number) {
     ...planned.parameters,
     seed: plan.seed,
   })
+}
+
+function integrateVerticalExitSeconds(options: {
+  initialCenterY: number
+  fullyExitedCenterY: number
+  forceY: number
+  windY: number
+  turbulenceY: number
+}): number {
+  let positionY = options.initialCenterY
+  let velocityY = 0
+  for (let step = 1; step <= 600; step += 1) {
+    const accelerationY =
+      options.forceY + (options.windY - velocityY) + options.turbulenceY
+    velocityY += accelerationY * FIRE_P027_FIXED_DT_SECONDS
+    positionY += velocityY * FIRE_P027_FIXED_DT_SECONDS
+    if (positionY >= options.fullyExitedCenterY) {
+      return step * FIRE_P027_FIXED_DT_SECONDS
+    }
+  }
+  return Number.POSITIVE_INFINITY
 }
 
 function createSurface() {

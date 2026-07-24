@@ -40,6 +40,7 @@ export interface FireP027PluginOptions {
 const MAX_DRAIN_STEPS = 300
 const MAX_DRAIN_PRESENTATIONS = 6
 const DRAIN_WAIT_GRACE_MS = 50
+const FIRE_P027_WORLD_MOTION_SCALE = 0.04
 
 export class FireP027Renderer implements ProjectionEffectRenderer {
   private readonly surface: FireP027Surface
@@ -291,14 +292,14 @@ export function mapFireParametersToP027Controls(
       clamp(numberParameter(parameters, 'emitterY', -0.82), -1, 1) * 0.28,
     originCenterZ: 0,
     forceX: 0,
-    forceY: 4 * motionScale,
+    forceY: 4 * motionScale * FIRE_P027_WORLD_MOTION_SCALE,
     forceZ: 0,
     windX: 0,
-    windY: 3 * motionScale,
+    windY: 3 * motionScale * FIRE_P027_WORLD_MOTION_SCALE,
     windZ: 0,
-    turbulenceX: 6 * turbulenceScale,
-    turbulenceY: 6 * turbulenceScale,
-    turbulenceZ: 6 * turbulenceScale,
+    turbulenceX: 6 * turbulenceScale * FIRE_P027_WORLD_MOTION_SCALE,
+    turbulenceY: 6 * turbulenceScale * FIRE_P027_WORLD_MOTION_SCALE,
+    turbulenceZ: 6 * turbulenceScale * FIRE_P027_WORLD_MOTION_SCALE,
     turbulencePeriod: 0.01,
     particleSeed,
     lifeVarianceSeconds: Math.min(0.12, lifeSeconds * 0.2),
