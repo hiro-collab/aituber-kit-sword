@@ -1,12 +1,23 @@
 import type { ProjectionEffectFrameContext } from '../rendererPlugin'
+import { ProjectionPerformancePlanExecutor } from '../browser/projectionPerformancePlanExecutor'
 import {
   FIRE_P027_FIXED_DT_SECONDS,
+  FIRE_P027_SLOT_COUNT,
   type FireP027Surface,
 } from '../plugins/fire/p027/contracts'
 import {
   FireP027Renderer,
   mapFireParametersToP027Controls,
 } from '../plugins/fire/p027/renderer'
+import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
+
+const { FIRE_THUNDER_LAB_VISUAL_PARAMETERS } = jest.requireActual(
+  '../browser/fireThunderLabCanvasLayer'
+) as {
+  FIRE_THUNDER_LAB_VISUAL_PARAMETERS: Readonly<{
+    fire: Readonly<Record<string, unknown>>
+  }>
+}
 
 describe('P027 Fire renderer lifecycle', () => {
   it('maps the existing Fire vocabulary into bounded P027 controls', () => {
@@ -28,8 +39,8 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(controls.originCenterX).toBe(0.25)
     expect(controls.originCenterY).toBeCloseTo(-0.14)
     expect(controls.lifeSeconds).toBe(2)
-    expect(controls.birthPerSecond).toBe(75)
-    expect(controls.sizeX).toBe(0.3)
+    expect(controls.birthPerSecond).toBe(66)
+    expect(controls.sizeX).toBe(0.225)
     expect(controls.forceY).toBe(4)
     expect(controls.windY).toBe(3)
     expect(controls.turbulenceX).toBe(6)
@@ -63,10 +74,52 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(bright.tintR).toBeGreaterThan(bright.tintG)
     expect(bright.tintG).toBeGreaterThan(bright.tintB)
     expect(bright.tintR).toBeGreaterThan(bright.tintA)
-    expect(bright.tintA).toBe(1)
+    expect(bright.tintA).toBeGreaterThanOrEqual(0.94)
+    expect(bright.tintA).toBeLessThanOrEqual(1)
     expect(weak.birthPerSecond).toBeLessThan(bright.birthPerSecond)
     expect(weak.tintR).toBeLessThan(bright.tintR)
-    expect(weak.tintA).toBeGreaterThanOrEqual(0.9)
+    expect(weak.tintA).toBeGreaterThanOrEqual(0.75)
+    expect(weak.tintA).toBeLessThan(bright.tintA)
+    expect(off).toEqual(
+      expect.objectContaining({
+        birthPerSecond: 0,
+        tintR: 0,
+        tintG: 0,
+        tintB: 0,
+        tintA: 0,
+      })
+    )
+  })
+
+  it('keeps real weak, medium, and strong plans below capacity with distinct density, footprint, and energy', () => {
+    const weak = controlsForPlanStrength(0.4)
+    const medium = controlsForPlanStrength(0.6)
+    const strong = controlsForPlanStrength(0.9)
+    const off = mapFireParametersToP027Controls({
+      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire,
+      masterIntensity: 0,
+    })
+    const occupancy = (controls: typeof weak) =>
+      controls.birthPerSecond * controls.lifeSeconds
+    const footprint = (controls: typeof weak) =>
+      occupancy(controls) * controls.sizeX * controls.sizeY
+    const energy = (controls: typeof weak) =>
+      controls.tintR + controls.tintG + controls.tintB
+
+    expect(occupancy(weak)).toBeGreaterThan(55)
+    expect(occupancy(weak)).toBeLessThan(80)
+    expect(occupancy(medium)).toBeGreaterThan(85)
+    expect(occupancy(medium)).toBeLessThan(110)
+    expect(occupancy(strong)).toBeGreaterThan(115)
+    expect(occupancy(strong)).toBeLessThan(FIRE_P027_SLOT_COUNT)
+    expect(occupancy(weak)).toBeLessThan(occupancy(medium))
+    expect(occupancy(medium)).toBeLessThan(occupancy(strong))
+    expect(weak.sizeX).toBeLessThan(medium.sizeX)
+    expect(medium.sizeX).toBeLessThan(strong.sizeX)
+    expect(footprint(weak)).toBeLessThan(footprint(medium))
+    expect(footprint(medium)).toBeLessThan(footprint(strong))
+    expect(energy(weak)).toBeLessThan(energy(medium))
+    expect(energy(medium)).toBeLessThan(energy(strong))
     expect(off).toEqual(
       expect.objectContaining({
         birthPerSecond: 0,
@@ -108,7 +161,7 @@ describe('P027 Fire renderer lifecycle', () => {
     expect(surface.step).toHaveBeenCalledTimes(2)
     expect(surface.step.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
-        count: 2,
+        count: 1,
         dtSeconds: FIRE_P027_FIXED_DT_SECONDS,
       })
     )
@@ -193,6 +246,30 @@ function frame(
     parameters: {},
     ...patch,
   }
+}
+
+function controlsForPlanStrength(strength: number) {
+  const executor = new ProjectionPerformancePlanExecutor()
+  const plan = {
+    schemaVersion: 1,
+    planId: `fire-density-${String(strength).replace('.', '-')}`,
+    sessionId: 'fire-density-tone-p7',
+    revision: 1,
+    action: 'start',
+    effectId: 'fire',
+    position: { x: 0, y: 0 },
+    strength,
+    durationMs: 4_000,
+    seed: 42,
+    keyframes: [{ atMs: 0, position: { x: 0, y: 0 }, strength }],
+  } as const satisfies ProjectionPerformancePlan
+  const planned = executor.activate(plan)
+  if (!planned) throw new Error('Fire strength fixture was rejected')
+  return mapFireParametersToP027Controls({
+    ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.fire,
+    ...planned.parameters,
+    seed: plan.seed,
+  })
 }
 
 function createSurface() {

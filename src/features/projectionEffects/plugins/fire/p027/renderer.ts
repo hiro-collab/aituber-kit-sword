@@ -230,26 +230,31 @@ export function mapFireParametersToP027Controls(
   const bloomGain = clamp(numberParameter(parameters, 'bloomGain', 0.64), 0, 2)
   const postProcessing = parameters.postProcessing !== false
   const active = masterIntensity > 0
-  const normalizedStrength = clamp(masterIntensity / 0.92, 0, 1)
-  const densityGain = active ? 0.55 + normalizedStrength * 0.45 : 0
+  const normalizedStrength = active
+    ? clamp((masterIntensity - 0.35) / 0.65, 0, 1)
+    : 0
+  const targetOccupancy = active
+    ? FIRE_P027_SLOT_COUNT * (0.24 + normalizedStrength * 0.64)
+    : 0
+  const targetBirth = targetOccupancy / lifeSeconds
   const emissionGain = clamp(
     active
-      ? (0.72 + normalizedStrength * 0.68) *
-          (postProcessing ? 1 + bloomGain * 0.24 : 1)
+      ? (0.58 + normalizedStrength * 0.62) *
+          (postProcessing ? 1 + bloomGain * 0.14 : 1)
       : 0,
     0,
     2
   )
   const coverageGain = clamp(
     active
-      ? 0.88 +
-          normalizedStrength * 0.1 +
+      ? 0.72 +
+          normalizedStrength * 0.22 +
           (postProcessing ? bloomGain * 0.01 : 0)
       : 0,
     0,
     1
   )
-  const sizeX = clamp(pointSize / 240, 0.02, 0.67)
+  const sizeX = clamp(pointSize / 320, 0.015, 0.5)
   const motionScale = upwardSpeed / 0.58
   const turbulenceScale = noiseStrength / 0.34
   const dissipation = clamp(
@@ -263,7 +268,8 @@ export function mapFireParametersToP027Controls(
 
   return {
     birthPerSecond: Math.min(
-      requestedBirth * budgetScale * densityGain,
+      requestedBirth * budgetScale,
+      targetBirth,
       capacityBirth
     ),
     lifeSeconds,

@@ -85,7 +85,7 @@ describe('P027 Fire visual compositing quality', () => {
 
   it('keeps an active weak core materially opaque over green while its edge stays transparent', () => {
     const controls = mapFireParametersToP027Controls({
-      masterIntensity: 0.4,
+      masterIntensity: 0.5788,
       temperature: 0.78,
       bloomGain: 0.64,
       postProcessing: true,
@@ -96,38 +96,192 @@ describe('P027 Fire visual compositing quality', () => {
       b: controls.tintB,
       a: controls.tintA,
     }
-    const coreContribution = composeFireP027SpriteSample(
-      { r: 1.45, g: 0.86, b: 0.12, a: 0.68 },
-      tint,
-      1
+    const edge = toneMapFireP027DisplaySample(
+      accumulateSamples([
+        composeFireP027SpriteSample(
+          { r: 0.004, g: 0.001, b: 0, a: 0.03 },
+          tint,
+          1
+        ),
+      ])
+    )
+    const midtone = toneMapFireP027DisplaySample(
+      accumulateSamples(
+        Array.from({ length: 2 }, () =>
+          composeFireP027SpriteSample(
+            { r: 0.48, g: 0.16, b: 0.008, a: 0.32 },
+            tint,
+            1
+          )
+        )
+      )
     )
     const core = toneMapFireP027DisplaySample(
-      multiplySample(coreContribution, 6)
-    )
-    const edge = toneMapFireP027DisplaySample(
-      composeFireP027SpriteSample(
-        { r: 0.003, g: 0.001, b: 0, a: 0.68 },
-        tint,
-        1
+      accumulateSamples(
+        Array.from({ length: 4 }, () =>
+          composeFireP027SpriteSample(
+            { r: 1.2, g: 0.72, b: 0.08, a: 0.62 },
+            tint,
+            1
+          )
+        )
       )
+    )
+    const darkVeil = toneMapFireP027DisplaySample(
+      composeFireP027SpriteSample({ r: 0.002, g: 0.001, b: 0, a: 0.9 }, tint, 1)
     )
     const greenBackground = { r: 0.02, g: 0.78, b: 0.05 }
     const composite = sourceOver(core, greenBackground)
 
-    expect(controls.tintA).toBeGreaterThanOrEqual(0.9)
-    expect(core.a).toBeGreaterThanOrEqual(0.82)
+    expect(controls.tintA).toBeGreaterThan(0.79)
+    expect(controls.tintA).toBeLessThan(0.85)
+    expect(edge.a).toBeLessThan(0.025)
+    expect(midtone.a).toBeGreaterThan(0.25)
+    expect(midtone.a).toBeLessThan(0.8)
+    expect(midtone.r).toBeGreaterThan(midtone.g)
+    expect(midtone.g).toBeGreaterThan(midtone.b)
+    expect(core.a).toBeGreaterThanOrEqual(0.84)
     expect(core.r).toBeGreaterThanOrEqual(core.g)
     expect(core.g).toBeGreaterThan(core.b)
-    expect(composite.r).toBeGreaterThan(0.7)
+    expect(composite.r).toBeGreaterThan(0.65)
     expect(composite.r).toBeGreaterThan(composite.g - 0.05)
     expect(composite.b).toBeGreaterThan(greenBackground.b)
-    expect(greenBackground.g * (1 - core.a)).toBeLessThan(0.08)
-    expect(edge.a).toBeLessThan(0.06)
+    expect(greenBackground.g * (1 - core.a)).toBeLessThan(0.13)
+    expect(darkVeil.a).toBeLessThan(0.01)
+  })
+
+  it('keeps hot white-yellow samples a minority while warm midtones dominate the weak flame body', () => {
+    const controls = mapFireParametersToP027Controls({
+      masterIntensity: 0.5788,
+      temperature: 0.93,
+      bloomGain: 0.92,
+      postProcessing: true,
+    })
+    const tint = {
+      r: controls.tintR,
+      g: controls.tintG,
+      b: controls.tintB,
+      a: controls.tintA,
+    }
+    const displays = [
+      ...Array.from({ length: 8 }, (_, index) =>
+        toneMapFireP027DisplaySample(
+          composeFireP027SpriteSample(
+            {
+              r: 0.01 + index * 0.003,
+              g: 0.002 + index * 0.001,
+              b: 0,
+              a: 0.04 + index * 0.005,
+            },
+            tint,
+            1
+          )
+        )
+      ),
+      ...Array.from({ length: 6 }, (_, index) =>
+        toneMapFireP027DisplaySample(
+          accumulateSamples(
+            Array.from({ length: 2 }, () =>
+              composeFireP027SpriteSample(
+                {
+                  r: 0.42 + index * 0.04,
+                  g: 0.12 + index * 0.025,
+                  b: 0.006,
+                  a: 0.28 + index * 0.02,
+                },
+                tint,
+                1
+              )
+            )
+          )
+        )
+      ),
+      ...Array.from({ length: 2 }, (_, index) =>
+        toneMapFireP027DisplaySample(
+          accumulateSamples(
+            Array.from({ length: 4 }, () =>
+              composeFireP027SpriteSample(
+                {
+                  r: 1.1 + index * 0.2,
+                  g: 0.68 + index * 0.08,
+                  b: 0.08,
+                  a: 0.6 + index * 0.04,
+                },
+                tint,
+                1
+              )
+            )
+          )
+        )
+      ),
+    ]
+    const hotWhiteYellow = displays.filter(
+      (sample) =>
+        sample.r > 0.82 && sample.g > 0.72 && sample.b > 0.1 && sample.a > 0.7
+    )
+    const warmMidtones = displays.filter(
+      (sample) =>
+        sample.r > sample.g &&
+        sample.g > sample.b &&
+        sample.r > 0.35 &&
+        sample.r < 0.9 &&
+        sample.a > 0.15
+    )
+    const paleFogOutsideCore = displays.slice(0, 14).filter((sample) => {
+      const maximum = Math.max(sample.r, sample.g, sample.b)
+      const minimum = Math.min(sample.r, sample.g, sample.b)
+      return sample.a > 0.25 && maximum - minimum < 0.08
+    })
+
+    expect(hotWhiteYellow.length).toBeGreaterThan(0)
+    expect(hotWhiteYellow.length).toBeLessThan(displays.length / 3)
+    expect(warmMidtones.length).toBeGreaterThan(paleFogOutsideCore.length)
+    for (const sample of displays) {
+      expect(Object.values(sample).every(Number.isFinite)).toBe(true)
+      expect(sample.a).toBeGreaterThanOrEqual(0)
+      expect(sample.a).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('caps dense finite overlap at the same 0.86 display-alpha boundary in CPU and GLSL', () => {
+    const controls = mapFireParametersToP027Controls({
+      masterIntensity: 1,
+      temperature: 1,
+      bloomGain: 2,
+      postProcessing: true,
+    })
+    const tint = {
+      r: controls.tintR,
+      g: controls.tintG,
+      b: controls.tintB,
+      a: controls.tintA,
+    }
+    const denseOverlap = accumulateSamples(
+      Array.from({ length: 32 }, () =>
+        composeFireP027SpriteSample({ r: 4, g: 2.8, b: 0.6, a: 0.92 }, tint, 1)
+      )
+    )
+    const display = toneMapFireP027DisplaySample(denseOverlap)
+    const shaderAlphaCap = FIRE_P027_DISPLAY_FRAGMENT_SHADER.match(
+      /float visibleAlpha = min\(\s*([0-9.]+),/
+    )
+
+    expect(shaderAlphaCap).not.toBeNull()
+    expect(Number(shaderAlphaCap?.[1])).toBe(0.86)
+    expect(display.a).toBeGreaterThanOrEqual(0.84)
+    expect(display.a).toBeLessThanOrEqual(Number(shaderAlphaCap?.[1]))
+    expect(display.a).toBeLessThanOrEqual(0.86)
   })
 
   it('locks the shader to one premultiplication and luminance-correlated alpha', () => {
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).not.toContain(
       'sourceColor.rgb *= sourceColor.a'
+    )
+    expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain(
+      'float spriteCoverage = sqrt(spriteAlpha);'
+    )
+    expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain(
+      'fragColor = sourceColor * (1.0 - sourceColor.a);'
     )
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain('correlatedAlpha')
     expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('mappedLuminance')
@@ -135,16 +289,18 @@ describe('P027 Fire visual compositing quality', () => {
   })
 })
 
-function multiplySample(
-  sample: Readonly<{ r: number; g: number; b: number; a: number }>,
-  count: number
+function accumulateSamples(
+  samples: readonly Readonly<{ r: number; g: number; b: number; a: number }>[]
 ) {
-  return {
-    r: sample.r * count,
-    g: sample.g * count,
-    b: sample.b * count,
-    a: sample.a * count,
-  }
+  return samples.reduce(
+    (accumulated, sample) => ({
+      r: accumulated.r + sample.r,
+      g: accumulated.g + sample.g,
+      b: accumulated.b + sample.b,
+      a: accumulated.a + sample.a,
+    }),
+    { r: 0, g: 0, b: 0, a: 0 }
+  )
 }
 
 function sourceOver(
