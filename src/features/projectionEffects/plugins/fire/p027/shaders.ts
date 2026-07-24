@@ -102,6 +102,47 @@ export interface FireP027VectorSample {
   z: number
 }
 
+export interface FireP027EmitterMotionSample {
+  centerDelta: FireP027VectorSample
+  localPosition: FireP027VectorSample
+  worldPosition: FireP027VectorSample
+}
+
+/**
+ * CPU reference for the state shader's emitter-motion branch. Existing
+ * particles follow the emitter exactly once; births already originate in the
+ * current origin texture and therefore never receive the survivor delta.
+ */
+export function applyFireP027EmitterMotion(
+  previousPosition: Readonly<FireP027VectorSample>,
+  previousCenter: Readonly<FireP027VectorSample>,
+  currentCenter: Readonly<FireP027VectorSample>,
+  currentOrigin: Readonly<FireP027VectorSample>,
+  isBirth: boolean
+): FireP027EmitterMotionSample {
+  const centerDelta = {
+    x: currentCenter.x - previousCenter.x,
+    y: currentCenter.y - previousCenter.y,
+    z: currentCenter.z - previousCenter.z,
+  }
+  const worldPosition = isBirth
+    ? { ...currentOrigin }
+    : {
+        x: previousPosition.x + centerDelta.x,
+        y: previousPosition.y + centerDelta.y,
+        z: previousPosition.z + centerDelta.z,
+      }
+  return {
+    centerDelta,
+    localPosition: {
+      x: worldPosition.x - currentCenter.x,
+      y: worldPosition.y - currentCenter.y,
+      z: worldPosition.z - currentCenter.z,
+    },
+    worldPosition,
+  }
+}
+
 /**
  * CPU reference for the emitter-local turbulence field used by the state
  * shader. The X component is odd under local-X reflection while Y/Z are even,
@@ -165,6 +206,7 @@ uniform vec4 uForceMass;
 uniform vec4 uWindDrag;
 uniform vec4 uTurbulence;
 uniform vec4 uOriginCenter;
+uniform vec4 uOriginDelta;
 uniform vec4 uConfig;
 uniform vec4 uGateLag;
 uniform int uOriginCount;
@@ -260,16 +302,17 @@ void main() {
       if (nextAge < lifetime) {
         float mass = uGateLag.z > 0.5 ? max(0.0001, uForceMass.w) : 1.0;
         float drag = uGateLag.w > 0.5 ? max(0.0, uWindDrag.w) : 0.0;
+        vec3 translatedPosition = previousPositionAge.rgb + uOriginDelta.xyz;
         vec3 velocity = previousVelocityOpacity.rgb;
         vec3 acceleration = uForceMass.rgb / mass;
         acceleration += (uWindDrag.rgb - velocity) / mass;
         acceleration -= drag * velocity / mass;
         float period = max(0.001, uTurbulence.w);
-        vec3 localPosition = previousPositionAge.rgb - uOriginCenter.xyz;
+        vec3 localPosition = translatedPosition - uOriginCenter.xyz;
         acceleration += coherentVectorNoise(localPosition / period, uConfig.x)
           * uTurbulence.rgb / mass;
         velocity += acceleration * dt;
-        vec3 position = previousPositionAge.rgb + velocity * dt;
+        vec3 position = translatedPosition + velocity * dt;
         float opacity = pow(0.5, max(0.0, uConfig.z) * length(velocity));
         nextPositionAge = vec4(position, nextAge);
         nextGenerationLife = previousGenerationLife;

@@ -4,6 +4,7 @@ import {
 } from '../plugins/fire/p027/contracts'
 import {
   FireP027CleanupError,
+  FireP027MotionError,
   FireP027WebGlEngine,
   generateFireP027FallbackOrigins,
 } from '../plugins/fire/p027/webglEngine'
@@ -292,36 +293,141 @@ describe('P027 Fire WebGL engine boundary', () => {
     }
   })
 
-  it('uploads the emitter center used for local turbulence sampling', () => {
+  it('applies an emitter-center delta exactly once and resets its baseline', () => {
     const fake = createFakeP027WebGl2()
     const engine = new FireP027WebGlEngine(fake.canvas)
-    const controls = {
+    const centerA = {
       ...FIRE_P027_DEFAULT_CONTROLS,
+      originCenterX: -0.25,
+      originCenterY: -0.125,
+      originCenterZ: 0.0625,
+    }
+    const centerB = {
+      ...centerA,
       originCenterX: 0.25,
-      originCenterY: -0.14,
-      originCenterZ: 0.08,
+      originCenterY: 0.125,
+      originCenterZ: 0,
+    }
+    const batch = {
+      start: 0,
+      count: 1,
+      generationBase: 0,
+      logicalUpdate: 0,
+      dtSeconds: 1 / 60,
     }
 
-    engine.step(
-      {
-        start: 0,
-        count: 1,
-        generationBase: 0,
-        logicalUpdate: 0,
-        dtSeconds: 1 / 60,
-      },
-      1,
-      controls
-    )
+    engine.step(batch, 1, centerA)
+    engine.step(batch, 1, centerB)
+    engine.step(batch, 1, centerB)
 
     expect(fake.uniform4f).toHaveBeenCalledWith(
       'uOriginCenter',
       0.25,
-      -0.14,
-      0.08,
+      0.125,
+      0,
       0
     )
+    expect(uniformVectors(fake, 'uOriginDelta')).toEqual([
+      [0, 0, 0, 0],
+      [0.5, 0.25, -0.0625, 0],
+      [0, 0, 0, 0],
+    ])
+
+    engine.reset()
+    engine.step(batch, 1, centerB)
+    const deltasAfterReset = uniformVectors(fake, 'uOriginDelta')
+    expect(deltasAfterReset[deltasAfterReset.length - 1]).toEqual([0, 0, 0, 0])
     engine.dispose()
+  })
+
+  it.each([
+    ['nonfinite', Number.NaN],
+    ['infinite', Number.POSITIVE_INFINITY],
+    ['oversized', 1.01],
+  ])(
+    'quarantines a %s emitter center before any later draw',
+    (_label, centerX) => {
+      const fake = createFakeP027WebGl2()
+      const engine = new FireP027WebGlEngine(fake.canvas)
+      const drawCallsBefore = fake.drawCalls.mock.calls.length
+
+      let failure: unknown
+      try {
+        engine.step(
+          {
+            start: 0,
+            count: 0,
+            generationBase: 0,
+            logicalUpdate: 0,
+            dtSeconds: 1 / 60,
+          },
+          1,
+          {
+            ...FIRE_P027_DEFAULT_CONTROLS,
+            originCenterX: centerX,
+          }
+        )
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(FireP027MotionError)
+      expect((failure as Error).message).toBe(
+        'P027 fire emitter motion invalid'
+      )
+      expect((failure as Error).message).not.toContain(String(centerX))
+      expect(fake.drawCalls).toHaveBeenCalledTimes(drawCallsBefore)
+      expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 0 })
+      expect(() => engine.draw(FIRE_P027_DEFAULT_CONTROLS)).toThrow(
+        'P027 fire surface is disposed'
+      )
+    }
+  )
+
+  it('retains failed cleanup ownership when an oversized delta is quarantined', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+    const batch = {
+      start: 0,
+      count: 0,
+      generationBase: 0,
+      logicalUpdate: 0,
+      dtSeconds: 1 / 60,
+    }
+    engine.step(batch, 1, {
+      ...FIRE_P027_DEFAULT_CONTROLS,
+      originCenterX: -0.5,
+    })
+    fake.armDeleteFailure('buffer')
+    const drawCallsBefore = fake.drawCalls.mock.calls.length
+
+    let failure: unknown
+    try {
+      engine.step(batch, 1, {
+        ...FIRE_P027_DEFAULT_CONTROLS,
+        originCenterX: 0.75,
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FireP027CleanupError)
+    expect((failure as Error).message).toBe(
+      'P027 fire resource cleanup incomplete'
+    )
+    expect((failure as Error).message).not.toContain(PRIVATE_NATIVE_DELETE_TEXT)
+    expect(fake.drawCalls).toHaveBeenCalledTimes(drawCallsBefore)
+    expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 1 })
+    for (const kind of RESOURCE_KINDS.filter((value) => value !== 'buffer')) {
+      expect(fake.deleteAttempts[kind].length).toBeGreaterThan(0)
+    }
+    expect(() => engine.draw(FIRE_P027_DEFAULT_CONTROLS)).toThrow(
+      'P027 fire surface is disposed'
+    )
+
+    engine.dispose()
+    expectEveryAllocationDeletedExactlyOnce(fake)
+    expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 0 })
   })
 
   it('deletes every allocated identity exactly once and double-dispose is idempotent', () => {
@@ -410,3 +516,12 @@ describe('P027 Fire WebGL engine boundary', () => {
     expect(engine.audit()).toMatchObject({ disposed: true, resourceCount: 0 })
   })
 })
+
+function uniformVectors(
+  fake: Readonly<FakeP027WebGl2>,
+  name: string
+): number[][] {
+  return fake.uniform4f.mock.calls
+    .filter(([location]) => location === name)
+    .map(([, x, y, z, w]) => [x, y, z, w])
+}

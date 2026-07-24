@@ -27,6 +27,8 @@ interface StateSet {
 }
 
 const ZERO = new Float32Array([0, 0, 0, 0])
+const FIRE_P027_MAX_ORIGIN_CENTER_COMPONENT = 1
+const FIRE_P027_MAX_ORIGIN_DELTA_COMPONENT = 1
 
 /** Fixed public failure for incomplete native resource cleanup. */
 export class FireP027CleanupError extends Error {
@@ -35,6 +37,16 @@ export class FireP027CleanupError extends Error {
   constructor() {
     super('P027 fire resource cleanup incomplete')
     this.name = 'FireP027CleanupError'
+  }
+}
+
+/** Fixed public failure for an unsafe emitter-center transition. */
+export class FireP027MotionError extends Error {
+  readonly failure = 'motion' as const
+
+  constructor() {
+    super('P027 fire emitter motion invalid')
+    this.name = 'FireP027MotionError'
   }
 }
 
@@ -65,6 +77,7 @@ export class FireP027WebGlEngine implements FireP027Surface {
   private stateStepCount = 0
   private drawCountValue = 0
   private disposed = false
+  private appliedOriginCenter: FireP027OriginPoint | null = null
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -180,6 +193,21 @@ export class FireP027WebGlEngine implements FireP027Surface {
     controls: Readonly<FireP027Controls>
   ): void {
     this.assertActive()
+    const currentOriginCenter = originCenterFromControls(controls)
+    if (
+      !isBoundedVector(
+        currentOriginCenter,
+        FIRE_P027_MAX_ORIGIN_CENTER_COMPONENT
+      )
+    ) {
+      this.quarantineInvalidMotion()
+    }
+    const originDelta = this.appliedOriginCenter
+      ? subtractVector(currentOriginCenter, this.appliedOriginCenter)
+      : { x: 0, y: 0, z: 0 }
+    if (!isBoundedVector(originDelta, FIRE_P027_MAX_ORIGIN_DELTA_COMPONENT)) {
+      this.quarantineInvalidMotion()
+    }
     const gl = this.gl
     const source = this.stateSets[this.readStateIndex]
     const writeIndex = this.readStateIndex === 0 ? 1 : 0
@@ -240,9 +268,16 @@ export class FireP027WebGlEngine implements FireP027Surface {
     )
     gl.uniform4f(
       uniform(gl, this.stateProgram, 'uOriginCenter'),
-      controls.originCenterX,
-      controls.originCenterY,
-      controls.originCenterZ,
+      currentOriginCenter.x,
+      currentOriginCenter.y,
+      currentOriginCenter.z,
+      0
+    )
+    gl.uniform4f(
+      uniform(gl, this.stateProgram, 'uOriginDelta'),
+      originDelta.x,
+      originDelta.y,
+      originDelta.z,
       0
     )
     gl.uniform4f(
@@ -264,6 +299,7 @@ export class FireP027WebGlEngine implements FireP027Surface {
     this.stateStepCount += 1
     this.captureNextLayer()
     assertNoGlError(gl, 'P027 state update')
+    this.appliedOriginCenter = currentOriginCenter
   }
 
   draw(controls: Readonly<FireP027Controls>): void {
@@ -383,6 +419,7 @@ export class FireP027WebGlEngine implements FireP027Surface {
   }
 
   dispose(): void {
+    this.appliedOriginCenter = null
     this.disposed = true
     if (this.resources.count === 0) return
     try {
@@ -503,6 +540,7 @@ export class FireP027WebGlEngine implements FireP027Surface {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     this.readStateIndex = 0
     this.stateStepCount = 0
+    this.appliedOriginCenter = null
   }
 
   private resetSnapshot(): void {
@@ -620,6 +658,17 @@ export class FireP027WebGlEngine implements FireP027Surface {
   private assertActive(): void {
     if (this.disposed) throw new Error('P027 fire surface is disposed')
   }
+
+  private quarantineInvalidMotion(): never {
+    this.appliedOriginCenter = null
+    this.disposed = true
+    try {
+      if (this.resources.count > 0) this.resources.dispose()
+    } catch {
+      throw new FireP027CleanupError()
+    }
+    throw new FireP027MotionError()
+  }
 }
 
 /** Deterministic 42-point substitute for an absent external SOP origin. */
@@ -651,6 +700,37 @@ export function generateFireP027FallbackOrigins(
     })
   }
   return points
+}
+
+function originCenterFromControls(
+  controls: Readonly<FireP027Controls>
+): FireP027OriginPoint {
+  return {
+    x: controls.originCenterX,
+    y: controls.originCenterY,
+    z: controls.originCenterZ,
+  }
+}
+
+function subtractVector(
+  left: Readonly<FireP027OriginPoint>,
+  right: Readonly<FireP027OriginPoint>
+): FireP027OriginPoint {
+  return {
+    x: left.x - right.x,
+    y: left.y - right.y,
+    z: left.z - right.z,
+  }
+}
+
+function isBoundedVector(
+  value: Readonly<FireP027OriginPoint>,
+  maximumComponent: number
+): boolean {
+  return [value.x, value.y, value.z].every(
+    (component) =>
+      Number.isFinite(component) && Math.abs(component) <= maximumComponent
+  )
 }
 
 class FireP027GlResources {

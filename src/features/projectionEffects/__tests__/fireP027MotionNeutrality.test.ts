@@ -1,5 +1,6 @@
 import { mapFireParametersToP027Controls } from '../plugins/fire/p027/renderer'
 import {
+  applyFireP027EmitterMotion,
   sampleFireP027LocalTurbulence,
   type FireP027VectorSample,
 } from '../plugins/fire/p027/shaders'
@@ -66,6 +67,90 @@ describe('P027 Fire motion neutrality', () => {
       expect(movedSample.y).toBeCloseTo(originalSample.y, 12)
       expect(movedSample.z).toBeCloseTo(originalSample.z, 12)
     })
+  })
+
+  it('moves survivors exactly once while births stay at the current origin', () => {
+    const centerA = { x: -0.25, y: -0.125, z: 0.0625 }
+    const centerB = { x: 0.25, y: 0.125, z: 0 }
+    const localPosition = { x: 0.03125, y: 0.0625, z: -0.015625 }
+    const previousPosition = add(centerA, localPosition)
+    const currentOrigin = add(centerB, {
+      x: -0.03125,
+      y: 0.015625,
+      z: 0.0078125,
+    })
+
+    const survivor = applyFireP027EmitterMotion(
+      previousPosition,
+      centerA,
+      centerB,
+      currentOrigin,
+      false
+    )
+    const repeated = applyFireP027EmitterMotion(
+      survivor.worldPosition,
+      centerB,
+      centerB,
+      currentOrigin,
+      false
+    )
+    const birth = applyFireP027EmitterMotion(
+      previousPosition,
+      centerA,
+      centerB,
+      currentOrigin,
+      true
+    )
+
+    expect(survivor.centerDelta).toEqual({
+      x: 0.5,
+      y: 0.25,
+      z: -0.0625,
+    })
+    expect(survivor.worldPosition).toEqual(
+      add(previousPosition, survivor.centerDelta)
+    )
+    expect(survivor.localPosition).toEqual(localPosition)
+    expect(repeated.centerDelta).toEqual({ x: 0, y: 0, z: 0 })
+    expect(repeated.worldPosition).toEqual(survivor.worldPosition)
+    expect(repeated.localPosition).toEqual(localPosition)
+    expect(birth.worldPosition).toEqual(currentOrigin)
+    expect(birth.worldPosition).not.toEqual(
+      add(currentOrigin, survivor.centerDelta)
+    )
+    expect(birth.localPosition).toEqual({
+      x: currentOrigin.x - centerB.x,
+      y: currentOrigin.y - centerB.y,
+      z: currentOrigin.z - centerB.z,
+    })
+  })
+
+  it('preserves the same-seed local turbulence phase during pure translation', () => {
+    const centerA = { x: -0.35, y: 0.12, z: 0.02 }
+    const centerB = { x: 0.21, y: -0.16, z: -0.03 }
+    const localPosition = { x: 0.037, y: -0.021, z: 0.014 }
+    const previousPosition = add(centerA, localPosition)
+    const motion = applyFireP027EmitterMotion(
+      previousPosition,
+      centerA,
+      centerB,
+      centerB,
+      false
+    )
+
+    const originalSample = sampleFireP027LocalTurbulence(
+      localPosition,
+      0.01,
+      413
+    )
+    const translatedSample = sampleFireP027LocalTurbulence(
+      motion.localPosition,
+      0.01,
+      413
+    )
+    expect(translatedSample.x).toBeCloseTo(originalSample.x, 12)
+    expect(translatedSample.y).toBeCloseTo(originalSample.y, 12)
+    expect(translatedSample.z).toBeCloseTo(originalSample.z, 12)
   })
 
   it('mirrors horizontal turbulence while retaining deterministic local wrinkle', () => {
@@ -174,6 +259,17 @@ function subtract(
     x: point.x - center.originCenterX,
     y: point.y - center.originCenterY,
     z: point.z - center.originCenterZ,
+  }
+}
+
+function add(
+  left: Readonly<FireP027VectorSample>,
+  right: Readonly<FireP027VectorSample>
+): FireP027VectorSample {
+  return {
+    x: left.x + right.x,
+    y: left.y + right.y,
+    z: left.z + right.z,
   }
 }
 
