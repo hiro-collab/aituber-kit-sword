@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { publishProjectionEffectIntent } from '@/features/projectionEffects/projectionEffectIntent'
 
 let bridgePredicate:
   | ((candidate: { candidateState: 'active' }) => boolean)
@@ -16,6 +17,64 @@ const passiveProjectionVisualQueryState = {
   shouldRenderHud: false,
 }
 let mockProjectionVisualQueryState = passiveProjectionVisualQueryState
+const originalBroadcastChannel = globalThis.BroadcastChannel
+const pageBroadcastChannels = new Set<PageBroadcastChannel>()
+const mockPageLabController = {
+  emergencyStop: jest.fn().mockResolvedValue(null),
+  reset: jest.fn().mockResolvedValue(null),
+  start: jest.fn().mockResolvedValue({
+    status: 'started',
+    commandId: 'projection-effect-conversation',
+    activeEffectId: 'fire',
+    replacedEffectId: null,
+    visualStatus: null,
+    sfxStatus: null,
+    fadeMs: 0,
+    partialReasons: [],
+    validationErrorCount: 0,
+  }),
+  startPlan: jest.fn().mockResolvedValue(null),
+  stop: jest.fn().mockResolvedValue(null),
+}
+
+class PageBroadcastChannel {
+  readonly name: string
+  private readonly listeners = new Set<(event: MessageEvent) => void>()
+  private closed = false
+
+  constructor(name: string) {
+    this.name = name
+    pageBroadcastChannels.add(this)
+  }
+
+  postMessage(value: unknown) {
+    if (this.closed) return
+    for (const peer of pageBroadcastChannels) {
+      if (peer === this || peer.closed || peer.name !== this.name) continue
+      for (const listener of peer.listeners) {
+        listener({ data: value } as MessageEvent)
+      }
+    }
+  }
+
+  addEventListener(_type: 'message', listener: (event: MessageEvent) => void) {
+    if (!this.closed) this.listeners.add(listener)
+  }
+
+  removeEventListener(
+    _type: 'message',
+    listener: (event: MessageEvent) => void
+  ) {
+    this.listeners.delete(listener)
+  }
+
+  close() {
+    if (this.closed) return
+    this.closed = true
+    this.listeners.clear()
+    pageBroadcastChannels.delete(this)
+  }
+}
 
 jest.mock('next/router', () => ({
   useRouter: () => ({ isReady: true, query: {}, asPath: '/projection-visual' }),
@@ -78,22 +137,26 @@ jest.mock('@/components/vrmViewer', () => ({
   },
 }))
 jest.mock(
-  '@/features/projectionEffects/browser/avatarFireThunderLabOverlay',
-  () => ({
-    AvatarFireThunderEffectLayer: ({
-      intentReceiverEnabled,
-    }: {
-      intentReceiverEnabled?: boolean
-    }) => (
-      <div
-        data-intent-receiver-enabled={String(intentReceiverEnabled)}
-        data-testid="mock-projection-fire-thunder-effect-layer"
-      >
-        <canvas data-testid="mock-projection-webgl2-effect-canvas" />
-        <canvas data-testid="mock-projection-canvas2d-effect-canvas" />
-      </div>
-    ),
-  })
+  '@/features/projectionEffects/browser/fireThunderLabCanvasLayer',
+  () => {
+    const React = jest.requireActual('react') as typeof import('react')
+    return {
+      FireThunderLabCanvasLayer: React.forwardRef(
+        (
+          _props: unknown,
+          ref: import('react').ForwardedRef<typeof mockPageLabController>
+        ) => {
+          React.useImperativeHandle(ref, () => mockPageLabController)
+          return (
+            <div data-testid="fire-thunder-lab-layer">
+              <canvas data-testid="projection-effect-webgl2-canvas" />
+              <canvas data-testid="projection-effect-canvas2d-canvas" />
+            </div>
+          )
+        }
+      ),
+    }
+  }
 )
 jest.mock(
   '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer',
@@ -184,8 +247,27 @@ import ProjectionVisual from '@/pages/projection-visual'
 
 describe('ProjectionVisual dance lifecycle handoff', () => {
   beforeEach(() => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: PageBroadcastChannel,
+      writable: true,
+    })
+    pageBroadcastChannels.clear()
+    jest.clearAllMocks()
     bridgePredicate = undefined
     mockProjectionVisualQueryState = passiveProjectionVisualQueryState
+  })
+
+  afterEach(() => {
+    for (const channel of [...pageBroadcastChannels]) channel.close()
+  })
+
+  afterAll(() => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: originalBroadcastChannel,
+      writable: true,
+    })
   })
 
   it('passes the VrmViewer-owned predicate to the bridge without replacing it', async () => {
@@ -206,14 +288,12 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     render(<ProjectionVisual />)
 
     const avatar = screen.getByTestId('mock-projection-vrm-viewer')
-    const effect = screen.getByTestId(
-      'mock-projection-fire-thunder-effect-layer'
-    )
+    const effect = screen.getByTestId('avatar-fire-thunder-effect-layer')
     const bubble = screen.getByTestId('mock-projection-assistant-bubble')
 
     expect(screen.getAllByTestId('mock-projection-vrm-viewer')).toHaveLength(1)
     expect(
-      screen.getAllByTestId('mock-projection-fire-thunder-effect-layer')
+      screen.getAllByTestId('avatar-fire-thunder-effect-layer')
     ).toHaveLength(1)
     expect(
       screen.queryByTestId('mock-legacy-fluid-fire-relay')
@@ -227,7 +307,50 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     ).toBeTruthy()
   })
 
-  it('enables the effect receiver only for stage-output mode', () => {
+  it('exposes fixed receiver and Host states through the real effect boundary', async () => {
+    mockProjectionVisualQueryState = {
+      ...passiveProjectionVisualQueryState,
+      isPassiveMode: false,
+      isStageOutputMode: true,
+      projectionVisualMode: 'stage-output',
+    }
+    const eventId = 'evt_00000000000000000000000000000041'
+    const turnId = 'turn-projection-stage-status'
+    const { container } = render(<ProjectionVisual />)
+    const root = container.querySelector('.projection-visual')
+
+    await waitFor(() =>
+      expect(root).toHaveAttribute(
+        'data-projection-effect-receiver-state',
+        'ready'
+      )
+    )
+    expect(root).toHaveAttribute('data-projection-effect-host-state', 'idle')
+
+    act(() => {
+      publishProjectionEffectIntent({
+        schemaVersion: 1,
+        eventId,
+        turnId,
+        action: 'start',
+        effectId: 'fire',
+      })
+    })
+
+    await waitFor(() =>
+      expect(root).toHaveAttribute(
+        'data-projection-effect-host-state',
+        'started'
+      )
+    )
+    expect(mockPageLabController.start).toHaveBeenCalledTimes(1)
+    expect(mockPageLabController.start).toHaveBeenCalledWith('fire')
+    expect(root?.outerHTML).not.toContain(eventId)
+    expect(root?.outerHTML).not.toContain(turnId)
+    expect(root?.outerHTML).not.toContain('炎を')
+  })
+
+  it('enables the effect receiver only for stage-output mode', async () => {
     mockProjectionVisualQueryState = {
       ...passiveProjectionVisualQueryState,
       isPassiveMode: false,
@@ -235,16 +358,20 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
       projectionVisualMode: 'stage-output',
     }
     const stageOutput = render(<ProjectionVisual />)
-    expect(
-      screen.getByTestId('mock-projection-fire-thunder-effect-layer')
-    ).toHaveAttribute('data-intent-receiver-enabled', 'true')
+    await waitFor(() =>
+      expect(
+        stageOutput.container.querySelector('.projection-visual')
+      ).toHaveAttribute('data-projection-effect-receiver-state', 'ready')
+    )
     stageOutput.unmount()
 
     mockProjectionVisualQueryState = passiveProjectionVisualQueryState
     const passive = render(<ProjectionVisual />)
-    expect(
-      screen.getByTestId('mock-projection-fire-thunder-effect-layer')
-    ).toHaveAttribute('data-intent-receiver-enabled', 'false')
+    await waitFor(() =>
+      expect(
+        passive.container.querySelector('.projection-visual')
+      ).toHaveAttribute('data-projection-effect-receiver-state', 'inactive')
+    )
     passive.unmount()
 
     mockProjectionVisualQueryState = {
@@ -253,9 +380,11 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
       isDisplayOnlyMode: false,
       projectionVisualMode: 'operator',
     }
-    render(<ProjectionVisual />)
-    expect(
-      screen.getByTestId('mock-projection-fire-thunder-effect-layer')
-    ).toHaveAttribute('data-intent-receiver-enabled', 'false')
+    const operator = render(<ProjectionVisual />)
+    await waitFor(() =>
+      expect(
+        operator.container.querySelector('.projection-visual')
+      ).toHaveAttribute('data-projection-effect-receiver-state', 'inactive')
+    )
   })
 })

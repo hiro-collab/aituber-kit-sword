@@ -15,11 +15,57 @@ import {
   publishProjectionEffectIntent,
 } from '../projectionEffectIntent'
 import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
+import type { ProjectionEffectHostResult } from '../effectHost'
+
+const originalBroadcastChannel = globalThis.BroadcastChannel
+const testBroadcastChannels = new Set<TestBroadcastChannel>()
+let mockLayerOnStatusChange:
+  | FireThunderLabCanvasLayerProps['onStatusChange']
+  | undefined
+
+class TestBroadcastChannel {
+  readonly name: string
+  private readonly listeners = new Set<(event: MessageEvent) => void>()
+  private closed = false
+
+  constructor(name: string) {
+    this.name = name
+    testBroadcastChannels.add(this)
+  }
+
+  postMessage(value: unknown) {
+    if (this.closed) return
+    for (const peer of testBroadcastChannels) {
+      if (peer === this || peer.closed || peer.name !== this.name) continue
+      for (const listener of peer.listeners) {
+        listener({ data: value } as MessageEvent)
+      }
+    }
+  }
+
+  addEventListener(_type: 'message', listener: (event: MessageEvent) => void) {
+    if (!this.closed) this.listeners.add(listener)
+  }
+
+  removeEventListener(
+    _type: 'message',
+    listener: (event: MessageEvent) => void
+  ) {
+    this.listeners.delete(listener)
+  }
+
+  close() {
+    if (this.closed) return
+    this.closed = true
+    this.listeners.clear()
+    testBroadcastChannels.delete(this)
+  }
+}
 
 const hostResult = (
-  status: string,
-  partialReasons: readonly string[] = []
-) => ({
+  status: ProjectionEffectHostResult['status'],
+  partialReasons: ProjectionEffectHostResult['partialReasons'] = []
+): ProjectionEffectHostResult => ({
   status,
   commandId: 'projection-effect-conversation',
   activeEffectId: status === 'started' ? 'fire' : null,
@@ -56,6 +102,7 @@ jest.mock('../browser/fireThunderLabCanvasLayer', () => {
         ref: import('react').ForwardedRef<FireThunderLabController>
       ) => {
         React.useImperativeHandle(ref, () => mockLabController)
+        mockLayerOnStatusChange = props.onStatusChange
         return (
           <div
             data-reduced-motion={String(props.reducedMotion)}
@@ -95,7 +142,14 @@ jest.mock('../browser/fireThunderLabCanvasLayer', () => {
 
 describe('AvatarFireThunderLabOverlay', () => {
   beforeEach(() => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+      writable: true,
+    })
+    testBroadcastChannels.clear()
     jest.clearAllMocks()
+    mockLayerOnStatusChange = undefined
     mockLabController.emergencyStop.mockResolvedValue(
       hostResult('emergency-stopped')
     )
@@ -106,6 +160,18 @@ describe('AvatarFireThunderLabOverlay', () => {
       hostResult: hostResult('started'),
     })
     mockLabController.stop.mockResolvedValue(hostResult('stopped'))
+  })
+
+  afterEach(() => {
+    for (const channel of [...testBroadcastChannels]) channel.close()
+  })
+
+  afterAll(() => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: originalBroadcastChannel,
+      writable: true,
+    })
   })
 
   it('layers one avatar below one pooled Fire Thunder effect layer', () => {
@@ -210,6 +276,394 @@ describe('AvatarFireThunderLabOverlay', () => {
 
     requestFrame.mockRestore()
     setTimer.mockRestore()
+  })
+
+  it('reports cross-tab readiness and the fixed started Host result', async () => {
+    const receiverStates: string[] = []
+    const hostStates: string[] = []
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+        onIntentReceiverStateChange={(state) => receiverStates.push(state)}
+      />
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('avatar-fire-thunder-effect-layer')
+      ).toHaveAttribute('data-projection-effect-receiver-state', 'ready')
+    )
+    expect(receiverStates).toEqual(['ready'])
+    expect(hostStates).toEqual([])
+
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000030',
+        turnId: 'turn-avatar-ready',
+        schemaVersion: 1,
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('avatar-fire-thunder-effect-layer')
+      ).toHaveAttribute('data-projection-effect-host-state', 'started')
+    )
+    expect(mockLabController.start).toHaveBeenCalledTimes(1)
+    expect(hostStates).toEqual(['started'])
+  })
+
+  it.each([
+    ['no-active-effect', 'stopped'],
+    ['stopped', 'stopped'],
+    ['visual-failed', 'host-rejected'],
+    ['blocked-terminal-cleanup', 'cleanup-unproved'],
+    ['emergency-stopped', 'stopped'],
+  ] as const)(
+    'maps a child started result followed by %s to fixed Host state %s',
+    (terminalStatus, expectedState) => {
+      const hostStates: string[] = []
+      const externalStatuses: ProjectionEffectHostResult[] = []
+      render(
+        <AvatarFireThunderEffectLayer
+          onHostStateChange={(state) => hostStates.push(state)}
+          onStatusChange={(result) => externalStatuses.push(result)}
+        />
+      )
+
+      const started = hostResult('started')
+      const terminal = hostResult(terminalStatus)
+      act(() => mockLayerOnStatusChange?.(started))
+      expect(
+        screen.getByTestId('avatar-fire-thunder-effect-layer')
+      ).toHaveAttribute('data-projection-effect-host-state', 'started')
+
+      act(() => mockLayerOnStatusChange?.(terminal))
+      expect(
+        screen.getByTestId('avatar-fire-thunder-effect-layer')
+      ).toHaveAttribute('data-projection-effect-host-state', expectedState)
+      expect(hostStates).toEqual(['idle', 'started', expectedState])
+      expect(externalStatuses).toEqual([started, terminal])
+    }
+  )
+
+  it('reports cleanup-unproved when visual failure retains active ownership', () => {
+    const hostStates: string[] = []
+    const externalStatuses: ProjectionEffectHostResult[] = []
+    render(
+      <AvatarFireThunderEffectLayer
+        onHostStateChange={(state) => hostStates.push(state)}
+        onStatusChange={(result) => externalStatuses.push(result)}
+      />
+    )
+
+    const started = hostResult('started')
+    const retainedVisualFailure = {
+      ...hostResult('visual-failed'),
+      activeEffectId: 'fire',
+    } satisfies ProjectionEffectHostResult
+    act(() => mockLayerOnStatusChange?.(started))
+    act(() => mockLayerOnStatusChange?.(retainedVisualFailure))
+
+    expect(
+      screen.getByTestId('avatar-fire-thunder-effect-layer')
+    ).toHaveAttribute('data-projection-effect-host-state', 'cleanup-unproved')
+    expect(hostStates).toEqual(['idle', 'started', 'cleanup-unproved'])
+    expect(externalStatuses).toEqual([started, retainedVisualFailure])
+    expect(
+      screen.getByTestId('avatar-fire-thunder-effect-layer').outerHTML
+    ).not.toContain('projection-effect-conversation')
+  })
+
+  it('deduplicates child and accepted-receipt started transitions while publishing one receipt', async () => {
+    const hostStates: string[] = []
+    const receipts: unknown[] = []
+    const childStatuses: ProjectionEffectHostResult[] = []
+    let resolveStart!: (result: ProjectionEffectHostResult) => void
+    mockLabController.start.mockImplementationOnce(
+      () =>
+        new Promise<ProjectionEffectHostResult>((resolve) => {
+          resolveStart = resolve
+        })
+    )
+    const readReceipt = (event: Event) => {
+      if (event instanceof CustomEvent) receipts.push(event.detail)
+    }
+    window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+        onStatusChange={(result) => childStatuses.push(result)}
+      />
+    )
+
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000035',
+        turnId: 'turn-avatar-start-dedupe',
+        schemaVersion: 1,
+      })
+    })
+    await waitFor(() =>
+      expect(mockLabController.start).toHaveBeenCalledTimes(1)
+    )
+
+    const started = hostResult('started')
+    act(() => mockLayerOnStatusChange?.(started))
+    expect(hostStates).toEqual(['started'])
+
+    await act(async () => {
+      resolveStart(started)
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(receipts).toHaveLength(1))
+    expect(hostStates).toEqual(['started'])
+    expect(childStatuses).toEqual([started])
+    expect(receipts).toEqual([
+      {
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000035',
+        status: 'completed',
+        resultClass: 'started',
+      },
+    ])
+    window.removeEventListener(
+      PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+      readReceipt
+    )
+  })
+
+  it('reports a fixed unavailable Host result without false started state', async () => {
+    const hostStates: string[] = []
+    mockLabController.start.mockResolvedValueOnce(null)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+      />
+    )
+
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000033',
+        turnId: 'turn-avatar-host-unavailable',
+        schemaVersion: 1,
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('avatar-fire-thunder-effect-layer')
+      ).toHaveAttribute('data-projection-effect-host-state', 'host-unavailable')
+    )
+    expect(hostStates).toEqual(['host-unavailable'])
+    expect(hostStates).not.toContain('started')
+  })
+
+  it('does not latch cleanup uncertainty after a cleared visual failure receipt', async () => {
+    const receipts: unknown[] = []
+    const hostStates: string[] = []
+    const readReceipt = (event: Event) => {
+      if (event instanceof CustomEvent) receipts.push(event.detail)
+    }
+    window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
+    mockLabController.start
+      .mockResolvedValueOnce(hostResult('visual-failed'))
+      .mockResolvedValueOnce(hostResult('started'))
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+      />
+    )
+
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000036',
+        turnId: 'turn-avatar-cleared-visual-failure',
+        schemaVersion: 1,
+      })
+    })
+    await waitFor(() => expect(receipts).toHaveLength(1))
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000037',
+        turnId: 'turn-avatar-after-cleared-visual-failure',
+        schemaVersion: 1,
+      })
+    })
+    await waitFor(() => expect(receipts).toHaveLength(2))
+
+    expect(mockLabController.start).toHaveBeenCalledTimes(2)
+    expect(hostStates).toEqual(['host-rejected', 'started'])
+    expect(receipts).toEqual([
+      {
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000036',
+        status: 'rejected',
+        resultClass: 'host_rejected',
+      },
+      {
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000037',
+        status: 'completed',
+        resultClass: 'started',
+      },
+    ])
+    window.removeEventListener(
+      PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+      readReceipt
+    )
+  })
+
+  it('latches cleanup uncertainty after a retained visual failure receipt', async () => {
+    const receipts: unknown[] = []
+    const hostStates: string[] = []
+    const readReceipt = (event: Event) => {
+      if (event instanceof CustomEvent) receipts.push(event.detail)
+    }
+    window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
+    mockLabController.start.mockResolvedValueOnce({
+      ...hostResult('visual-failed'),
+      activeEffectId: 'fire',
+    })
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+      />
+    )
+
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000038',
+        turnId: 'turn-avatar-retained-visual-failure',
+        schemaVersion: 1,
+      })
+    })
+    await waitFor(() => expect(receipts).toHaveLength(1))
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'fire',
+        eventId: 'evt_00000000000000000000000000000039',
+        turnId: 'turn-avatar-after-retained-visual-failure',
+        schemaVersion: 1,
+      })
+    })
+    await waitFor(() => expect(receipts).toHaveLength(2))
+
+    expect(mockLabController.start).toHaveBeenCalledTimes(1)
+    expect(hostStates).toEqual(['cleanup-unproved', 'cleanup-unproved'])
+    expect(receipts).toEqual([
+      {
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000038',
+        status: 'cleanup_unproved',
+        resultClass: 'cleanup_unproved',
+      },
+      {
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000039',
+        status: 'cleanup_unproved',
+        resultClass: 'cleanup_unproved_sticky',
+      },
+    ])
+    window.removeEventListener(
+      PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+      readReceipt
+    )
+  })
+
+  it('fails closed when cross-tab delivery is unavailable', async () => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    })
+    const receiverStates: string[] = []
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onIntentReceiverStateChange={(state) => receiverStates.push(state)}
+      />
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('avatar-fire-thunder-effect-layer')
+      ).toHaveAttribute(
+        'data-projection-effect-receiver-state',
+        'cross-tab-unavailable'
+      )
+    )
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('sword:projection-effect-intent-v1', {
+          detail: {
+            action: 'start',
+            effectId: 'fire',
+            eventId: 'evt_00000000000000000000000000000031',
+            turnId: 'turn-avatar-no-channel',
+            schemaVersion: 1,
+          },
+        })
+      )
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(receiverStates).toEqual(['cross-tab-unavailable'])
+    expect(mockLabController.start).not.toHaveBeenCalled()
+  })
+
+  it('reports a receiver conflict without taking over the active receiver', async () => {
+    const primaryStates: string[] = []
+    const conflictStates: string[] = []
+    render(
+      <>
+        <AvatarFireThunderEffectLayer
+          intentReceiverEnabled={true}
+          onIntentReceiverStateChange={(state) => primaryStates.push(state)}
+        />
+        <AvatarFireThunderEffectLayer
+          intentReceiverEnabled={true}
+          onIntentReceiverStateChange={(state) => conflictStates.push(state)}
+        />
+      </>
+    )
+
+    await waitFor(() => expect(primaryStates).toContain('ready'))
+    await waitFor(() => expect(conflictStates).toContain('receiver-conflict'))
+    act(() => {
+      publishProjectionEffectIntent({
+        action: 'start',
+        effectId: 'thunderBall',
+        eventId: 'evt_00000000000000000000000000000032',
+        turnId: 'turn-avatar-conflict',
+        schemaVersion: 1,
+      })
+    })
+    await waitFor(() =>
+      expect(mockLabController.start).toHaveBeenCalledTimes(1)
+    )
+    expect(primaryStates).toEqual(['ready'])
+    expect(conflictStates).toEqual(['receiver-conflict'])
   })
 
   it('serializes enabled conversation start, stop, and reset intents', async () => {
@@ -362,6 +816,7 @@ describe('AvatarFireThunderLabOverlay', () => {
 
   it('publishes a fixed rejection for a busy planned start without retrying', async () => {
     const receipts: unknown[] = []
+    const hostStates: string[] = []
     const readReceipt = (event: Event) => {
       if (event instanceof CustomEvent) receipts.push(event.detail)
     }
@@ -370,7 +825,12 @@ describe('AvatarFireThunderLabOverlay', () => {
       status: 'busy',
       hostResult: null,
     })
-    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+      />
+    )
 
     act(() => {
       publishProjectionEffectIntent({
@@ -384,6 +844,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     await waitFor(() => expect(receipts).toHaveLength(1))
     expect(mockLabController.startPlan).toHaveBeenCalledTimes(1)
     expect(mockLabController.start).not.toHaveBeenCalled()
+    expect(hostStates).toEqual(['host-rejected'])
     expect(receipts).toEqual([
       {
         schemaVersion: 1,
@@ -521,12 +982,18 @@ describe('AvatarFireThunderLabOverlay', () => {
 
   it('does not retry a throwing Host call and keeps cleanup uncertainty sticky', async () => {
     const receipts: unknown[] = []
+    const hostStates: string[] = []
     const readReceipt = (event: Event) => {
       if (event instanceof CustomEvent) receipts.push(event.detail)
     }
     window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
     mockLabController.start.mockRejectedValueOnce(new Error('private failure'))
-    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        onHostStateChange={(state) => hostStates.push(state)}
+      />
+    )
 
     act(() => {
       publishProjectionEffectIntent({
@@ -547,6 +1014,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     await waitFor(() => expect(receipts).toHaveLength(2))
     expect(mockLabController.start).toHaveBeenCalledTimes(1)
     expect(mockLabController.stop).not.toHaveBeenCalled()
+    expect(hostStates).toEqual(['cleanup-unproved', 'cleanup-unproved'])
     expect(receipts).toEqual([
       {
         schemaVersion: 1,

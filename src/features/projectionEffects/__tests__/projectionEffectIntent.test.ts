@@ -335,6 +335,81 @@ describe('canonical projection effect intent v1', () => {
     expect(readProjectionEffectRequestedEvent(event, context)).toBeNull()
   })
 
+  it('reports ready only after owning a cross-tab channel and rejects receiver overlap', () => {
+    const harness = createChannelHarness()
+    const states: string[] = []
+    const receive = jest.fn()
+    const subscription = subscribeProjectionEffectIntents(receive, {
+      createBroadcastChannel: harness.createBroadcastChannel,
+      onReceiverStateChange: (state) => states.push(state),
+    })
+
+    expect(subscription.getState()).toBe('ready')
+    expect(states).toEqual(['ready'])
+    expect(harness.channels.size).toBe(1)
+
+    const conflictStates: string[] = []
+    const conflict = subscribeProjectionEffectIntents(jest.fn(), {
+      createBroadcastChannel: harness.createBroadcastChannel,
+      onReceiverStateChange: (state) => conflictStates.push(state),
+    })
+    expect(conflict.getState()).toBe('receiver-conflict')
+    expect(conflictStates).toEqual(['receiver-conflict'])
+    expect(harness.channels.size).toBe(1)
+
+    conflict()
+    expect(conflict.getState()).toBe('disposed')
+    expect(conflictStates).toEqual(['receiver-conflict', 'disposed'])
+    subscription()
+    expect(subscription.getState()).toBe('disposed')
+    expect(states).toEqual(['ready', 'disposed'])
+    expect(harness.channels.size).toBe(0)
+  })
+
+  it.each([
+    ['missing cross-tab channel', () => null as never],
+    [
+      'throwing cross-tab constructor',
+      () => {
+        throw new Error('PRIVATE_CROSS_TAB_CONSTRUCTOR_DETAIL')
+      },
+    ],
+  ])('fails closed with a fixed state for %s', (_label, createChannel) => {
+    const states: string[] = []
+    const receive = jest.fn()
+    const subscription = subscribeProjectionEffectIntents(receive, {
+      createBroadcastChannel: createChannel,
+      onReceiverStateChange: (state) => states.push(state),
+    })
+
+    expect(subscription.getState()).toBe('cross-tab-unavailable')
+    expect(states).toEqual(['cross-tab-unavailable'])
+    window.dispatchEvent(
+      new CustomEvent('sword:projection-effect-intent-v1', {
+        detail: {
+          schemaVersion: 1,
+          eventId: EVENT_ID,
+          turnId: TURN_ID,
+          action: 'reset',
+        },
+      })
+    )
+    expect(receive).not.toHaveBeenCalled()
+    expect(
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        status: 'completed',
+        resultClass: 'started',
+      })
+    ).toBe(false)
+    expect(JSON.stringify(states)).not.toContain('PRIVATE_')
+
+    subscription()
+    expect(subscription.getState()).toBe('disposed')
+    expect(states).toEqual(['cross-tab-unavailable', 'disposed'])
+  })
+
   it('deduplicates same-window and same-origin channel delivery and rejects collisions', () => {
     const listeners = new Set<(event: MessageEvent) => void>()
     const close = jest.fn()
@@ -470,7 +545,9 @@ describe('canonical projection effect intent v1', () => {
     let channelListener: ((event: MessageEvent) => void) | undefined
     const removeWindowListener = jest.spyOn(window, 'removeEventListener')
     try {
-      let dispose: (() => void) | undefined
+      let dispose:
+        | ReturnType<typeof subscribeProjectionEffectIntents>
+        | undefined
       expect(() => {
         dispose = subscribeProjectionEffectIntents(receive, {
           createBroadcastChannel: () => ({
@@ -485,10 +562,8 @@ describe('canonical projection effect intent v1', () => {
         })
       }).not.toThrow()
 
-      expect(removeWindowListener).toHaveBeenCalledWith(
-        'sword:projection-effect-intent-v1',
-        expect.any(Function)
-      )
+      expect(dispose?.getState()).toBe('cross-tab-unavailable')
+      expect(removeWindowListener).not.toHaveBeenCalled()
       expect(removeChannelListener).toHaveBeenCalledWith(
         'message',
         channelListener
@@ -523,6 +598,7 @@ describe('canonical projection effect intent v1', () => {
       expect(receive).not.toHaveBeenCalled()
       expect(postMessage).not.toHaveBeenCalled()
       expect(() => dispose?.()).not.toThrow()
+      expect(dispose?.getState()).toBe('disposed')
     } finally {
       removeWindowListener.mockRestore()
     }

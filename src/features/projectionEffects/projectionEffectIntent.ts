@@ -108,8 +108,22 @@ type BroadcastChannelLike = {
 export type ProjectionEffectIntentTransportOptions = Readonly<{
   now?: () => number
   createBroadcastChannel?: (name: string) => BroadcastChannelLike
+  onReceiverStateChange?: (
+    state: ProjectionEffectReceiverLifecycleState
+  ) => void
   signal?: AbortSignal
 }>
+
+export type ProjectionEffectReceiverLifecycleState =
+  | 'ready'
+  | 'cross-tab-unavailable'
+  | 'receiver-conflict'
+  | 'disposed'
+
+export type ProjectionEffectIntentReceiverSubscription = (() => void) &
+  Readonly<{
+    getState: () => ProjectionEffectReceiverLifecycleState
+  }>
 
 export type ProjectionEffectRequestedEventContext = Readonly<{
   expectedTurnId: string
@@ -530,10 +544,20 @@ export function publishProjectionEffectExecutionReceipt(
 export function subscribeProjectionEffectIntents(
   receive: (intent: ProjectionEffectIntent) => void,
   options: ProjectionEffectIntentTransportOptions = {}
-): () => void {
+): ProjectionEffectIntentReceiverSubscription {
   const pageWindow = currentWindow()
-  if (!pageWindow) return () => undefined
-  if (activeProjectionEffectReceiver) return () => undefined
+  if (!pageWindow) {
+    return fixedReceiverSubscription(
+      'cross-tab-unavailable',
+      options.onReceiverStateChange
+    )
+  }
+  if (activeProjectionEffectReceiver) {
+    return fixedReceiverSubscription(
+      'receiver-conflict',
+      options.onReceiverStateChange
+    )
+  }
   const receiverToken = Symbol('projection-effect-receiver')
   activeProjectionEffectReceiver = Object.freeze({
     token: receiverToken,
@@ -546,11 +570,29 @@ export function subscribeProjectionEffectIntents(
   let windowListenerRegistrationAttempted = false
   let channelListenerRegistrationAttempted = false
   let cleanupAttempted = false
+  let lifecycleState: ProjectionEffectReceiverLifecycleState =
+    'cross-tab-unavailable'
   let receiveWindow: (event: Event) => void
   let receiveChannel: (event: MessageEvent) => void
 
-  const cleanup = () => {
-    if (cleanupAttempted) return
+  const reportLifecycleState = (
+    nextState: ProjectionEffectReceiverLifecycleState
+  ) => {
+    lifecycleState = nextState
+    try {
+      options.onReceiverStateChange?.(nextState)
+    } catch {
+      // Public lifecycle reporting cannot break receiver ownership.
+    }
+  }
+
+  const cleanup = (
+    finalState: ProjectionEffectReceiverLifecycleState = 'disposed'
+  ) => {
+    if (cleanupAttempted) {
+      if (finalState === 'disposed') reportLifecycleState(finalState)
+      return
+    }
     cleanupAttempted = true
     disposed = true
     if (activeProjectionEffectReceiver?.token === receiverToken) {
@@ -582,7 +624,14 @@ export function subscribeProjectionEffectIntents(
     }
     channel = null
     seen.clear()
+    reportLifecycleState(finalState)
   }
+  const subscription = Object.assign(
+    () => cleanup('disposed'),
+    Object.freeze({
+      getState: () => lifecycleState,
+    })
+  ) as ProjectionEffectIntentReceiverSubscription
 
   const publishReceipt = (
     receipt: ProjectionEffectExecutionReceipt
@@ -606,7 +655,7 @@ export function subscribeProjectionEffectIntents(
         channel.postMessage(envelope)
         peerPublished = true
       } catch {
-        cleanup()
+        cleanup('cross-tab-unavailable')
         return false
       }
     }
@@ -692,7 +741,7 @@ export function subscribeProjectionEffectIntents(
           }) satisfies ProjectionEffectReadyEnvelope
         )
       } catch {
-        cleanup()
+        cleanup('cross-tab-unavailable')
       }
       return
     }
@@ -701,25 +750,54 @@ export function subscribeProjectionEffectIntents(
   }
   try {
     channel = createChannel(options)
+    if (!channel) {
+      cleanup('cross-tab-unavailable')
+      return subscription
+    }
+    channelListenerRegistrationAttempted = true
+    channel.addEventListener('message', receiveChannel)
     windowListenerRegistrationAttempted = true
     pageWindow.addEventListener(
       PROJECTION_EFFECT_INTENT_WINDOW_EVENT,
       receiveWindow
     )
-    if (channel) {
-      channelListenerRegistrationAttempted = true
-      channel.addEventListener('message', receiveChannel)
-    }
     if (!disposed) {
       activeProjectionEffectReceiver = Object.freeze({
         token: receiverToken,
         publishReceipt,
       })
+      reportLifecycleState('ready')
     }
   } catch {
-    cleanup()
+    cleanup('cross-tab-unavailable')
   }
-  return cleanup
+  return subscription
+}
+
+function fixedReceiverSubscription(
+  initialState: ProjectionEffectReceiverLifecycleState,
+  report?: (state: ProjectionEffectReceiverLifecycleState) => void
+): ProjectionEffectIntentReceiverSubscription {
+  let state = initialState
+  try {
+    report?.(state)
+  } catch {
+    // Public lifecycle reporting cannot expose or amplify setup failures.
+  }
+  return Object.assign(
+    () => {
+      if (state === 'disposed') return
+      state = 'disposed'
+      try {
+        report?.(state)
+      } catch {
+        // Disposal remains complete even if a consumer cannot observe it.
+      }
+    },
+    Object.freeze({
+      getState: () => state,
+    })
+  ) as ProjectionEffectIntentReceiverSubscription
 }
 
 function projectCanonicalIntent(

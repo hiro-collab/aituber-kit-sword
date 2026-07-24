@@ -41,7 +41,11 @@ import {
 } from '@/features/chat/thoughtCoreChat'
 import { presentAcceptedPreparedSampleAssistantResponse } from '@/features/chat/handlers'
 import { resolveProjectionEffectSelection } from '@/features/projectionEffects/browser/fluidFireRelayCanvasLayer'
-import { AvatarFireThunderEffectLayer } from '@/features/projectionEffects/browser/avatarFireThunderLabOverlay'
+import {
+  AvatarFireThunderEffectLayer,
+  type AvatarFireThunderHostState,
+  type AvatarFireThunderReceiverState,
+} from '@/features/projectionEffects/browser/avatarFireThunderLabOverlay'
 import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
 import {
   createProjectionStageCaptureHandleSession,
@@ -63,6 +67,10 @@ const projectionVisualAIService = ((): 'thought-core' | null => {
 const shouldForceContinuousMicForProjectionVisual =
   process.env.NEXT_PUBLIC_PROJECTION_VISUAL_CONTINUOUS_MIC === 'true'
 const ProjectionVisual = () => {
+  const [projectionEffectHostState, setProjectionEffectHostState] =
+    useState<AvatarFireThunderHostState>('idle')
+  const [projectionEffectReceiverState, setProjectionEffectReceiverState] =
+    useState<AvatarFireThunderReceiverState>('inactive')
   const [
     danceLifecycleAcceptancePredicate,
     setDanceLifecycleAcceptancePredicate,
@@ -278,6 +286,8 @@ const ProjectionVisual = () => {
         projectionVisualStimulusRef ?? 'none'
       }
       data-projection-effect-id={projectionEffectId ?? 'none'}
+      data-projection-effect-host-state={projectionEffectHostState}
+      data-projection-effect-receiver-state={projectionEffectReceiverState}
       data-projection-capture-handle-status="inactive"
     >
       <Meta />
@@ -298,7 +308,11 @@ const ProjectionVisual = () => {
           onDanceLifecycleAcceptanceReady={handleDanceLifecycleAcceptanceReady}
         />
       )}
-      <AvatarFireThunderEffectLayer intentReceiverEnabled={isStageOutputMode} />
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={isStageOutputMode}
+        onHostStateChange={setProjectionEffectHostState}
+        onIntentReceiverStateChange={setProjectionEffectReceiverState}
+      />
       <ProjectionVisualStimulusRefBridge
         enabled={modelType === 'vrm'}
         stimulusRef={projectionVisualStimulusRef}
