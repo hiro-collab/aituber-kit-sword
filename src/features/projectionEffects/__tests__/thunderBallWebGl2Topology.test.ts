@@ -58,9 +58,19 @@ describe('Thunder Ball WebGL2 topology', () => {
   it('builds a fixed-endpoint 30x2 ribbon with interior wrinkle and source flare', () => {
     const source = { x: -0.5, y: -0.2 }
     const target = { x: 0.62, y: 0.44 }
+    const sourceBirth = {
+      ...source,
+      index: 0,
+      bornAtMs: 0,
+      lifeMs: 213,
+      ageMs: 0,
+      radius: 0.028,
+      energy: 1,
+    }
     const ribbon = createThunderWebGl2Ribbon(source, target, {
       seed: 502,
       crackleEpoch: 3,
+      sourceBirth,
     })
 
     expect(ribbon).toHaveLength(THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT)
@@ -69,8 +79,10 @@ describe('Thunder Ball WebGL2 topology', () => {
       centerX: source.x,
       centerY: source.y,
       displacement: 0,
-      width: 0,
     })
+    expect(ribbon[0]?.sourceBirth).toBe(sourceBirth)
+    expect(ribbon[0]?.width ?? 0).toBeGreaterThan(0)
+    expect(ribbon[0]?.width ?? 0).toBeGreaterThan(ribbon[1]?.width ?? 0)
     expect(ribbon.at(-1)).toMatchObject({
       centerX: target.x,
       centerY: target.y,
@@ -91,6 +103,74 @@ describe('Thunder Ball WebGL2 topology', () => {
           sample.width >= 0
       )
     ).toBe(true)
+  })
+
+  it('keeps all source-near first mesh cells nondegenerate and centrally connected', () => {
+    const topology = createThunderWebGl2Topology({
+      seed: 88,
+      nowMs: 192,
+      center: { x: 0, y: 0.25 },
+      radius: 0.32784,
+    })
+    const width = 960
+    const height = 540
+    const sourceNearTriangles = topology.connections.flatMap(({ ribbon }) =>
+      ribbon.slice(0, 3).flatMap((sample, index) => {
+        const next = ribbon[index + 1]
+        if (!next) return []
+        return [
+          [
+            sample.leftX,
+            sample.leftY,
+            sample.rightX,
+            sample.rightY,
+            next.leftX,
+            next.leftY,
+          ],
+          [
+            sample.rightX,
+            sample.rightY,
+            next.rightX,
+            next.rightY,
+            next.leftX,
+            next.leftY,
+          ],
+        ] as const
+      })
+    )
+    const pixelTriangles = sourceNearTriangles.map((triangle) =>
+      triangle.map((value, index) =>
+        index % 2 === 0 ? ((value + 1) * width) / 2 : ((1 - value) * height) / 2
+      )
+    )
+
+    expect(pixelTriangles).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT * 6)
+    expect(
+      pixelTriangles.every(
+        ([ax, ay, bx, by, cx, cy]) =>
+          triangleArea(ax, ay, bx, by, cx, cy) > 0.01
+      )
+    ).toBe(true)
+
+    const mask = rasterizeTriangles(pixelTriangles, width, height)
+    const components = connectedComponents(mask, width)
+    const total = components.reduce((sum, component) => sum + component.size, 0)
+    const largest = components[0]
+    expect(largest).toBeDefined()
+    expect((largest?.size ?? 0) / total).toBeGreaterThanOrEqual(0.6)
+    expect(
+      largest?.containsNear(
+        Math.round(width / 2),
+        Math.round(height * 0.375),
+        12
+      )
+    ).toBe(true)
+    expect((largest?.maxX ?? 0) - (largest?.minX ?? 0)).toBeLessThanOrEqual(
+      width * 0.35
+    )
+    expect((largest?.maxY ?? 0) - (largest?.minY ?? 0)).toBeLessThanOrEqual(
+      height * 0.35
+    )
   })
 
   it('holds the exact 21 by 60 recipe boundary at 1260 vertices', () => {
@@ -212,4 +292,124 @@ function maxRadius(
   points: readonly Readonly<{ x: number; y: number }>[]
 ): number {
   return Math.max(...points.map((point) => Math.hypot(point.x, point.y)))
+}
+
+function triangleArea(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number
+): number {
+  return Math.abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2
+}
+
+function rasterizeTriangles(
+  triangles: readonly (readonly number[])[],
+  width: number,
+  height: number
+): Set<number> {
+  const mask = new Set<number>()
+  for (const [ax, ay, bx, by, cx, cy] of triangles) {
+    if (
+      ax === undefined ||
+      ay === undefined ||
+      bx === undefined ||
+      by === undefined ||
+      cx === undefined ||
+      cy === undefined
+    ) {
+      continue
+    }
+    const minX = Math.max(0, Math.floor(Math.min(ax, bx, cx)))
+    const maxX = Math.min(width - 1, Math.ceil(Math.max(ax, bx, cx)))
+    const minY = Math.max(0, Math.floor(Math.min(ay, by, cy)))
+    const maxY = Math.min(height - 1, Math.ceil(Math.max(ay, by, cy)))
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        if (pointInTriangle(x + 0.5, y + 0.5, ax, ay, bx, by, cx, cy)) {
+          mask.add(y * width + x)
+        }
+      }
+    }
+  }
+  return mask
+}
+
+function pointInTriangle(
+  x: number,
+  y: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number
+): boolean {
+  const edge = (
+    px: number,
+    py: number,
+    qx: number,
+    qy: number,
+    rx: number,
+    ry: number
+  ) => (rx - px) * (qy - py) - (ry - py) * (qx - px)
+  const ab = edge(ax, ay, bx, by, x, y)
+  const bc = edge(bx, by, cx, cy, x, y)
+  const ca = edge(cx, cy, ax, ay, x, y)
+  return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0)
+}
+
+function connectedComponents(mask: ReadonlySet<number>, width: number) {
+  const remaining = new Set(mask)
+  const components: Array<{
+    size: number
+    minX: number
+    maxX: number
+    minY: number
+    maxY: number
+    containsNear(x: number, y: number, radius: number): boolean
+  }> = []
+  while (remaining.size > 0) {
+    const seed = remaining.values().next().value as number
+    const queue = [seed]
+    const values = new Set<number>()
+    remaining.delete(seed)
+    while (queue.length > 0) {
+      const value = queue.pop()
+      if (value === undefined) continue
+      values.add(value)
+      const x = value % width
+      const y = Math.floor(value / width)
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue
+          const nextX = x + dx
+          const nextY = y + dy
+          if (nextX < 0 || nextX >= width || nextY < 0) continue
+          const candidate = nextY * width + nextX
+          if (remaining.delete(candidate)) queue.push(candidate)
+        }
+      }
+    }
+    const xs = [...values].map((value) => value % width)
+    const ys = [...values].map((value) => Math.floor(value / width))
+    components.push({
+      size: values.size,
+      minX: Math.min(...xs),
+      maxX: Math.max(...xs),
+      minY: Math.min(...ys),
+      maxY: Math.max(...ys),
+      containsNear: (x, y, radius) => {
+        for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+          for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+            if (values.has((y + offsetY) * width + x + offsetX)) return true
+          }
+        }
+        return false
+      },
+    })
+  }
+  return components.sort((left, right) => right.size - left.size)
 }

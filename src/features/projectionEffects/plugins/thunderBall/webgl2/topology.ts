@@ -1,6 +1,7 @@
 import {
   THUNDER_WEBGL2_CANDIDATE_COUNT,
   THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT,
+  THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT,
   THUNDER_WEBGL2_SOURCE_COUNT,
   type ThunderWebGl2Candidate,
   type ThunderWebGl2Connection,
@@ -37,6 +38,8 @@ const SOURCE_BIRTH_INTERVAL_MS = 10
 const NORMAL_SOURCE_LIFE_MS = 213
 const REDUCED_SOURCE_LIFE_MS = 320
 const DEFAULT_TOPOLOGY_RADIUS = 0.42
+const SOURCE_NEAR_FLARE_SPAN = 0.28
+const SOURCE_NEAR_RADIUS_GAIN = 4
 
 export function thunderWebGl2CadenceMs(reducedMotion: boolean): number {
   return reducedMotion ? REDUCED_CADENCE_MS : NORMAL_CADENCE_MS
@@ -52,8 +55,8 @@ export function resolveThunderWebGl2Tone(
     haloLuminance: reducedMotion ? 0.48 : 0.82,
     bloomGain: reducedMotion ? 0.32 : 0.78,
     exposure: reducedMotion ? 1.05 : 1.28,
-    gamma: reducedMotion ? 0.92 : 0.78,
-    feedback: reducedMotion ? 0.32 : 0.72,
+    gamma: 1,
+    feedback: reducedMotion ? 0.08 : 0.14,
     pulse: reducedMotion ? 0.06 : 0.18,
   })
 }
@@ -179,12 +182,24 @@ export function createThunderWebGl2Ribbon(
           : index === segmentCount
             ? target.y
             : source.y + dy * along + perpendicularY * lateralDisplacement
-      const taper =
-        index === 0 || index === segmentCount
+      const branchTaper =
+        index === segmentCount
           ? 0
           : Math.pow(Math.max(0, endpointEnvelope), 0.82)
-      const sourceFlare = Math.exp(-Math.pow((along - 0.16) / 0.16, 2))
-      const width = haloWidth * taper * (0.38 + sourceFlare * 1.9)
+      const sourceFlare = Math.pow(
+        Math.max(0, 1 - along / SOURCE_NEAR_FLARE_SPAN),
+        2
+      )
+      const branchWidth = haloWidth * branchTaper * (0.38 + sourceFlare * 1.9)
+      const sourceWidth =
+        (options.sourceBirth?.radius ?? 0) *
+        SOURCE_NEAR_RADIUS_GAIN *
+        sourceFlare
+      const width = clamp(
+        Math.max(branchWidth, sourceWidth),
+        0,
+        THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT
+      )
 
       return Object.freeze({
         along,

@@ -2,6 +2,8 @@ import type {
   ProjectionEffectFrameContext,
   ProjectionEffectStopContext,
 } from '../rendererPlugin'
+import { ProjectionPerformancePlanExecutor } from '../browser/projectionPerformancePlanExecutor'
+import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
 import {
   ThunderBallWebGl2Adapter,
   ThunderWebGl2AdapterError,
@@ -23,6 +25,14 @@ import {
   createThunderWebGl2Topology,
   resolveThunderWebGl2Tone,
 } from '../plugins/thunderBall/webgl2/topology'
+
+const { FIRE_THUNDER_LAB_VISUAL_PARAMETERS } = jest.requireActual(
+  '../browser/fireThunderLabCanvasLayer'
+) as {
+  FIRE_THUNDER_LAB_VISUAL_PARAMETERS: Readonly<{
+    thunderBall: Readonly<Record<string, unknown>>
+  }>
+}
 
 const PRIVATE_ERROR = 'private://driver/C:/secret/thunder-adapter.bin'
 
@@ -162,13 +172,72 @@ describe('Thunder Ball WebGL2 host adapter', () => {
       sourceEnvelope(weak.sources, { x: 0.3, y: -0.2 }) * 2,
       10
     )
-    expect(off.tone).toMatchObject({
-      bloomGain: 0,
-      coreLuminance: 0,
-      feedback: 0,
-      haloLuminance: 0,
-    })
+    expect(off.tone.feedback).toBe(0)
+    expect(off.tone.coreLuminance).toBe(weak.tone.coreLuminance)
+    expect(off.tone.haloLuminance).toBe(weak.tone.haloLuminance)
+    expect(off.tone.bloomGain).toBe(weak.tone.bloomGain)
     expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
+  })
+
+  it('uses the real weak plan and carries intensity exactly once in source energy', () => {
+    const plannedParameters = parametersForThunderPlan(0.4)
+    const weakConfig = mapThunderParametersToWebGl2AdapterConfig({
+      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
+      ...plannedParameters,
+      seed: 42,
+    })
+    const strongConfig = mapThunderParametersToWebGl2AdapterConfig({
+      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
+      ...plannedParameters,
+      masterIntensity: 1,
+      seed: 42,
+    })
+    const offConfig = mapThunderParametersToWebGl2AdapterConfig({
+      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
+      ...plannedParameters,
+      masterIntensity: 0,
+      seed: 42,
+    })
+    const topology = createThunderWebGl2Topology({ seed: 42, nowMs: 192 })
+    const recipeFrame = {
+      ribbons: topology.connections.map(({ ribbon }) => ribbon),
+      tone: resolveThunderWebGl2Tone(false),
+    }
+    const weak = mapThunderWebGl2EngineFrame(recipeFrame, weakConfig)
+    const strong = mapThunderWebGl2EngineFrame(recipeFrame, strongConfig)
+    const off = mapThunderWebGl2EngineFrame(recipeFrame, offConfig)
+
+    expect(plannedParameters).toMatchObject({
+      centerX: 0,
+      centerY: 0.25,
+      lineWidth: 3.408,
+      masterIntensity: 0.5788,
+      orbRadius: 0.32784,
+    })
+    expect(weakConfig).toMatchObject({
+      bloomGain: 1.15,
+      internalResolutionScale: 1,
+      lineWidth: 3.408,
+      masterIntensity: 0.5788,
+      orbRadius: 0.32784,
+      postProcessing: true,
+    })
+    expect(weak.sources).toHaveLength(21)
+    expect(weak.sources?.[0]?.energy).toBeCloseTo(
+      (topology.sources[0]?.energy ?? 0) * 0.5788,
+      10
+    )
+    expect(strong.sources?.[0]?.energy).toBeCloseTo(
+      topology.sources[0]?.energy ?? 0,
+      10
+    )
+    expect(weak.tone).toEqual(strong.tone)
+    expect(off.tone).toEqual({ ...weak.tone, feedback: 0 })
+    expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
+    const connectivity = sourceNearRibbonConnectivity(weak.ribbons, 960, 540)
+    expect(connectivity.largestComponent / 21).toBeGreaterThanOrEqual(0.6)
+    expect(connectivity.width).toBeLessThanOrEqual(960 * 0.35)
+    expect(connectivity.height).toBeLessThanOrEqual(540 * 0.35)
   })
 
   it('does not republish active temporal history on the first zero-intensity frame', () => {
@@ -190,7 +259,7 @@ describe('Thunder Ball WebGL2 host adapter', () => {
       })
     )
     const firstOffFrame = resolveThunderWebGl2CompositeOracle({
-      rawEnergy: off.tone.coreLuminance,
+      rawEnergy: 0,
       blurEnergies: [0, 0, 0, 0, 0, 0],
       bloomGain: off.tone.bloomGain,
       historyEnergy: active.tone.coreLuminance,
@@ -205,16 +274,36 @@ describe('Thunder Ball WebGL2 host adapter', () => {
     })
     expect(active.tone.bloomGain).toBeGreaterThan(0)
     expect(active.tone.feedback).toBeGreaterThan(0)
-    expect(off.tone).toMatchObject({
-      bloomGain: 0,
-      coreLuminance: 0,
-      feedback: 0,
-      haloLuminance: 0,
-    })
+    expect(off.tone.feedback).toBe(0)
+    expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
     expect(firstOffFrame).toEqual({
       alpha: 0,
       bloomEnergy: 0,
       mappedEnergy: 0,
+    })
+  })
+
+  it('requests a straight-alpha WebGL2 presentation boundary', () => {
+    const getContext = jest.fn(() => null)
+    const canvas = {
+      clientHeight: 540,
+      clientWidth: 960,
+      height: 150,
+      width: 300,
+      getContext,
+      setAttribute: jest.fn(),
+    } as unknown as HTMLCanvasElement
+    const surface = createThunderBallWebGl2CanvasSurface(canvas)
+
+    expect(surface.start()).toMatchObject({
+      status: 'blocked',
+      state: 'quarantined',
+    })
+    expect(getContext).toHaveBeenCalledWith('webgl2', {
+      alpha: true,
+      antialias: true,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: false,
     })
   })
 
@@ -503,5 +592,100 @@ function sourceEnvelope(
     ...(sources ?? []).map((source) =>
       Math.hypot(source.x - center.x, source.y - center.y)
     )
+  )
+}
+
+function parametersForThunderPlan(
+  strength: number
+): Readonly<Record<string, unknown>> {
+  const plan = {
+    schemaVersion: 1,
+    planId: `thunder-recipe-${String(strength).replace('.', '-')}`,
+    sessionId: 'thunder-recipe-visibility-p10',
+    revision: 1,
+    action: 'start',
+    effectId: 'thunderBall',
+    position: { x: 0, y: 0.25 },
+    strength,
+    durationMs: 5_000,
+    seed: 42,
+    keyframes: [
+      {
+        atMs: 0,
+        position: { x: 0, y: 0.25 },
+        strength,
+      },
+    ],
+  } as const satisfies ProjectionPerformancePlan
+  const frame = new ProjectionPerformancePlanExecutor().activate(plan)
+  if (!frame) throw new Error('Thunder weak-plan fixture was rejected')
+  return frame.parameters
+}
+
+function sourceNearRibbonConnectivity(
+  ribbons: ThunderWebGl2EngineFrame['ribbons'],
+  width: number,
+  height: number
+) {
+  const boxes = ribbons.map((ribbon) => {
+    const samples = ribbon.slice(0, 4)
+    const xs = samples.flatMap(({ leftX, rightX }) => [
+      ((leftX + 1) * width) / 2,
+      ((rightX + 1) * width) / 2,
+    ])
+    const ys = samples.flatMap(({ leftY, rightY }) => [
+      ((1 - leftY) * height) / 2,
+      ((1 - rightY) * height) / 2,
+    ])
+    return {
+      minX: Math.min(...xs),
+      maxX: Math.max(...xs),
+      minY: Math.min(...ys),
+      maxY: Math.max(...ys),
+    }
+  })
+  const visited = new Set<number>()
+  let largestComponent = 0
+  for (let index = 0; index < boxes.length; index += 1) {
+    if (visited.has(index)) continue
+    const queue = [index]
+    visited.add(index)
+    let size = 0
+    while (queue.length > 0) {
+      const current = queue.pop()
+      if (current === undefined) continue
+      size += 1
+      for (let candidate = 0; candidate < boxes.length; candidate += 1) {
+        if (
+          !visited.has(candidate) &&
+          rectanglesOverlap(boxes[current]!, boxes[candidate]!)
+        ) {
+          visited.add(candidate)
+          queue.push(candidate)
+        }
+      }
+    }
+    largestComponent = Math.max(largestComponent, size)
+  }
+  return {
+    largestComponent,
+    width:
+      Math.max(...boxes.map(({ maxX }) => maxX)) -
+      Math.min(...boxes.map(({ minX }) => minX)),
+    height:
+      Math.max(...boxes.map(({ maxY }) => maxY)) -
+      Math.min(...boxes.map(({ minY }) => minY)),
+  }
+}
+
+function rectanglesOverlap(
+  left: Readonly<{ minX: number; maxX: number; minY: number; maxY: number }>,
+  right: Readonly<{ minX: number; maxX: number; minY: number; maxY: number }>
+): boolean {
+  return (
+    left.minX <= right.maxX &&
+    left.maxX >= right.minX &&
+    left.minY <= right.maxY &&
+    left.maxY >= right.minY
   )
 }

@@ -497,7 +497,7 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
     const gl = this.canvas.getContext('webgl2', {
       alpha: true,
       antialias: true,
-      premultipliedAlpha: true,
+      premultipliedAlpha: false,
       preserveDrawingBuffer: false,
     })
     const engine = new ThunderBallWebGl2Engine({ gl, width, height })
@@ -734,8 +734,6 @@ export function mapThunderWebGl2EngineFrame(
       })
     )
   })
-  const intensityScale =
-    config.masterIntensity / Math.max(DEFAULT_MASTER_INTENSITY, 1e-6)
   const bloomScale = config.bloomGain / Math.max(DEFAULT_BLOOM_GAIN, 1e-6)
   return Object.freeze({
     ribbons: Object.freeze(ribbons),
@@ -743,18 +741,10 @@ export function mapThunderWebGl2EngineFrame(
     passGraph: THUNDER_WEBGL2_PASS_GRAPH,
     tone: Object.freeze({
       ...frame.tone,
-      coreLuminance: frame.tone.coreLuminance * intensityScale,
-      haloLuminance: config.postProcessing
-        ? frame.tone.haloLuminance * intensityScale
-        : 0,
-      bloomGain: config.postProcessing
-        ? frame.tone.bloomGain * bloomScale * config.masterIntensity
-        : 0,
-      exposure: clamp(
-        frame.tone.exposure * (0.82 + config.masterIntensity * 0.36),
-        0.5,
-        2
-      ),
+      coreLuminance: frame.tone.coreLuminance,
+      haloLuminance: config.postProcessing ? frame.tone.haloLuminance : 0,
+      bloomGain: config.postProcessing ? frame.tone.bloomGain * bloomScale : 0,
+      exposure: clamp(frame.tone.exposure, 0.5, 2),
       gamma: clamp(frame.tone.gamma, 0.6, 1.4),
       feedback:
         config.postProcessing && config.masterIntensity > 0

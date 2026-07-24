@@ -30,19 +30,24 @@ uniform float uSourceEnergy;
 out vec4 outColor;
 
 void main() {
-  float endpoint = smoothstep(0.0, 0.04, vAlong)
-    * (1.0 - smoothstep(0.96, 1.0, vAlong));
+  float terminalFade = 1.0 - smoothstep(0.92, 1.0, vAlong);
+  float sourceFlare = 1.0 - smoothstep(0.0, 0.28, vAlong);
+  float longitudinalEnergy = terminalFade * mix(0.42, 1.0, sourceFlare);
   float distanceFromCenter = abs(vSide);
   float core = 1.0 - smoothstep(uTone.x, uTone.x + 0.08, distanceFromCenter);
   float halo = 1.0 - smoothstep(uTone.y * 0.45, uTone.y, distanceFromCenter);
   float sourceEnergy = clamp(uSourceEnergy, 0.0, 1.0);
-  float coreEnergy = core * uTone.z * sourceEnergy;
-  float haloEnergy = halo * uTone.w * sourceEnergy;
-  vec3 coreColor = vec3(0.96, 0.99, 1.0) * coreEnergy;
-  vec3 haloColor = vec3(0.08, 0.62, 1.0) * haloEnergy;
-  vec3 color = (coreColor + haloColor) * endpoint;
-  float alpha = endpoint
-    * clamp(coreEnergy * 0.42 + haloEnergy * 0.28, 0.0, 1.0);
+  float coreEnergy = core * uTone.z;
+  float haloEnergy = halo * uTone.w;
+  vec3 coreColor = vec3(1.0) * coreEnergy;
+  vec3 haloColor = vec3(0.12, 0.84, 1.0) * haloEnergy * 0.38;
+  vec3 color = (coreColor + haloColor)
+    * sourceEnergy * longitudinalEnergy;
+  float alpha = clamp(
+    max(core, halo * 0.28) * sourceEnergy * longitudinalEnergy,
+    0.0,
+    1.0
+  );
   outColor = vec4(color, alpha);
 }
 `
@@ -74,11 +79,26 @@ out vec4 outColor;
 void main() {
   vec4 rawColor = texture(uRaw, vUv);
   vec4 blurredColor = texture(uBlurred, vUv);
-  float peak = max(rawColor.r, max(rawColor.g, rawColor.b));
-  float bloomGate = smoothstep(0.32, 1.08, peak);
-  float bloom = clamp(uBloomGain, 0.0, 2.0)
-    * (0.72 + bloomGate * 0.34);
-  outColor = rawColor + blurredColor * bloom;
+  float bloom = clamp(uBloomGain, 0.0, 2.0);
+  float haloEnergy = clamp(
+    dot(blurredColor.rgb, vec3(0.2126, 0.7152, 0.0722)),
+    0.0,
+    8.0
+  );
+  float ramp = clamp(haloEnergy, 0.0, 1.0);
+  vec3 cyanGlow = vec3(0.12, 0.84, 1.0) * haloEnergy * 0.693;
+  vec3 rampGlow = mix(
+    vec3(0.0, 0.08, 0.42),
+    vec3(0.62, 0.95, 1.0),
+    ramp
+  ) * haloEnergy * 0.788;
+  vec3 bloomColor = blurredColor.rgb * 0.46 + cyanGlow + rampGlow;
+  float bloomAlpha = clamp(
+    dot(bloomColor, vec3(0.2126, 0.7152, 0.0722)),
+    0.0,
+    1.0
+  );
+  outColor = rawColor + vec4(bloomColor, bloomAlpha) * bloom;
 }
 `
 
@@ -94,13 +114,18 @@ uniform float uPreviousWeight;
 out vec4 outColor;
 
 void main() {
-  vec4 blurred = texture(uRaw, vUv) * 0.34;
-  blurred += texture(uRaw, vUv + uTexelStep) * 0.23;
-  blurred += texture(uRaw, vUv - uTexelStep) * 0.23;
-  blurred += texture(uRaw, vUv + uTexelStep * 2.0) * 0.10;
-  blurred += texture(uRaw, vUv - uTexelStep * 2.0) * 0.10;
+  vec4 blurred = texture(uRaw, vUv) * 4.0;
+  blurred += texture(uRaw, vUv + vec2(uTexelStep.x, 0.0)) * 2.0;
+  blurred += texture(uRaw, vUv - vec2(uTexelStep.x, 0.0)) * 2.0;
+  blurred += texture(uRaw, vUv + vec2(0.0, uTexelStep.y)) * 2.0;
+  blurred += texture(uRaw, vUv - vec2(0.0, uTexelStep.y)) * 2.0;
+  blurred += texture(uRaw, vUv + uTexelStep);
+  blurred += texture(uRaw, vUv - uTexelStep);
+  blurred += texture(uRaw, vUv + vec2(uTexelStep.x, -uTexelStep.y));
+  blurred += texture(uRaw, vUv + vec2(-uTexelStep.x, uTexelStep.y));
+  blurred /= 16.0;
   vec4 previous = texture(uPrevious, vUv);
-  outColor = blurred * clamp(uStageWeight, 0.0, 1.0)
+  outColor = blurred * clamp(uStageWeight, 0.0, 2.1)
     + previous * clamp(uPreviousWeight, 0.0, 1.0);
 }
 `
@@ -122,9 +147,16 @@ void main() {
   vec4 accumulated = max(current, history * clamp(uFeedback, 0.0, 0.82));
   vec3 hdr = accumulated.rgb * clamp(uExposure, 0.5, 2.0);
   vec3 mapped = hdr / (vec3(1.0) + hdr);
-  mapped = pow(max(mapped, vec3(0.0)), vec3(clamp(uGamma, 0.6, 1.4)));
+  mapped = pow(
+    max(mapped, vec3(0.0)),
+    vec3(1.0 / clamp(uGamma, 0.6, 1.4))
+  );
   float visibleEnergy = max(mapped.r, max(mapped.g, mapped.b));
-  float alpha = clamp(max(accumulated.a, visibleEnergy * 1.15), 0.0, 1.0);
+  float alpha = clamp(
+    visibleEnergy * (0.32 + visibleEnergy * 0.9),
+    0.0,
+    1.0
+  );
   outColor = vec4(mapped, alpha);
 }
 `
@@ -143,6 +175,81 @@ export interface ThunderWebGl2CompositeOracleResult {
   alpha: number
   bloomEnergy: number
   mappedEnergy: number
+}
+
+export interface ThunderWebGl2RawOracleInput {
+  along: number
+  side: number
+  sourceEnergy: number
+  coreWidth: number
+  haloWidth: number
+  coreLuminance: number
+  haloLuminance: number
+}
+
+export interface ThunderWebGl2RawOracleResult {
+  red: number
+  green: number
+  blue: number
+  alpha: number
+}
+
+export function resolveThunderWebGl2RawOracle(
+  input: Readonly<ThunderWebGl2RawOracleInput>
+): Readonly<ThunderWebGl2RawOracleResult> {
+  if (!Object.values(input).every(Number.isFinite)) {
+    return Object.freeze({ red: 0, green: 0, blue: 0, alpha: 0 })
+  }
+  const along = clamp(input.along, 0, 1)
+  const terminalFade = 1 - smoothstep(0.92, 1, along)
+  const sourceFlare = 1 - smoothstep(0, 0.28, along)
+  const longitudinalEnergy = terminalFade * mix(0.42, 1, sourceFlare)
+  const distanceFromCenter = Math.abs(input.side)
+  const core =
+    1 -
+    smoothstep(
+      clamp(input.coreWidth, 0.01, 0.4),
+      clamp(input.coreWidth, 0.01, 0.4) + 0.08,
+      distanceFromCenter
+    )
+  const halo =
+    1 -
+    smoothstep(
+      clamp(input.haloWidth, 0.2, 1) * 0.45,
+      clamp(input.haloWidth, 0.2, 1),
+      distanceFromCenter
+    )
+  const sourceEnergy = clamp(input.sourceEnergy, 0, 1)
+  const coreEnergy = core * clamp(input.coreLuminance, 0, 4)
+  const haloEnergy = halo * clamp(input.haloLuminance, 0, 2)
+  const energy = sourceEnergy * longitudinalEnergy
+  return Object.freeze({
+    red: (coreEnergy + haloEnergy * 0.12 * 0.38) * energy,
+    green: (coreEnergy + haloEnergy * 0.84 * 0.38) * energy,
+    blue: (coreEnergy + haloEnergy * 0.38) * energy,
+    alpha: clamp(Math.max(core, halo * 0.28) * energy, 0, 1),
+  })
+}
+
+export function resolveThunderWebGl2BlurOracle(
+  center: number,
+  axis: readonly number[],
+  diagonal: readonly number[]
+): number {
+  if (
+    !Number.isFinite(center) ||
+    axis.length !== 4 ||
+    diagonal.length !== 4 ||
+    ![...axis, ...diagonal].every(Number.isFinite)
+  ) {
+    return 0
+  }
+  return (
+    (center * 4 +
+      axis.reduce((total, value) => total + value * 2, 0) +
+      diagonal.reduce((total, value) => total + value, 0)) /
+    16
+  )
 }
 
 export function resolveThunderWebGl2CompositeOracle(
@@ -177,13 +284,22 @@ export function resolveThunderWebGl2CompositeOracle(
   const exposed = accumulatedEnergy * clamp(input.exposure, 0.5, 2)
   const mappedEnergy = Math.pow(
     exposed / (1 + exposed),
-    clamp(input.gamma, 0.6, 1.4)
+    1 / clamp(input.gamma, 0.6, 1.4)
   )
   return Object.freeze({
-    alpha: clamp(mappedEnergy * 1.15, 0, 1),
+    alpha: clamp(mappedEnergy * (0.32 + mappedEnergy * 0.9), 0, 1),
     bloomEnergy,
     mappedEnergy,
   })
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = clamp((value - edge0) / Math.max(edge1 - edge0, 1e-6), 0, 1)
+  return t * t * (3 - 2 * t)
+}
+
+function mix(start: number, end: number, amount: number): number {
+  return start + (end - start) * amount
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

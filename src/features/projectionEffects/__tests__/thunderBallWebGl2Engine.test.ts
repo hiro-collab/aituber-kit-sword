@@ -12,8 +12,13 @@ import {
 } from '../plugins/thunderBall/webgl2/adapter'
 import { ThunderBallWebGl2Engine } from '../plugins/thunderBall/webgl2/engine'
 import {
+  resolveThunderWebGl2BlurOracle,
   resolveThunderWebGl2CompositeOracle,
+  resolveThunderWebGl2RawOracle,
+  THUNDER_WEBGL2_BLUR_FRAGMENT_SHADER,
   THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER,
+  THUNDER_WEBGL2_RIBBON_FRAGMENT_SHADER,
+  THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER,
 } from '../plugins/thunderBall/webgl2/shaders'
 import {
   createThunderWebGl2Topology,
@@ -36,6 +41,7 @@ interface FakeThunderGl {
   bindFramebuffer: jest.Mock
   bindTexture: jest.Mock
   blitFramebuffer: jest.Mock
+  blendEquation: jest.Mock
   blurSteps: jest.Mock
   bufferData: jest.Mock
   deleteAttempts: Record<ThunderWebGl2ResourceKind, FakeResource[]>
@@ -130,6 +136,8 @@ describe('Thunder Ball WebGL2 engine', () => {
       state: 'ready',
       failureStage: 'none',
     })
+    expect(fake.blendEquation).toHaveBeenCalledWith(fake.gl.MAX)
+    expect(fake.blendEquation).not.toHaveBeenCalledWith(fake.gl.FUNC_ADD)
     expect(fake.drawArrays).toHaveBeenCalledTimes(frame.ribbons.length + 9)
     expect(fake.blurSteps).toHaveBeenCalledTimes(6)
     expect(
@@ -142,6 +150,11 @@ describe('Thunder Ball WebGL2 engine', () => {
       [16 / 640, 16 / 360],
       [32 / 640, 32 / 360],
     ])
+    expect(
+      fake.uniform1f.mock.calls
+        .filter(([location]) => location?.name === 'uStageWeight')
+        .map(([, value]) => value)
+    ).toEqual(THUNDER_WEBGL2_BLUR_WEIGHTS)
     expect(fake.blitFramebuffer).not.toHaveBeenCalled()
     expect(fake.bindFramebuffer).toHaveBeenLastCalledWith(
       fake.gl.FRAMEBUFFER,
@@ -391,6 +404,91 @@ describe('Thunder Ball WebGL2 engine', () => {
     })
   })
 
+  it('restores white source core, subordinate cyan branches, and straight coverage', () => {
+    const base = {
+      sourceEnergy: 0.5788,
+      coreWidth: 0.08,
+      haloWidth: 0.46,
+      coreLuminance: 2.4,
+      haloLuminance: 0.82,
+    }
+    const black = resolveThunderWebGl2RawOracle({
+      ...base,
+      along: 0,
+      side: 0,
+      sourceEnergy: 0,
+    })
+    const sourceCore = resolveThunderWebGl2RawOracle({
+      ...base,
+      along: 0,
+      side: 0,
+    })
+    const branchCore = resolveThunderWebGl2RawOracle({
+      ...base,
+      along: 0.55,
+      side: 0,
+    })
+    const branchHalo = resolveThunderWebGl2RawOracle({
+      ...base,
+      along: 0.55,
+      side: 0.28,
+    })
+
+    expect(black).toEqual({ red: 0, green: 0, blue: 0, alpha: 0 })
+    expect(sourceCore.red).toBeGreaterThan(1)
+    expect(sourceCore.green).toBeGreaterThanOrEqual(sourceCore.red)
+    expect(sourceCore.blue).toBeGreaterThanOrEqual(sourceCore.green)
+    expect(sourceCore.alpha).toBeGreaterThan(0.55)
+    expect(sourceCore.red).toBeGreaterThan(branchCore.red * 1.8)
+    expect(branchHalo.blue).toBeGreaterThan(branchHalo.green)
+    expect(branchHalo.green).toBeGreaterThan(branchHalo.red)
+    expect(branchHalo.alpha).toBeGreaterThan(0)
+    expect(branchHalo.alpha).toBeLessThan(0.2)
+    expect(branchHalo.blue).toBeGreaterThan(branchHalo.alpha)
+    const union = [sourceCore, sourceCore, branchHalo].reduce(
+      (peak, sample) => ({
+        red: Math.max(peak.red, sample.red),
+        green: Math.max(peak.green, sample.green),
+        blue: Math.max(peak.blue, sample.blue),
+        alpha: Math.max(peak.alpha, sample.alpha),
+      }),
+      { red: 0, green: 0, blue: 0, alpha: 0 }
+    )
+    expect(union).toEqual(sourceCore)
+    const coreOverGreen = sourceOver([0.92, 0.96, 1, 0.84], [0, 1, 0])
+    const haloOverGreen = sourceOver([0.04, 0.22, 0.38, 0.12], [0, 1, 0])
+    expect(distance(coreOverGreen, [0.92, 0.96, 1])).toBeLessThan(
+      distance(coreOverGreen, [0, 1, 0])
+    )
+    expect(distance(haloOverGreen, [0, 1, 0])).toBeLessThan(
+      distance(haloOverGreen, [0.04, 0.22, 0.38])
+    )
+    expect(THUNDER_WEBGL2_RIBBON_FRAGMENT_SHADER).toContain(
+      'vec3 coreColor = vec3(1.0)'
+    )
+  })
+
+  it('uses the isotropic 003 nine-tap blur and all six recipe-ordered scales', () => {
+    const center = 16
+    const axes = [8, 4, 2, 6]
+    const diagonals = [1, 3, 5, 7]
+    const rotatedAxes = [4, 2, 6, 8]
+    const reflectedDiagonals = [3, 1, 7, 5]
+
+    expect(resolveThunderWebGl2BlurOracle(center, axes, diagonals)).toBe(7.5)
+    expect(
+      resolveThunderWebGl2BlurOracle(center, rotatedAxes, reflectedDiagonals)
+    ).toBe(7.5)
+    expect(THUNDER_WEBGL2_BLUR_SCALES).toEqual([1, 2, 4, 8, 16, 32])
+    expect(THUNDER_WEBGL2_BLUR_WEIGHTS).toEqual([
+      0.15, 0.35, 0.7, 1.1, 1.6, 2.1,
+    ])
+    expect(THUNDER_WEBGL2_BLUR_FRAGMENT_SHADER).toContain('blurred /= 16.0')
+    expect(THUNDER_WEBGL2_BLUR_FRAGMENT_SHADER).toContain(
+      'clamp(uStageWeight, 0.0, 2.1)'
+    )
+  })
+
   it('retains six weighted blur energies and maps weak core energy without full-frame washout', () => {
     const off = resolveThunderWebGl2CompositeOracle({
       rawEnergy: 0,
@@ -406,18 +504,18 @@ describe('Thunder Ball WebGL2 engine', () => {
       blurEnergies: [0.38, 0.31, 0.24, 0.18, 0.12, 0.08],
       bloomGain: 0.4,
       historyEnergy: 0.1,
-      feedback: 0.72,
+      feedback: 0.14,
       exposure: 1.1,
-      gamma: 0.82,
+      gamma: 1,
     })
     const strong = resolveThunderWebGl2CompositeOracle({
       rawEnergy: 0.86,
       blurEnergies: [0.72, 0.6, 0.46, 0.32, 0.2, 0.12],
       bloomGain: 0.78,
       historyEnergy: 0.2,
-      feedback: 0.72,
+      feedback: 0.14,
       exposure: 1.28,
-      gamma: 0.78,
+      gamma: 1,
     })
 
     expect(off).toEqual({ alpha: 0, bloomEnergy: 0, mappedEnergy: 0 })
@@ -426,6 +524,31 @@ describe('Thunder Ball WebGL2 engine', () => {
     expect(weak.mappedEnergy).toBeLessThan(strong.mappedEnergy)
     expect(strong.alpha).toBeGreaterThan(weak.alpha)
     expect(strong.alpha).toBeLessThanOrEqual(1)
+    const contributions = THUNDER_WEBGL2_BLUR_WEIGHTS.map((_, index) =>
+      resolveThunderWebGl2CompositeOracle({
+        rawEnergy: 0,
+        blurEnergies: THUNDER_WEBGL2_BLUR_WEIGHTS.map((__, blurIndex) =>
+          blurIndex === index ? 0.2 : 0
+        ),
+        bloomGain: 1,
+        historyEnergy: 0,
+        feedback: 0,
+        exposure: 1,
+        gamma: 1,
+      })
+    )
+    expect(contributions.every(({ bloomEnergy }) => bloomEnergy > 0)).toBe(true)
+    expect(contributions.map(({ bloomEnergy }) => bloomEnergy)).toEqual(
+      [...contributions]
+        .map(({ bloomEnergy }) => bloomEnergy)
+        .sort((left, right) => left - right)
+    )
+    expect(THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER).toContain(
+      'visibleEnergy * (0.32 + visibleEnergy * 0.9)'
+    )
+    expect(THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER).not.toContain(
+      'accumulated.a'
+    )
   })
 
   it('recreates size resources without growing the live resource ceiling', () => {
@@ -867,6 +990,7 @@ function createFakeThunderGl(
     TRIANGLES: 36,
     TRIANGLE_STRIP: 37,
     VERTEX_SHADER: 38,
+    MAX: 39,
   }
   const drawArrays = jest.fn(() => {
     if (drawFailurePending) {
@@ -882,6 +1006,7 @@ function createFakeThunderGl(
   const bindFramebuffer = jest.fn()
   const bindTexture = jest.fn()
   const uniform1f = jest.fn()
+  const blendEquation = jest.fn()
   const gl = {
     ...constants,
     activeTexture: jest.fn(),
@@ -890,7 +1015,7 @@ function createFakeThunderGl(
     bindFramebuffer,
     bindTexture,
     bindVertexArray: jest.fn(),
-    blendEquation: jest.fn(),
+    blendEquation,
     blendFunc: jest.fn(),
     blitFramebuffer,
     bufferData,
@@ -918,9 +1043,9 @@ function createFakeThunderGl(
     getError: jest.fn(() => {
       if (glErrorPending) {
         glErrorPending = false
-        return 39
+        return 40
       }
-      return boundaryCheckCount === glErrorAtCheck ? 39 : constants.NO_ERROR
+      return boundaryCheckCount === glErrorAtCheck ? 40 : constants.NO_ERROR
     }),
     getExtension: jest.fn(() =>
       options.extensionAvailable === false ? null : {}
@@ -983,6 +1108,7 @@ function createFakeThunderGl(
     bindFramebuffer,
     bindTexture,
     blitFramebuffer,
+    blendEquation,
     blurSteps,
     bufferData,
     deleteAttempts,
@@ -997,4 +1123,23 @@ function expectEveryKindAttempted(fake: FakeThunderGl): void {
   for (const kind of RESOURCE_KINDS) {
     expect(fake.deleteAttempts[kind].length).toBeGreaterThan(0)
   }
+}
+
+function sourceOver(
+  source: readonly [number, number, number, number],
+  destination: readonly [number, number, number]
+): readonly [number, number, number] {
+  const alpha = source[3]
+  return [
+    source[0] * alpha + destination[0] * (1 - alpha),
+    source[1] * alpha + destination[1] * (1 - alpha),
+    source[2] * alpha + destination[2] * (1 - alpha),
+  ]
+}
+
+function distance(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number]
+): number {
+  return Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2])
 }

@@ -19,7 +19,7 @@ export const THUNDER_WEBGL2_BLUR_SCALES = Object.freeze([
   1, 2, 4, 8, 16, 32,
 ] as const)
 export const THUNDER_WEBGL2_BLUR_WEIGHTS = Object.freeze([
-  0.34, 0.24, 0.17, 0.12, 0.08, 0.05,
+  0.15, 0.35, 0.7, 1.1, 1.6, 2.1,
 ] as const)
 
 export const THUNDER_WEBGL2_PASS_GRAPH = Object.freeze([
