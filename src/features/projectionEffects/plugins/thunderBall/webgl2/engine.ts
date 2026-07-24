@@ -204,8 +204,9 @@ export class ThunderBallWebGl2Engine {
         clamp(frame.tone.exposure, 0.5, 2),
         clamp(frame.tone.gamma, 0.6, 1.4)
       )
-      this.feedbackIndexValue = this.feedbackIndexValue === 0 ? 1 : 0
+      this.runPresentationPass(historyWrite.texture)
       if (gl.getError() !== gl.NO_ERROR) throw new Error('native draw failure')
+      this.feedbackIndexValue = this.feedbackIndexValue === 0 ? 1 : 0
       this.drawCountValue += 1
       return this.result('rendered')
     } catch {
@@ -505,20 +506,20 @@ export class ThunderBallWebGl2Engine {
     gl.uniform1f(gl.getUniformLocation(program, 'uExposure'), exposure)
     gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), gamma)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer)
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null)
-    gl.blitFramebuffer(
-      0,
-      0,
-      this.widthValue,
-      this.heightValue,
-      0,
-      0,
-      this.widthValue,
-      this.heightValue,
-      gl.COLOR_BUFFER_BIT,
-      gl.NEAREST
-    )
+  }
+
+  private runPresentationPass(temporal: WebGLTexture): void {
+    const gl = this.gl as WebGL2RenderingContext
+    const program = (this.programs as ThunderPrograms).bloom
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, this.widthValue, this.heightValue)
+    gl.disable(gl.BLEND)
+    gl.useProgram(program)
+    gl.bindVertexArray(this.fullscreenVao)
+    bindTexture(gl, program, 'uRaw', temporal, 0)
+    bindTexture(gl, program, 'uBlurred', temporal, 1)
+    gl.uniform1f(gl.getUniformLocation(program, 'uBloomGain'), 0)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
   private quarantine(failure: ThunderWebGl2FailureClass): void {

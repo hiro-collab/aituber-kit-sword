@@ -29,7 +29,11 @@ interface FakeThunderGl {
   allocated: Record<ThunderWebGl2ResourceKind, FakeResource[]>
   armDeleteFailure(kind: ThunderWebGl2ResourceKind): void
   armDrawFailure(): void
+  armGlError(): void
+  armLegacyBlitError(): void
   armResizeFailure(): void
+  bindFramebuffer: jest.Mock
+  bindTexture: jest.Mock
   blitFramebuffer: jest.Mock
   blurSteps: jest.Mock
   bufferData: jest.Mock
@@ -37,6 +41,7 @@ interface FakeThunderGl {
   drawArrays: jest.Mock
   gl: WebGL2RenderingContext
   successfulDeletes: Record<ThunderWebGl2ResourceKind, FakeResource[]>
+  uniform1f: jest.Mock
 }
 
 const RESOURCE_KINDS: readonly ThunderWebGl2ResourceKind[] = [
@@ -120,7 +125,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       status: 'rendered',
       state: 'ready',
     })
-    expect(fake.drawArrays).toHaveBeenCalledTimes(frame.ribbons.length + 8)
+    expect(fake.drawArrays).toHaveBeenCalledTimes(frame.ribbons.length + 9)
     expect(fake.blurSteps).toHaveBeenCalledTimes(6)
     expect(
       fake.blurSteps.mock.calls.map(([, stepX, stepY]) => [stepX, stepY])
@@ -132,11 +137,107 @@ describe('Thunder Ball WebGL2 engine', () => {
       [16 / 640, 16 / 360],
       [32 / 640, 32 / 360],
     ])
-    expect(fake.blitFramebuffer).toHaveBeenCalledTimes(1)
+    expect(fake.blitFramebuffer).not.toHaveBeenCalled()
+    expect(fake.bindFramebuffer).toHaveBeenLastCalledWith(
+      fake.gl.FRAMEBUFFER,
+      null
+    )
+    expect(
+      fake.uniform1f.mock.calls.filter(
+        ([location, value]) => location?.name === 'uBloomGain' && value === 0
+      )
+    ).toHaveLength(1)
+    const presentationTextures = fake.bindTexture.mock.calls.slice(-2)
+    expect(presentationTextures).toHaveLength(2)
+    expect(presentationTextures[0]?.[1]).toBeTruthy()
+    expect(presentationTextures[1]?.[1]).toBe(presentationTextures[0]?.[1])
+    const feedbackUniformIndex = fake.uniform1f.mock.calls.findIndex(
+      ([location]) => location?.name === 'uFeedback'
+    )
+    const presentationUniformIndex = fake.uniform1f.mock.calls.findIndex(
+      ([location, value]) => location?.name === 'uBloomGain' && value === 0
+    )
+    expect(
+      fake.uniform1f.mock.invocationCallOrder[feedbackUniformIndex]!
+    ).toBeLessThan(
+      fake.uniform1f.mock.invocationCallOrder[presentationUniformIndex]!
+    )
+    expect(
+      fake.uniform1f.mock.invocationCallOrder[presentationUniformIndex]!
+    ).toBeLessThan(
+      fake.drawArrays.mock.invocationCallOrder[
+        fake.drawArrays.mock.invocationCallOrder.length - 1
+      ]!
+    )
+    expect(engine.audit().feedbackIndex).toBe(1)
     expect(engine.audit().passGraph).toHaveLength(9)
     expect(engine.audit().resources.total).toBe(
       THUNDER_WEBGL2_MAX_RESOURCE_COUNT
     )
+  })
+
+  it('presents the temporal target as an exact fullscreen copy without legacy blit', () => {
+    const present = (
+      raw: readonly [number, number, number, number],
+      blurred: readonly [number, number, number, number],
+      bloomGain: number
+    ) =>
+      raw.map((value, index) => value + (blurred[index] ?? 0) * bloomGain) as [
+        number,
+        number,
+        number,
+        number,
+      ]
+
+    expect(present([0, 0, 0, 0], [0, 0, 0, 0], 0)).toEqual([0, 0, 0, 0])
+    expect(present([0.18, 0.42, 0.76, 0.64], [1, 1, 1, 1], 0)).toEqual([
+      0.18, 0.42, 0.76, 0.64,
+    ])
+
+    const fake = createFakeThunderGl()
+    const engine = new ThunderBallWebGl2Engine({
+      gl: fake.gl,
+      width: 640,
+      height: 360,
+    })
+    fake.armLegacyBlitError()
+
+    expect(engine.render(createValidEngineFrame(7, 0))).toMatchObject({
+      status: 'rendered',
+      state: 'ready',
+    })
+    expect(fake.blitFramebuffer).not.toHaveBeenCalled()
+    expect(engine.audit()).toMatchObject({
+      feedbackIndex: 1,
+      resources: { total: THUNDER_WEBGL2_MAX_RESOURCE_COUNT },
+    })
+  })
+
+  it('advances temporal history only after direct presentation succeeds', () => {
+    const fake = createFakeThunderGl()
+    const engine = new ThunderBallWebGl2Engine({
+      gl: fake.gl,
+      width: 640,
+      height: 360,
+    })
+    fake.armGlError()
+
+    expect(engine.render(createValidEngineFrame(7, 0))).toEqual({
+      status: 'blocked',
+      state: 'quarantined',
+      failure: 'draw-failed',
+    })
+    expect(fake.blitFramebuffer).not.toHaveBeenCalled()
+    expect(engine.audit()).toMatchObject({
+      feedbackIndex: 0,
+      resources: { total: 0 },
+    })
+    const drawCount = fake.drawArrays.mock.calls.length
+    expect(engine.render(createValidEngineFrame(7, 1))).toMatchObject({
+      status: 'blocked',
+      state: 'quarantined',
+    })
+    expect(fake.drawArrays).toHaveBeenCalledTimes(drawCount)
   })
 
   it('retains six weighted blur energies and maps weak core energy without full-frame washout', () => {
@@ -532,6 +633,8 @@ function createFakeThunderGl(
   let textureAllocationFailurePending = options.failTextureAllocation === true
   let resizeFailurePending = false
   let drawFailurePending = false
+  let glErrorPending = false
+  let legacyBlitErrorArmed = false
   const deleteFailureBudget: Partial<
     Record<ThunderWebGl2ResourceKind, number>
   > = {
@@ -598,16 +701,21 @@ function createFakeThunderGl(
       throw new Error(PRIVATE_NATIVE_TEXT)
     }
   })
-  const blitFramebuffer = jest.fn()
+  const blitFramebuffer = jest.fn(() => {
+    if (legacyBlitErrorArmed) glErrorPending = true
+  })
   const blurSteps = jest.fn()
   const bufferData = jest.fn()
+  const bindFramebuffer = jest.fn()
+  const bindTexture = jest.fn()
+  const uniform1f = jest.fn()
   const gl = {
     ...constants,
     activeTexture: jest.fn(),
     attachShader: jest.fn(),
     bindBuffer: jest.fn(),
-    bindFramebuffer: jest.fn(),
-    bindTexture: jest.fn(),
+    bindFramebuffer,
+    bindTexture,
     bindVertexArray: jest.fn(),
     blendEquation: jest.fn(),
     blendFunc: jest.fn(),
@@ -634,7 +742,11 @@ function createFakeThunderGl(
     enable: jest.fn(),
     enableVertexAttribArray: jest.fn(),
     framebufferTexture2D: jest.fn(),
-    getError: jest.fn(() => constants.NO_ERROR),
+    getError: jest.fn(() => {
+      if (!glErrorPending) return constants.NO_ERROR
+      glErrorPending = false
+      return 39
+    }),
     getExtension: jest.fn(() =>
       options.extensionAvailable === false ? null : {}
     ),
@@ -650,7 +762,7 @@ function createFakeThunderGl(
       compileFailurePending = false
       return false
     }),
-    getUniformLocation: jest.fn(() => ({})),
+    getUniformLocation: jest.fn((program, name) => ({ program, name })),
     linkProgram: jest.fn(),
     shaderSource: jest.fn(),
     texImage2D: jest.fn(() => {
@@ -660,7 +772,7 @@ function createFakeThunderGl(
       }
     }),
     texParameteri: jest.fn(),
-    uniform1f: jest.fn(),
+    uniform1f,
     uniform1i: jest.fn(),
     uniform2f: blurSteps,
     uniform4f: jest.fn(),
@@ -677,9 +789,17 @@ function createFakeThunderGl(
     armDrawFailure() {
       drawFailurePending = true
     },
+    armGlError() {
+      glErrorPending = true
+    },
+    armLegacyBlitError() {
+      legacyBlitErrorArmed = true
+    },
     armResizeFailure() {
       resizeFailurePending = true
     },
+    bindFramebuffer,
+    bindTexture,
     blitFramebuffer,
     blurSteps,
     bufferData,
@@ -687,6 +807,7 @@ function createFakeThunderGl(
     drawArrays,
     gl,
     successfulDeletes,
+    uniform1f,
   }
 }
 
