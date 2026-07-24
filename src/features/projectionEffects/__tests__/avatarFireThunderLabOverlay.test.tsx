@@ -14,6 +14,7 @@ import {
   PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
   publishProjectionEffectIntent,
 } from '../projectionEffectIntent'
+import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
 
 const hostResult = (
   status: string,
@@ -34,6 +35,7 @@ const mockLabController = {
   emergencyStop: jest.fn().mockResolvedValue(null),
   reset: jest.fn().mockResolvedValue(null),
   start: jest.fn().mockResolvedValue(null),
+  startPlan: jest.fn().mockResolvedValue(null),
   stop: jest.fn().mockResolvedValue(null),
 }
 
@@ -99,6 +101,10 @@ describe('AvatarFireThunderLabOverlay', () => {
     )
     mockLabController.reset.mockResolvedValue(hostResult('reset'))
     mockLabController.start.mockResolvedValue(hostResult('started'))
+    mockLabController.startPlan.mockResolvedValue({
+      status: 'accepted',
+      hostResult: hostResult('started'),
+    })
     mockLabController.stop.mockResolvedValue(hostResult('stopped'))
   })
 
@@ -280,6 +286,101 @@ describe('AvatarFireThunderLabOverlay', () => {
       await Promise.resolve()
     })
     expect(mockLabController.start).not.toHaveBeenCalled()
+  })
+
+  it('reserves planned revisions before the queue and rejects duplicate, collision, and session mismatch', async () => {
+    let resolvePlan!: () => void
+    mockLabController.startPlan.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePlan = () =>
+            resolve({
+              status: 'accepted',
+              hostResult: hostResult('started'),
+            })
+        })
+    )
+    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+    const acceptedPlan = performancePlan()
+
+    act(() => {
+      publishProjectionEffectIntent({
+        schemaVersion: 2,
+        eventId: 'evt_00000000000000000000000000000020',
+        turnId: 'turn-avatar-plan',
+        action: 'start',
+        plan: acceptedPlan,
+      })
+      publishProjectionEffectIntent({
+        schemaVersion: 2,
+        eventId: 'evt_00000000000000000000000000000021',
+        turnId: 'turn-avatar-plan',
+        action: 'start',
+        plan: acceptedPlan,
+      })
+      publishProjectionEffectIntent({
+        schemaVersion: 2,
+        eventId: 'evt_00000000000000000000000000000022',
+        turnId: 'turn-avatar-plan',
+        action: 'start',
+        plan: performancePlan({ strength: 0.75 }),
+      })
+      publishProjectionEffectIntent({
+        schemaVersion: 2,
+        eventId: 'evt_00000000000000000000000000000023',
+        turnId: 'turn-avatar-plan',
+        action: 'start',
+        plan: performancePlan({ sessionId: 'session-other' }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(mockLabController.startPlan).toHaveBeenCalledTimes(1)
+    )
+    expect(mockLabController.start).not.toHaveBeenCalled()
+    await act(async () => {
+      resolvePlan()
+      await Promise.resolve()
+    })
+    expect(mockLabController.startPlan).toHaveBeenCalledWith(acceptedPlan)
+  })
+
+  it('publishes a fixed rejection for a busy planned start without retrying', async () => {
+    const receipts: unknown[] = []
+    const readReceipt = (event: Event) => {
+      if (event instanceof CustomEvent) receipts.push(event.detail)
+    }
+    window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
+    mockLabController.startPlan.mockResolvedValueOnce({
+      status: 'busy',
+      hostResult: null,
+    })
+    render(<AvatarFireThunderLabOverlay intentReceiverEnabled={true} />)
+
+    act(() => {
+      publishProjectionEffectIntent({
+        schemaVersion: 2,
+        eventId: 'evt_00000000000000000000000000000024',
+        turnId: 'turn-avatar-plan-busy',
+        action: 'start',
+        plan: performancePlan(),
+      })
+    })
+    await waitFor(() => expect(receipts).toHaveLength(1))
+    expect(mockLabController.startPlan).toHaveBeenCalledTimes(1)
+    expect(mockLabController.start).not.toHaveBeenCalled()
+    expect(receipts).toEqual([
+      {
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000024',
+        status: 'rejected',
+        resultClass: 'host_rejected',
+      },
+    ])
+    window.removeEventListener(
+      PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+      readReceipt
+    )
   })
 
   it('rejects new and replayed live IDs at cap, then accepts after expiry', async () => {
@@ -490,3 +591,28 @@ describe('AvatarFireThunderLabOverlay', () => {
     expect(mockLabController.emergencyStop).not.toHaveBeenCalled()
   })
 })
+
+function performancePlan(
+  overrides: Partial<ProjectionPerformancePlan> = {}
+): ProjectionPerformancePlan {
+  return {
+    schemaVersion: 1,
+    planId: 'plan-avatar-overlay',
+    sessionId: 'session-avatar-overlay',
+    revision: 1,
+    action: 'start',
+    effectId: 'fire',
+    position: { x: 0.3, y: -0.25 },
+    strength: 0.5,
+    durationMs: 3_000,
+    seed: 7,
+    keyframes: [
+      {
+        atMs: 0,
+        position: { x: 0.3, y: -0.25 },
+        strength: 0.5,
+      },
+    ],
+    ...overrides,
+  }
+}

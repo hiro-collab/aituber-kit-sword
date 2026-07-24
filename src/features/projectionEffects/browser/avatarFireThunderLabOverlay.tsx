@@ -11,8 +11,10 @@ import {
   FireThunderLabCanvasLayer,
   type FireThunderLabCanvasLayerProps,
   type FireThunderLabController,
+  type FireThunderLabPlannedStartResult,
   type FireThunderLabVisualParameterOverrides,
 } from './fireThunderLabCanvasLayer'
+import { ProjectionPerformancePlanLedger } from './projectionPerformancePlanExecutor'
 
 export const AVATAR_CAST_VISUAL_PARAMETER_OVERRIDES = {
   fire: {
@@ -47,18 +49,29 @@ export const AvatarFireThunderLabOverlay = forwardRef<
   forwardedRef
 ) {
   const controllerRef = useRef<FireThunderLabController | null>(null)
+  const performancePlanLedgerRef = useRef(new ProjectionPerformancePlanLedger())
 
   useImperativeHandle(
     forwardedRef,
     () => ({
       async emergencyStop() {
-        return (await controllerRef.current?.emergencyStop()) ?? null
+        const result = (await controllerRef.current?.emergencyStop()) ?? null
+        return result
       },
       async reset() {
-        return (await controllerRef.current?.reset()) ?? null
+        const result = (await controllerRef.current?.reset()) ?? null
+        return result
       },
       async start(effectId) {
         return (await controllerRef.current?.start(effectId)) ?? null
+      },
+      async startPlan(plan) {
+        return (
+          (await controllerRef.current?.startPlan?.(plan)) ?? {
+            status: 'rejected',
+            hostResult: null,
+          }
+        )
       },
       async stop() {
         return (await controllerRef.current?.stop()) ?? null
@@ -78,6 +91,17 @@ export const AvatarFireThunderLabOverlay = forwardRef<
       // The subscriber reserves each event ID synchronously in its bounded
       // TTL/cap map before invoking this callback, so duplicate transports
       // cannot race into the Host lifecycle queue.
+      if (intent.schemaVersion === 2) {
+        const reservation = performancePlanLedgerRef.current.reserve(
+          intent.plan
+        )
+        if (reservation.status !== 'reserved') {
+          publishProjectionEffectExecutionReceipt(
+            executionReceipt(intent.eventId, 'rejected', 'host_rejected')
+          )
+          return
+        }
+      }
       if (pendingIntentCount >= MAX_PENDING_PROJECTION_EFFECT_INTENTS) {
         publishProjectionEffectExecutionReceipt(
           executionReceipt(
@@ -141,6 +165,7 @@ export const AvatarFireThunderLabOverlay = forwardRef<
     return () => {
       active = false
       dispose()
+      performancePlanLedgerRef.current.clear()
     }
   }, [intentReceiverEnabled])
 
@@ -176,7 +201,12 @@ AvatarFireThunderLabOverlay.displayName = 'AvatarFireThunderLabOverlay'
 async function dispatchIntent(
   controller: FireThunderLabController,
   intent: ProjectionEffectIntent
-): Promise<ProjectionEffectHostResult | null> {
+): Promise<
+  ProjectionEffectHostResult | FireThunderLabPlannedStartResult | null
+> {
+  if (intent.schemaVersion === 2) {
+    return controller.startPlan ? controller.startPlan(intent.plan) : null
+  }
   if (intent.action === 'start') return controller.start(intent.effectId)
   if (intent.action === 'stop') return controller.stop()
   return controller.reset()
@@ -184,10 +214,23 @@ async function dispatchIntent(
 
 function receiptFromHostResult(
   intent: ProjectionEffectIntent,
-  result: ProjectionEffectHostResult | null
+  result: ProjectionEffectHostResult | FireThunderLabPlannedStartResult | null
 ): ProjectionEffectExecutionReceipt {
   if (!result) {
     return executionReceipt(intent.eventId, 'rejected', 'host_unavailable')
+  }
+  if ('hostResult' in result) {
+    if (result.status === 'accepted') {
+      return executionReceipt(intent.eventId, 'completed', 'started')
+    }
+    if (result.status === 'cleanup_unproved') {
+      return executionReceipt(
+        intent.eventId,
+        'cleanup_unproved',
+        'cleanup_unproved'
+      )
+    }
+    return executionReceipt(intent.eventId, 'rejected', 'host_rejected')
   }
   const cleanupUnproved =
     result.status === 'blocked-terminal-cleanup' ||

@@ -34,11 +34,24 @@ import {
   ProjectionEffectCompositor,
   type ProjectionEffectCompositorController,
 } from './projectionEffectCompositor'
+import {
+  ProjectionPerformancePlanExecutor,
+  type ProjectionPerformancePlanFrame,
+} from './projectionPerformancePlanExecutor'
+import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
+
+export type FireThunderLabPlannedStartResult = Readonly<{
+  status: 'accepted' | 'busy' | 'rejected' | 'cleanup_unproved'
+  hostResult: ProjectionEffectHostResult | null
+}>
 
 export interface FireThunderLabController {
   start(
     effectId: FireThunderLabEffectId
   ): Promise<ProjectionEffectHostResult | null>
+  startPlan?(
+    plan: ProjectionPerformancePlan
+  ): Promise<FireThunderLabPlannedStartResult>
   stop(): Promise<ProjectionEffectHostResult | null>
   reset(): Promise<ProjectionEffectHostResult | null>
   emergencyStop(): Promise<ProjectionEffectHostResult | null>
@@ -213,6 +226,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
   const reducedMotionRef = useRef(reducedMotion)
   const onStatusChangeRef = useRef(onStatusChange)
   const visualParameterOverridesRef = useRef(visualParameterOverrides)
+  const performancePlanExecutorRef = useRef(
+    new ProjectionPerformancePlanExecutor()
+  )
 
   useEffect(() => {
     reducedMotionRef.current = reducedMotion
@@ -287,6 +303,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
       }
       fireRendererRef.current = null
       thunderRendererRef.current = null
+      performancePlanExecutorRef.current.clear()
       lastEffectIdRef.current = null
 
       cleanupPromiseRef.current = ready
@@ -350,6 +367,15 @@ export const FireThunderLabCanvasLayer = forwardRef<
     }
   }, [createFireSurface, createThunderSurface, waitFrame, webgl2Available])
 
+  function latchCleanupUnproved(
+    compositor: ProjectionEffectCompositorController | null
+  ): void {
+    cleanupUnprovedRef.current = true
+    performancePlanExecutorRef.current.clear()
+    compositor?.stopFrameLoop()
+    pooledSurfacesRef.current?.quarantineActive()
+  }
+
   async function stopOrReset(
     mode: 'normal' | 'emergency'
   ): Promise<ProjectionEffectHostResult | null> {
@@ -357,7 +383,11 @@ export const FireThunderLabCanvasLayer = forwardRef<
     const effectId = lastEffectIdRef.current
     if (!host || !effectId || !mountedRef.current) return null
     compositorRef.current?.stopFrameLoop()
+    performancePlanExecutorRef.current.clear()
     const result = await host.dispatch(stopCommand(effectId, mode))
+    if (cleanupUnprovedHostResult(result)) {
+      latchCleanupUnproved(compositorRef.current)
+    }
     if (host.activeEffectId === null && effectId === FIRE_EFFECT_ID) {
       fireRendererRef.current = null
     }
@@ -373,6 +403,7 @@ export const FireThunderLabCanvasLayer = forwardRef<
     const effectId = lastEffectIdRef.current
     if (!host || !effectId || !mountedRef.current) return null
     compositorRef.current?.stopFrameLoop()
+    performancePlanExecutorRef.current.clear()
     if (effectId === FIRE_EFFECT_ID && fireRendererRef.current) {
       try {
         fireRendererRef.current.reset()
@@ -398,6 +429,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
       }
     }
     const result = await host.dispatch(resetCommand(effectId))
+    if (cleanupUnprovedHostResult(result)) {
+      latchCleanupUnproved(compositorRef.current)
+    }
     if (effectId === FIRE_EFFECT_ID) fireRendererRef.current = null
     if (effectId === THUNDER_BALL_EFFECT_ID) {
       thunderRendererRef.current = null
@@ -414,7 +448,9 @@ export const FireThunderLabCanvasLayer = forwardRef<
         const host = hostRef.current
         const compositor = compositorRef.current
         if (!host || !compositor || !mountedRef.current) return null
+        if (cleanupUnprovedRef.current) return null
         if (host.activeEffectId !== null) compositor.stopFrameLoop()
+        performancePlanExecutorRef.current.clear()
         lastEffectIdRef.current = effectId
         const parameters = resolveFireThunderLabVisualParameters(
           effectId,
@@ -443,6 +479,10 @@ export const FireThunderLabCanvasLayer = forwardRef<
             ) {
               onStatusChangeRef.current?.(frameResult)
             }
+            if (cleanupUnprovedHostResult(frameResult)) {
+              latchCleanupUnproved(compositor)
+              return
+            }
             if (host.activeEffectId === null) {
               fireRendererRef.current = null
               thunderRendererRef.current = null
@@ -450,14 +490,130 @@ export const FireThunderLabCanvasLayer = forwardRef<
             }
           })
           if (!compositorOperationCompleted(loopStatus)) {
-            const cleanup = await host.dispatch(
-              stopCommand(effectId, 'emergency')
-            )
+            let cleanup: ProjectionEffectHostResult
+            try {
+              cleanup = await host.dispatch(stopCommand(effectId, 'emergency'))
+            } catch {
+              latchCleanupUnproved(compositor)
+              return null
+            }
+            if (cleanupUnprovedHostResult(cleanup)) {
+              latchCleanupUnproved(compositor)
+            }
             if (mountedRef.current) onStatusChangeRef.current?.(cleanup)
             return cleanup
           }
         }
         return result
+      },
+      async startPlan(plan) {
+        await readyPromiseRef.current
+        const host = hostRef.current
+        const compositor = compositorRef.current
+        if (!host || !compositor || !mountedRef.current) {
+          return plannedStartResult('rejected', null)
+        }
+        if (cleanupUnprovedRef.current) {
+          return plannedStartResult('cleanup_unproved', null)
+        }
+        if (
+          host.activeEffectId !== null ||
+          performancePlanExecutorRef.current.activeEffectId !== null
+        ) {
+          return plannedStartResult('busy', null)
+        }
+        const initialFrame = performancePlanExecutorRef.current.activate(plan)
+        if (!initialFrame) return plannedStartResult('rejected', null)
+
+        const effectId = plan.effectId
+        lastEffectIdRef.current = effectId
+        const parameters = Object.freeze({
+          ...resolveFireThunderLabVisualParameters(
+            effectId,
+            visualParameterOverridesRef.current,
+            reducedMotionRef.current
+          ),
+          ...initialFrame.parameters,
+          seed: plan.seed,
+        })
+        let result: ProjectionEffectHostResult
+        try {
+          result = await host.dispatch(
+            startCommand(effectId, parameters, plan.durationMs)
+          )
+        } catch (error) {
+          performancePlanExecutorRef.current.clear()
+          throw error
+        }
+        if (effectId !== FIRE_EFFECT_ID || result.status !== 'started') {
+          fireRendererRef.current = null
+        }
+        if (
+          effectId !== THUNDER_BALL_EFFECT_ID ||
+          result.status !== 'started'
+        ) {
+          thunderRendererRef.current = null
+        }
+        if (result.status !== 'started') {
+          performancePlanExecutorRef.current.clear()
+          if (cleanupUnprovedHostResult(result)) {
+            latchCleanupUnproved(compositor)
+            if (mountedRef.current) onStatusChangeRef.current?.(result)
+            return plannedStartResult('cleanup_unproved', result)
+          }
+          if (mountedRef.current) onStatusChangeRef.current?.(result)
+          return plannedStartResult('rejected', result)
+        }
+        if (!mountedRef.current) {
+          performancePlanExecutorRef.current.clear()
+          return plannedStartResult('rejected', result)
+        }
+        onStatusChangeRef.current?.(result)
+        performancePlanExecutorRef.current.anchor(performance.now())
+        const loopStatus = compositor.startFrameLoop(async ({ nowMs }) => {
+          const frame = performancePlanExecutorRef.current.frame(nowMs)
+          const frameResult = await host.renderFrame(
+            frame ? frameOverride(frame) : undefined
+          )
+          if (!mountedRef.current) return
+          if (
+            frameResult.status !== 'frame-rendered' &&
+            frameResult.status !== 'frame-skipped'
+          ) {
+            onStatusChangeRef.current?.(frameResult)
+          }
+          if (cleanupUnprovedHostResult(frameResult)) {
+            latchCleanupUnproved(compositor)
+            return
+          }
+          if (host.activeEffectId === null) {
+            performancePlanExecutorRef.current.clear()
+            fireRendererRef.current = null
+            thunderRendererRef.current = null
+            compositor.stopFrameLoop()
+          }
+        })
+        if (!compositorOperationCompleted(loopStatus)) {
+          performancePlanExecutorRef.current.clear()
+          let cleanup: ProjectionEffectHostResult
+          try {
+            cleanup = await host.dispatch(stopCommand(effectId, 'emergency'))
+          } catch {
+            latchCleanupUnproved(compositor)
+            return plannedStartResult('cleanup_unproved', null)
+          }
+          if (cleanupUnprovedHostResult(cleanup)) {
+            latchCleanupUnproved(compositor)
+          }
+          if (mountedRef.current) onStatusChangeRef.current?.(cleanup)
+          return plannedStartResult(
+            cleanupUnprovedHostResult(cleanup)
+              ? 'cleanup_unproved'
+              : 'rejected',
+            cleanup
+          )
+        }
+        return plannedStartResult('accepted', result)
       },
       async stop() {
         return stopOrReset('normal')
@@ -670,7 +826,8 @@ function defaultThunderSurface(
 
 function startCommand(
   effectId: FireThunderLabEffectId,
-  parameters: Readonly<Record<string, unknown>>
+  parameters: Readonly<Record<string, unknown>>,
+  durationMs?: number
 ): ProjectionEffectStartCommand {
   return {
     schemaVersion: PROJECTION_EFFECT_COMMAND_SCHEMA_VERSION,
@@ -678,8 +835,40 @@ function startCommand(
     effectId,
     action: 'start',
     parameters,
+    ...(durationMs === undefined ? {} : { durationMs }),
     speechCompletion: 'finished',
   }
+}
+
+function frameOverride(frame: ProjectionPerformancePlanFrame) {
+  return Object.freeze({
+    effectId: frame.effectId,
+    parameters: frame.parameters,
+  })
+}
+
+function plannedStartResult(
+  status: FireThunderLabPlannedStartResult['status'],
+  hostResult: ProjectionEffectHostResult | null
+): FireThunderLabPlannedStartResult {
+  return Object.freeze({ status, hostResult })
+}
+
+function cleanupUnprovedHostResult(
+  result: ProjectionEffectHostResult
+): boolean {
+  return (
+    result.status === 'blocked-terminal-cleanup' ||
+    result.status === 'stop-failed' ||
+    (result.status === 'visual-failed' && result.activeEffectId !== null) ||
+    result.partialReasons.some(
+      (reason) =>
+        reason === 'sfx-prepare-cleanup-failed' ||
+        reason === 'sfx-start-cleanup-failed' ||
+        reason === 'visual-stop-failed' ||
+        reason === 'visual-dispose-failed'
+    )
+  )
 }
 
 function stopCommand(
