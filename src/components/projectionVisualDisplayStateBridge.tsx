@@ -63,6 +63,10 @@ export type RemoteProjectionDisplayState = {
   settings?: RemoteProjectionDisplaySettings
 }
 
+type ApplyPassiveDisplayStateOptions = {
+  preserveLocalAvatarCalibration?: boolean
+}
+
 const SYNC_INTERVAL_MS = 500
 const MAX_REMOTE_STATE_AGE_MS = 5000
 
@@ -139,9 +143,12 @@ export const readOperatorDisplayState = () => {
 }
 
 export const applyPassiveDisplayState = (
-  state: RemoteProjectionDisplayState
+  state: RemoteProjectionDisplayState,
+  options: ApplyPassiveDisplayStateOptions = {}
 ) => {
   const settings = state.settings || {}
+  const preserveLocalAvatarCalibration =
+    options.preserveLocalAvatarCalibration === true
 
   projectionDisplayStore.getState().setDisplayState({
     assistantMessage: String(state.assistantMessage || ''),
@@ -177,19 +184,23 @@ export const applyPassiveDisplayState = (
     ...(typeof settings.showCharacterName === 'boolean' && {
       showCharacterName: settings.showCharacterName,
     }),
-    ...(settings.characterPosition && {
-      characterPosition: settings.characterPosition,
-      fixedCharacterPosition: true,
-    }),
-    ...(settings.characterRotation && {
-      characterRotation: settings.characterRotation,
-    }),
-    ...(isLightingIntensity(settings.lightingIntensity) && {
-      lightingIntensity: settings.lightingIntensity,
-    }),
-    ...(isCameraHorizontalFov(settings.cameraHorizontalFov) && {
-      cameraHorizontalFov: settings.cameraHorizontalFov,
-    }),
+    ...(!preserveLocalAvatarCalibration &&
+      settings.characterPosition && {
+        characterPosition: settings.characterPosition,
+        fixedCharacterPosition: true,
+      }),
+    ...(!preserveLocalAvatarCalibration &&
+      settings.characterRotation && {
+        characterRotation: settings.characterRotation,
+      }),
+    ...(!preserveLocalAvatarCalibration &&
+      isLightingIntensity(settings.lightingIntensity) && {
+        lightingIntensity: settings.lightingIntensity,
+      }),
+    ...(!preserveLocalAvatarCalibration &&
+      isCameraHorizontalFov(settings.cameraHorizontalFov) && {
+        cameraHorizontalFov: settings.cameraHorizontalFov,
+      }),
     ...(isProjectionEffectsSettings(settings.projectionEffects) && {
       projectionEffects: settings.projectionEffects,
     }),
@@ -285,7 +296,9 @@ export const ProjectionVisualDisplayStateBridge = ({
         const sequence = Number(state?.sequence || 0)
         if (!state || sequence <= lastSequence) return
         lastSequence = sequence
-        applyPassiveDisplayState(state)
+        applyPassiveDisplayState(state, {
+          preserveLocalAvatarCalibration: mode === 'stage-output',
+        })
       } catch {
         if (!stopped && currentGeneration === generation) {
           clearTransientPassiveSpeechOutput()

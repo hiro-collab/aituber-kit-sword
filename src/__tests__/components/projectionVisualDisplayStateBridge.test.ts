@@ -80,6 +80,40 @@ describe('ProjectionVisualDisplayStateBridge camera FOV synchronization', () => 
     expect(settingsStore.getState().fixedCharacterPosition).toBe(true)
   })
 
+  it('keeps stage-output avatar calibration while applying remote speech state', () => {
+    const localPosition = { x: 0.25, y: 0.6, z: 2.45, scale: 1 }
+    const localRotation = { x: -0.25, y: 0.67, z: -0.03 }
+    settingsStore.setState({
+      fixedCharacterPosition: true,
+      characterPosition: localPosition,
+      characterRotation: localRotation,
+      cameraHorizontalFov: 30,
+      lightingIntensity: 1,
+    })
+
+    applyPassiveDisplayState(
+      {
+        speechOutputActive: true,
+        settings: {
+          characterPosition: { x: 0, y: 0, z: 0, scale: 1 },
+          characterRotation: { x: 0, y: 0, z: 0 },
+          cameraHorizontalFov: 90,
+          lightingIntensity: 3,
+        },
+      },
+      { preserveLocalAvatarCalibration: true }
+    )
+
+    expect(settingsStore.getState()).toMatchObject({
+      fixedCharacterPosition: true,
+      characterPosition: localPosition,
+      characterRotation: localRotation,
+      cameraHorizontalFov: 30,
+      lightingIntensity: 1,
+    })
+    expect(projectionDisplayStore.getState().speechOutputActive).toBe(true)
+  })
+
   it('publishes and applies one bounded operator-owned projection effect contract', () => {
     const next = {
       selectedEffect: 'fluidFireRelay' as const,
