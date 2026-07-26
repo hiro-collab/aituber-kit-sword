@@ -2,6 +2,34 @@ export const FIRE_P027_SLOT_COUNT = 150
 export const FIRE_P027_SLICE_SIZE = 50
 export const FIRE_P027_LAYER_COUNT = 120
 export const FIRE_P027_FIXED_DT_SECONDS = 1 / 60
+export const FIRE_P027_SOURCE_SIZE_LAG_SECONDS = 0.0434294454
+export const FIRE_P027_SOURCE_POST_OFF_FRAME = 45
+
+/**
+ * Public, compact O1 recipe identity. The private source-oracle packet keeps
+ * the repeated pixel/state measurements and tolerance arrays; product source
+ * keeps only the recipe scalars needed to reproduce the original behavior.
+ */
+export const FIRE_P027_SOURCE_ORACLE_PROFILE = Object.freeze({
+  authority: 'p027-o1-original' as const,
+  schemaVersion: 1,
+  fixedHz: 60,
+  slotCount: FIRE_P027_SLOT_COUNT,
+  sliceSize: FIRE_P027_SLICE_SIZE,
+  layerCount: FIRE_P027_LAYER_COUNT,
+  birthPerSecond: 300,
+  lifeSeconds: 0.5,
+  spriteWidthOrtho: 0.3,
+  spriteHeightOrtho: 0.3,
+  sizeLagSeconds: FIRE_P027_SOURCE_SIZE_LAG_SECONDS,
+  postOffZeroFrame: FIRE_P027_SOURCE_POST_OFF_FRAME,
+  blend: Object.freeze({
+    source: 'one-minus-source-alpha' as const,
+    destination: 'one' as const,
+    depthTest: false,
+    legacyAlpha: true,
+  }),
+})
 
 export const FIRE_P027_STATE_PORTS = Object.freeze([
   'STATE_POSITION_AGE',
@@ -15,6 +43,8 @@ export interface FireP027Controls {
   lifeSeconds: number
   spriteWidthCssPx: number
   spriteHeightCssPx: number
+  spriteWidthOrtho: number
+  spriteHeightOrtho: number
   resolutionScale: number
   inputLagSeconds: number
   originSeed: number
@@ -52,10 +82,14 @@ export const FIRE_P027_DEFAULT_CONTROLS: Readonly<FireP027Controls> =
   Object.freeze({
     birthPerSecond: 300,
     lifeSeconds: 0.5,
-    spriteWidthCssPx: 96,
-    spriteHeightCssPx: 96,
+    // Reference-only compatibility values. Raster size is owned by the
+    // source-equivalent orthographic fields below, not by viewport pixels.
+    spriteWidthCssPx: 384,
+    spriteHeightCssPx: 384,
+    spriteWidthOrtho: FIRE_P027_SOURCE_ORACLE_PROFILE.spriteWidthOrtho,
+    spriteHeightOrtho: FIRE_P027_SOURCE_ORACLE_PROFILE.spriteHeightOrtho,
     resolutionScale: 0.75,
-    inputLagSeconds: 0.1,
+    inputLagSeconds: FIRE_P027_SOURCE_SIZE_LAG_SECONDS,
     originSeed: 0,
     originRadiusX: 0.1,
     originRadiusY: 0.1,

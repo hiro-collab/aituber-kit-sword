@@ -8,7 +8,8 @@ import { fireEffectDefinition } from '../definition'
 import {
   FIRE_P027_DEFAULT_CONTROLS,
   FIRE_P027_FIXED_DT_SECONDS,
-  FIRE_P027_SLOT_COUNT,
+  FIRE_P027_SOURCE_ORACLE_PROFILE,
+  FIRE_P027_SOURCE_POST_OFF_FRAME,
   type FireP027Controls,
   type FireP027Surface,
   type FireP027SurfaceAudit,
@@ -40,8 +41,6 @@ export interface FireP027PluginOptions {
 const MAX_DRAIN_STEPS = 300
 const MAX_DRAIN_PRESENTATIONS = 6
 const DRAIN_WAIT_GRACE_MS = 50
-const FIRE_P027_WORLD_MOTION_SCALE = 0.04
-const FIRE_P027_TURBULENCE_MOTION_SCALE = 0.006
 
 export class FireP027Renderer implements ProjectionEffectRenderer {
   private readonly surface: FireP027Surface
@@ -89,10 +88,13 @@ export class FireP027Renderer implements ProjectionEffectRenderer {
     try {
       const drainSteps = Math.min(
         MAX_DRAIN_STEPS,
-        Math.ceil(
-          (this.controls.lifeSeconds + this.controls.lifeVarianceSeconds) /
-            FIRE_P027_FIXED_DT_SECONDS
-        ) + 1
+        Math.max(
+          FIRE_P027_SOURCE_POST_OFF_FRAME + 1,
+          Math.ceil(
+            (this.controls.lifeSeconds + this.controls.lifeVarianceSeconds) /
+              FIRE_P027_FIXED_DT_SECONDS
+          ) + 1
+        )
       )
       const presentationStride = Math.max(
         1,
@@ -191,34 +193,6 @@ export function createFireP027Plugin(
 export function mapFireParametersToP027Controls(
   parameters: Readonly<Record<string, unknown>>
 ): FireP027Controls {
-  const lifeSeconds = clamp(
-    numberParameter(parameters, 'lifetimeMs', 1250) / 1000,
-    0.2,
-    4
-  )
-  const particleBudget = clamp(
-    numberParameter(parameters, 'particleBudget', 1800),
-    64,
-    12000
-  )
-  const requestedBirth = clamp(
-    numberParameter(parameters, 'emissionRate', 220),
-    0,
-    1200
-  )
-  const capacityBirth = FIRE_P027_SLOT_COUNT / lifeSeconds
-  const budgetScale = clamp(particleBudget / 1800, 0.05, 1)
-  const pointSize = clamp(numberParameter(parameters, 'pointSize', 34), 2, 160)
-  const upwardSpeed = clamp(
-    numberParameter(parameters, 'upwardSpeed', 0.58),
-    0.05,
-    2
-  )
-  const noiseStrength = clamp(
-    numberParameter(parameters, 'noiseStrength', 0.34),
-    0,
-    1.5
-  )
   const temperature = clamp(
     numberParameter(parameters, 'temperature', 0.78),
     0,
@@ -235,10 +209,6 @@ export function mapFireParametersToP027Controls(
   const normalizedStrength = active
     ? clamp((masterIntensity - 0.35) / 0.65, 0, 1)
     : 0
-  const targetOccupancy = active
-    ? FIRE_P027_SLOT_COUNT * (0.64 + normalizedStrength * 0.24)
-    : 0
-  const targetBirth = targetOccupancy / lifeSeconds
   const emissionGain = clamp(
     active
       ? (0.58 + normalizedStrength * 0.62) *
@@ -256,60 +226,50 @@ export function mapFireParametersToP027Controls(
     0,
     1
   )
-  const spriteWidthCssPx = pointSize
-  const motionScale = upwardSpeed / 0.58
-  const turbulenceScale = noiseStrength / 0.34
-  const dissipation = clamp(
-    numberParameter(parameters, 'dissipation', 0.965),
-    0.8,
-    1
-  )
   const seed = integerParameter(parameters, 'seed', 0, 0, 2_147_483_647)
   const originSeed = seed === 0 ? 0 : deriveP027Seed(seed, 0x6d2b79f5)
   const particleSeed = seed === 0 ? 1 : deriveP027Seed(seed, 0x1b873593)
 
   return {
-    birthPerSecond: Math.min(
-      requestedBirth * budgetScale,
-      targetBirth,
-      capacityBirth
-    ),
-    lifeSeconds,
-    spriteWidthCssPx,
-    spriteHeightCssPx: spriteWidthCssPx * 1.12,
+    birthPerSecond: active ? FIRE_P027_SOURCE_ORACLE_PROFILE.birthPerSecond : 0,
+    lifeSeconds: FIRE_P027_SOURCE_ORACLE_PROFILE.lifeSeconds,
+    spriteWidthCssPx: FIRE_P027_DEFAULT_CONTROLS.spriteWidthCssPx,
+    spriteHeightCssPx: FIRE_P027_DEFAULT_CONTROLS.spriteHeightCssPx,
+    spriteWidthOrtho: FIRE_P027_SOURCE_ORACLE_PROFILE.spriteWidthOrtho,
+    spriteHeightOrtho: FIRE_P027_SOURCE_ORACLE_PROFILE.spriteHeightOrtho,
     resolutionScale: clamp(
       numberParameter(parameters, 'internalResolutionScale', 0.75),
       0.25,
       1
     ),
-    inputLagSeconds: 0.1,
+    inputLagSeconds: FIRE_P027_SOURCE_ORACLE_PROFILE.sizeLagSeconds,
     originSeed,
-    originRadiusX: 0.036,
-    originRadiusY: 0.0235,
-    originRadiusZ: 0.08,
+    originRadiusX: FIRE_P027_DEFAULT_CONTROLS.originRadiusX,
+    originRadiusY: FIRE_P027_DEFAULT_CONTROLS.originRadiusY,
+    originRadiusZ: FIRE_P027_DEFAULT_CONTROLS.originRadiusZ,
     originCenterX:
       clamp(numberParameter(parameters, 'emitterX', 0), -1, 1) * 0.5,
     originCenterY:
       clamp(numberParameter(parameters, 'emitterY', -0.82), -1, 1) * 0.28,
     originCenterZ: 0,
     forceX: 0,
-    forceY: 4 * motionScale * FIRE_P027_WORLD_MOTION_SCALE,
+    forceY: 4,
     forceZ: 0,
     windX: 0,
-    windY: 3 * motionScale * FIRE_P027_WORLD_MOTION_SCALE,
+    windY: 3,
     windZ: 0,
-    turbulenceX: 6 * turbulenceScale * FIRE_P027_TURBULENCE_MOTION_SCALE,
-    turbulenceY: 6 * turbulenceScale * FIRE_P027_TURBULENCE_MOTION_SCALE,
-    turbulenceZ: 6 * turbulenceScale * FIRE_P027_TURBULENCE_MOTION_SCALE,
+    turbulenceX: 6,
+    turbulenceY: 6,
+    turbulenceZ: 6,
     turbulencePeriod: 0.01,
     particleSeed,
-    lifeVarianceSeconds: Math.min(0.12, lifeSeconds * 0.2),
-    jitterBirths: true,
+    lifeVarianceSeconds: 0,
+    jitterBirths: false,
     useMass: false,
     mass: 1,
     useDrag: false,
     drag: 1,
-    alphaSpeed: clamp((1 - dissipation) * 2, 0, 5),
+    alphaSpeed: 0,
     tintR: emissionGain * (0.96 + temperature * 0.12),
     tintG: emissionGain * (0.62 + temperature * 0.35),
     tintB: emissionGain * (0.08 + temperature * 0.18),

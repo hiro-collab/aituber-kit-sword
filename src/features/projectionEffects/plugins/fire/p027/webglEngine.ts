@@ -164,6 +164,7 @@ export class FireP027WebGlEngine implements FireP027Surface {
       )
       this.snapshotFramebuffer = this.resources.createFramebuffer()
       this.snapshotTexture = this.createSnapshotTexture()
+      this.captureAllLayers()
       this.setOrigins(generateFireP027FallbackOrigins(initialControls))
       this.ensureOutputSize(
         initialControls.resolutionScale,
@@ -300,7 +301,6 @@ export class FireP027WebGlEngine implements FireP027Surface {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     this.readStateIndex = writeIndex
     this.stateStepCount += 1
-    this.captureNextLayer()
     assertNoGlError(gl, 'P027 state update')
     this.appliedOriginCenter = currentOriginCenter
   }
@@ -318,9 +318,10 @@ export class FireP027WebGlEngine implements FireP027Surface {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.outputFramebuffer)
     gl.viewport(0, 0, this.outputWidthValue, this.outputHeightValue)
     gl.clearBufferfv(gl.COLOR, 0, ZERO)
+    gl.disable(gl.DEPTH_TEST)
     gl.enable(gl.BLEND)
     gl.blendEquation(gl.FUNC_ADD)
-    gl.blendFunc(gl.ONE, gl.ONE)
+    gl.blendFunc(gl.ONE_MINUS_SRC_ALPHA, gl.ONE)
     gl.useProgram(this.rasterProgram)
     gl.bindVertexArray(this.rasterVao)
     state.textures.forEach((texture, index) => {
@@ -334,8 +335,8 @@ export class FireP027WebGlEngine implements FireP027Surface {
     gl.uniform1i(uniform(gl, this.rasterProgram, 'uFireLayers'), 4)
     gl.uniform4f(
       uniform(gl, this.rasterProgram, 'uSizeOrthoSlots'),
-      controls.spriteWidthCssPx,
-      controls.spriteHeightCssPx,
+      controls.spriteWidthOrtho,
+      controls.spriteHeightOrtho,
       1,
       FIRE_P027_SLOT_COUNT
     )
@@ -552,6 +553,11 @@ export class FireP027WebGlEngine implements FireP027Surface {
     this.snapshotTexture = this.createSnapshotTexture()
     this.snapshotIndexValue = 0
     this.snapshotCompleteValue = false
+    this.captureAllLayers()
+  }
+
+  private captureAllLayers(): void {
+    while (!this.snapshotCompleteValue) this.captureNextLayer()
   }
 
   private captureNextLayer(): void {

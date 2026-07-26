@@ -42,15 +42,14 @@ const RESOURCE_KINDS: readonly ResourceKind[] = [
 ]
 
 const PRIVATE_NATIVE_DELETE_TEXT = 'private native driver delete detail'
-const CSS_FOOTPRINT_CASES = [
-  [640, 360, 0.1542, 0.3070293333333333],
-  [1280, 720, 0.0771, 0.15351466666666666],
-  [1920, 1080, 0.0514, 0.1023431111111111],
-].flatMap(([width, height, clipWidth, clipHeight]) =>
+const ORTHO_FOOTPRINT_CASES = [
+  [640, 360],
+  [1280, 720],
+  [1920, 1080],
+].flatMap(([width, height]) =>
   [1, 2].flatMap((dpr) =>
     [0.25, 0.75, 1].map(
-      (resolutionScale) =>
-        [width, height, dpr, resolutionScale, clipWidth, clipHeight] as const
+      (resolutionScale) => [width, height, dpr, resolutionScale] as const
     )
   )
 )
@@ -106,6 +105,7 @@ function createFakeP027WebGl2(
     COLOR_ATTACHMENT0: 10,
     COLOR_BUFFER_BIT: 5,
     COMPILE_STATUS: 6,
+    DEPTH_TEST: 39,
     FLOAT: 7,
     FRAGMENT_SHADER: 8,
     FRAMEBUFFER: 9,
@@ -121,6 +121,7 @@ function createFakeP027WebGl2(
     NEAREST: 20,
     NO_ERROR: 0,
     ONE: 21,
+    ONE_MINUS_SRC_ALPHA: 40,
     RGBA: 22,
     RGBA16F: 23,
     RGBA32F: 24,
@@ -265,16 +266,9 @@ describe('P027 Fire WebGL engine boundary', () => {
     )
   })
 
-  it.each(CSS_FOOTPRINT_CASES)(
-    'keeps a 49.344 CSS-pixel sprite invariant at viewport %ix%i, DPR %i and scale %s',
-    (
-      clientWidth,
-      clientHeight,
-      dpr,
-      resolutionScale,
-      expectedClipWidth,
-      expectedClipHeight
-    ) => {
+  it.each(ORTHO_FOOTPRINT_CASES)(
+    'keeps the O1 0.3x0.3 orthographic sprite invariant at viewport %ix%i, DPR %i and scale %s',
+    (clientWidth, clientHeight, dpr, resolutionScale) => {
       const fake = createFakeP027WebGl2({
         clientHeight,
         clientWidth,
@@ -284,13 +278,13 @@ describe('P027 Fire WebGL engine boundary', () => {
       const engine = new FireP027WebGlEngine(fake.canvas)
       engine.draw({
         ...FIRE_P027_DEFAULT_CONTROLS,
-        spriteWidthCssPx: 49.344,
-        spriteHeightCssPx: 55.26528,
+        spriteWidthOrtho: 0.3,
+        spriteHeightOrtho: 0.3,
         resolutionScale,
       })
 
       expect(uniformVectors(fake, 'uSizeOrthoSlots')).toContainEqual([
-        49.344, 55.26528, 1, 150,
+        0.3, 0.3, 1, 150,
       ])
       expect(uniformVectors(fake, 'uCssViewportLayers')).toContainEqual([
         clientWidth,
@@ -298,22 +292,44 @@ describe('P027 Fire WebGL engine boundary', () => {
         120,
         0,
       ])
-      expect((49.344 * 2) / clientWidth).toBeCloseTo(expectedClipWidth, 12)
-      expect((55.26528 * 2) / clientHeight).toBeCloseTo(expectedClipHeight, 12)
-      expect((expectedClipWidth / 2) * clientWidth).toBeCloseTo(49.344, 12)
-      expect((expectedClipHeight / 2) * clientHeight).toBeCloseTo(55.26528, 12)
+      expect(0.3 * 2).toBeCloseTo(0.6, 12)
+      expect(0.3 * 2 * (clientWidth / clientHeight)).toBeCloseTo(
+        0.6 * (clientWidth / clientHeight),
+        12
+      )
       engine.dispose()
     }
   )
 
-  it('retains additive ONE/ONE accumulation behind a straight-alpha display', () => {
+  it('uses the O1 one-minus-source-alpha/one blend with depth disabled', () => {
     const fake = createFakeP027WebGl2()
     const engine = new FireP027WebGlEngine(fake.canvas)
 
     engine.draw(FIRE_P027_DEFAULT_CONTROLS)
 
     expect(fake.blendEquation).toHaveBeenCalledWith(12)
-    expect(fake.blendFunc).toHaveBeenCalledWith(21, 21)
+    expect(fake.blendFunc).toHaveBeenCalledWith(40, 21)
+    engine.dispose()
+  })
+
+  it('settles all 120 source layers before the first visible state step', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+
+    expect(engine.audit()).toMatchObject({
+      snapshotCaptured: 120,
+      snapshotComplete: true,
+      stateSteps: 0,
+    })
+    expect(fake.drawCalls).toHaveBeenCalledTimes(120)
+
+    engine.reset()
+    expect(engine.audit()).toMatchObject({
+      snapshotCaptured: 120,
+      snapshotComplete: true,
+      stateSteps: 0,
+    })
+    expect(fake.drawCalls).toHaveBeenCalledTimes(240)
     engine.dispose()
   })
 

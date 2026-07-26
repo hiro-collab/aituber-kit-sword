@@ -3,6 +3,9 @@ import {
   FIRE_P027_LAYER_COUNT,
   FIRE_P027_SLICE_SIZE,
   FIRE_P027_SLOT_COUNT,
+  FIRE_P027_SOURCE_ORACLE_PROFILE,
+  FIRE_P027_SOURCE_POST_OFF_FRAME,
+  FIRE_P027_SOURCE_SIZE_LAG_SECONDS,
   FIRE_P027_STATE_PORTS,
   FireP027CapabilityError,
   assertFireP027Capabilities,
@@ -44,10 +47,41 @@ describe('P027 Fire source/static contract', () => {
     controls.birthPerSecond = 12
     expect(FIRE_P027_DEFAULT_CONTROLS.birthPerSecond).toBe(300)
     expect(FIRE_P027_DEFAULT_CONTROLS.lifeSeconds).toBe(0.5)
-    expect(FIRE_P027_DEFAULT_CONTROLS.spriteWidthCssPx).toBe(96)
-    expect(FIRE_P027_DEFAULT_CONTROLS.spriteHeightCssPx).toBe(96)
-    expect(FIRE_P027_DEFAULT_CONTROLS.inputLagSeconds).toBe(0.1)
+    expect(FIRE_P027_DEFAULT_CONTROLS.spriteWidthCssPx).toBe(384)
+    expect(FIRE_P027_DEFAULT_CONTROLS.spriteHeightCssPx).toBe(384)
+    expect(FIRE_P027_DEFAULT_CONTROLS.spriteWidthOrtho).toBe(0.3)
+    expect(FIRE_P027_DEFAULT_CONTROLS.spriteHeightOrtho).toBe(0.3)
+    expect(FIRE_P027_DEFAULT_CONTROLS.inputLagSeconds).toBe(
+      FIRE_P027_SOURCE_SIZE_LAG_SECONDS
+    )
     expect(Object.isFrozen(FIRE_P027_DEFAULT_CONTROLS)).toBe(true)
+  })
+
+  it('keeps only the compact public O1 recipe profile in product source', () => {
+    expect(FIRE_P027_SOURCE_ORACLE_PROFILE).toEqual(
+      expect.objectContaining({
+        authority: 'p027-o1-original',
+        fixedHz: 60,
+        slotCount: 150,
+        sliceSize: 50,
+        layerCount: 120,
+        birthPerSecond: 300,
+        lifeSeconds: 0.5,
+        spriteWidthOrtho: 0.3,
+        spriteHeightOrtho: 0.3,
+        sizeLagSeconds: FIRE_P027_SOURCE_SIZE_LAG_SECONDS,
+        postOffZeroFrame: FIRE_P027_SOURCE_POST_OFF_FRAME,
+      })
+    )
+    expect(FIRE_P027_SOURCE_ORACLE_PROFILE.blend).toEqual({
+      source: 'one-minus-source-alpha',
+      destination: 'one',
+      depthTest: false,
+      legacyAlpha: true,
+    })
+    expect(JSON.stringify(FIRE_P027_SOURCE_ORACLE_PROFILE)).not.toMatch(
+      /[A-Za-z]:\\|measurements|repeatability|\.toe|\.png/i
+    )
   })
 
   it('requires the exact WebGL2 capability floor', () => {
@@ -76,9 +110,17 @@ describe('P027 Fire source/static contract', () => {
       'nextVelocityOpacity = vec4(0.0, 0.0, 0.0, 1.0)'
     )
     expect(FIRE_P027_GENERATOR_FRAGMENT_SHADER).toContain('float fbm(')
+    expect(FIRE_P027_GENERATOR_FRAGMENT_SHADER).toContain(
+      'float primarySeed = mix(1.0, 480.0, preset)'
+    )
+    expect(FIRE_P027_GENERATOR_FRAGMENT_SHADER).toContain(
+      'float displacementSeed = mix(1.0, 181.0, preset)'
+    )
+    expect(FIRE_P027_GENERATOR_FRAGMENT_SHADER).not.toContain('perforation')
+    expect(FIRE_P027_GENERATOR_FRAGMENT_SHADER).not.toContain('lift')
     expect(FIRE_P027_RASTER_VERTEX_SHADER).toContain('gl_InstanceID')
     expect(FIRE_P027_RASTER_VERTEX_SHADER).toContain(
-      'spriteCssSize * 2.0 / cssViewport'
+      'spriteOrthoSize.x * 2.0 / ortho'
     )
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain(
       'fragColor = vec4(sourceRgb, correlatedAlpha)'

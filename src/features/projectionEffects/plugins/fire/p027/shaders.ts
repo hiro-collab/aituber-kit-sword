@@ -86,6 +86,148 @@ export function toneMapFireP027DisplaySample(
   }
 }
 
+export interface FireP027MetricSummary {
+  width: number
+  height: number
+  supportPixels: number
+  supportArea: number
+  bboxMinX: number
+  bboxMinY: number
+  bboxMaxXExclusive: number
+  bboxMaxYExclusive: number
+  centroidX: number
+  centroidY: number
+  upperThirdSupportArea: number
+  lowerThirdSupportArea: number
+  hotPixels: number
+  warmPixels: number
+  hotToWarmRatio: number
+  outsideSupportMaxRgb: number
+  outsideSupportAlphaMin: number
+  outsideSupportAlphaMax: number
+  outsideSupportAlphaMean: number
+  postOffRgbaZero: boolean
+}
+
+/**
+ * Reduces transient RGBA samples to the source-oracle measurement vocabulary.
+ * The input array is never retained or returned; callers can persist the
+ * bounded summary without persisting frames or pixel payloads.
+ */
+export function summarizeFireP027RgbaMetrics(
+  rgba: ArrayLike<number>,
+  width: number,
+  height: number
+): Readonly<FireP027MetricSummary> {
+  const safeWidth = Math.floor(width)
+  const safeHeight = Math.floor(height)
+  if (
+    safeWidth < 1 ||
+    safeHeight < 1 ||
+    rgba.length !== safeWidth * safeHeight * 4
+  ) {
+    throw new Error('P027 metric input shape invalid')
+  }
+
+  const visibleThreshold = 1 / 255
+  let supportPixels = 0
+  let hotPixels = 0
+  let warmPixels = 0
+  let minX = safeWidth
+  let minY = safeHeight
+  let maxXExclusive = 0
+  let maxYExclusive = 0
+  let weightedX = 0
+  let weightedY = 0
+  let weightSum = 0
+  let binaryX = 0
+  let binaryY = 0
+  let upperThirdSupport = 0
+  let lowerThirdSupport = 0
+  let outsideCount = 0
+  let outsideMaxRgb = 0
+  let outsideAlphaMin = Number.POSITIVE_INFINITY
+  let outsideAlphaMax = 0
+  let outsideAlphaSum = 0
+  let absoluteMaxRgb = 0
+  let absoluteMaxAlpha = 0
+
+  for (let y = 0; y < safeHeight; y += 1) {
+    for (let x = 0; x < safeWidth; x += 1) {
+      const offset = (y * safeWidth + x) * 4
+      const r = nonNegative(rgba[offset] ?? 0)
+      const g = nonNegative(rgba[offset + 1] ?? 0)
+      const b = nonNegative(rgba[offset + 2] ?? 0)
+      const a = nonNegative(rgba[offset + 3] ?? 0)
+      const maximumRgb = Math.max(r, g, b)
+      absoluteMaxRgb = Math.max(absoluteMaxRgb, maximumRgb)
+      absoluteMaxAlpha = Math.max(absoluteMaxAlpha, a)
+      if (maximumRgb <= visibleThreshold) {
+        outsideCount += 1
+        outsideMaxRgb = Math.max(outsideMaxRgb, maximumRgb)
+        outsideAlphaMin = Math.min(outsideAlphaMin, a)
+        outsideAlphaMax = Math.max(outsideAlphaMax, a)
+        outsideAlphaSum += a
+        continue
+      }
+
+      supportPixels += 1
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxXExclusive = Math.max(maxXExclusive, x + 1)
+      maxYExclusive = Math.max(maxYExclusive, y + 1)
+      binaryX += x + 0.5
+      binaryY += y + 0.5
+      const pixelLuminance = luminance({ r, g, b })
+      weightedX += (x + 0.5) * pixelLuminance
+      weightedY += (y + 0.5) * pixelLuminance
+      weightSum += pixelLuminance
+      if (y < safeHeight / 3) upperThirdSupport += 1
+      if (y >= (safeHeight * 2) / 3) lowerThirdSupport += 1
+
+      const hot = pixelLuminance >= 0.7 && r >= 0.7 && g >= 0.35
+      if (hot) hotPixels += 1
+      else if (pixelLuminance >= 0.05 && r >= 0.9 * g && g >= 1.1 * b) {
+        warmPixels += 1
+      }
+    }
+  }
+
+  const totalPixels = safeWidth * safeHeight
+  const centroidDenominator = weightSum > 0 ? weightSum : supportPixels
+  const centroidNumeratorX = weightSum > 0 ? weightedX : binaryX
+  const centroidNumeratorY = weightSum > 0 ? weightedY : binaryY
+  return Object.freeze({
+    width: safeWidth,
+    height: safeHeight,
+    supportPixels,
+    supportArea: supportPixels / totalPixels,
+    bboxMinX: supportPixels > 0 ? minX / safeWidth : 0,
+    bboxMinY: supportPixels > 0 ? minY / safeHeight : 0,
+    bboxMaxXExclusive: supportPixels > 0 ? maxXExclusive / safeWidth : 0,
+    bboxMaxYExclusive: supportPixels > 0 ? maxYExclusive / safeHeight : 0,
+    centroidX:
+      centroidDenominator > 0
+        ? centroidNumeratorX / centroidDenominator / safeWidth
+        : 0,
+    centroidY:
+      centroidDenominator > 0
+        ? centroidNumeratorY / centroidDenominator / safeHeight
+        : 0,
+    upperThirdSupportArea: upperThirdSupport / totalPixels,
+    lowerThirdSupportArea: lowerThirdSupport / totalPixels,
+    hotPixels,
+    warmPixels,
+    hotToWarmRatio: hotPixels / Math.max(1, warmPixels),
+    outsideSupportMaxRgb: outsideMaxRgb,
+    outsideSupportAlphaMin: outsideCount > 0 ? outsideAlphaMin : 0,
+    outsideSupportAlphaMax: outsideAlphaMax,
+    outsideSupportAlphaMean:
+      outsideCount > 0 ? outsideAlphaSum / outsideCount : 0,
+    postOffRgbaZero: absoluteMaxRgb === 0 && absoluteMaxAlpha === 0,
+  })
+}
+
 export interface FireP027VectorSample {
   x: number
   y: number
@@ -330,7 +472,8 @@ float hash31(vec3 p) {
   return fract((p.x + p.y) * p.z);
 }
 
-float valueNoise(vec3 p) {
+float valueNoise(vec3 p, float seed) {
+  p += vec3(seed * 0.173, seed * 0.071, seed * 0.319);
   vec3 i = floor(p);
   vec3 f = fract(p);
   f = f * f * (3.0 - 2.0 * f);
@@ -349,13 +492,13 @@ float valueNoise(vec3 p) {
   return mix(mix(n00, n10, f.y), mix(n01, n11, f.y), f.z);
 }
 
-float fbm(vec3 p, float harmonics, float spread, float gain) {
+float fbm(vec3 p, float harmonics, float spread, float gain, float seed) {
   float sum = 0.0;
   float amplitude = 1.0;
   float norm = 0.0;
   for (int octave = 0; octave < 5; ++octave) {
     if (float(octave) >= harmonics) break;
-    sum += amplitude * valueNoise(p);
+    sum += amplitude * valueNoise(p, seed + float(octave) * 37.0);
     norm += amplitude;
     p = p * spread + vec3(17.1, 9.2, 13.7);
     amplitude *= gain;
@@ -363,35 +506,66 @@ float fbm(vec3 p, float harmonics, float spread, float gain) {
   return sum / max(norm, 1e-6);
 }
 
+vec3 rgbToHsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsvToRgb(vec3 c) {
+  vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+
 void main() {
-  float preset = step(0.5, fract(uGeneratorTimePreset.y));
+  float seconds = uGeneratorTimePreset.x;
+  float preset = mod(floor(seconds * 2.0), 2.0);
   float period = mix(uGeneratorPresetA.x, uGeneratorPresetB.x, preset);
   float harmonics = mix(uGeneratorPresetA.y, uGeneratorPresetB.y, preset);
   float spread = mix(uGeneratorPresetA.z, uGeneratorPresetB.z, preset);
   float gain = mix(uGeneratorPresetA.w, uGeneratorPresetB.w, preset);
-  float seconds = uGeneratorTimePreset.x;
+  float primarySeed = mix(1.0, 480.0, preset);
+  float displacementSeed = mix(1.0, 181.0, preset);
+  float displacementPeriod = mix(1.0, 2.0, preset);
+  float displacementHarmonics = mix(2.0, 1.0, preset);
+  float displacementSpread = mix(2.0, 20.0, preset);
+  float displacementGain = mix(0.7, 0.34, preset);
   vec2 centered = vUV * 2.0 - vec2(1.0);
-  centered.y += 0.12;
-  vec3 flow = vec3(centered.x * period * 4.1,
-    (centered.y - seconds * 0.35) * period * 3.6,
-    seconds * period * 0.55 + preset * 41.0);
-  float n0 = fbm(flow, harmonics, spread, gain);
-  float n1 = fbm(flow * vec3(1.7, 2.1, 1.25) + vec3(23.0, -seconds, 7.0),
-    min(harmonics + 1.0, 5.0), max(spread, 1.65), gain);
-  vec2 warped = centered + vec2(n0 - 0.5, n1 - 0.5) * vec2(0.34, 0.22);
-  float radial = 1.0 - length(warped * vec2(1.0, 0.83));
-  float lift = clamp((0.9 - centered.y) * 0.42, 0.0, 0.7);
-  float field = radial + (n0 - 0.5) * 0.56 + (n1 - 0.5) * 0.30 + lift * 0.18;
-  float alpha = smoothstep(0.12, 0.78, field);
-  alpha *= 1.0 - smoothstep(0.72, 1.08, abs(centered.x));
-  alpha *= 1.0 - smoothstep(0.86, 1.16, abs(centered.y));
-  float perforation = smoothstep(0.08, 0.38, abs(n1 - n0) + length(warped) * 0.28);
-  alpha *= mix(0.28, 1.0, perforation);
-  alpha = pow(alpha, 1.7) * 0.52;
-  if (alpha < 0.004) alpha = 0.0;
-  float body = pow(clamp(field * 1.55, 0.0, 1.0), 1.2);
-  vec3 color = vec3(body, body * (0.22 + 0.55 * n0), 0.0);
-  color *= alpha * 2.2;
+  vec3 displacementPosition = vec3(
+    centered.x * displacementPeriod,
+    (centered.y + seconds * 2.0) * displacementPeriod,
+    seconds * displacementPeriod
+  );
+  vec2 displacement = vec2(
+    fbm(displacementPosition, displacementHarmonics, displacementSpread,
+      displacementGain, displacementSeed),
+    fbm(displacementPosition + vec3(19.0, 7.0, 31.0),
+      displacementHarmonics, displacementSpread, displacementGain,
+      displacementSeed + 53.0)
+  );
+  displacement = mix(vec2(-0.6), vec2(1.0), displacement) * 0.16;
+  vec2 warped = centered + displacement;
+  float radial = clamp(1.0 - length(warped), 0.0, 1.0);
+  vec3 primaryPosition = vec3(
+    warped.x * period,
+    (warped.y + seconds * 2.0) * period,
+    seconds * period
+  );
+  vec3 multiplied = radial * vec3(
+    fbm(primaryPosition, harmonics, spread, gain, primarySeed),
+    fbm(primaryPosition + vec3(13.0, 29.0, 5.0), harmonics, spread, gain,
+      primarySeed + 101.0),
+    fbm(primaryPosition + vec3(41.0, 3.0, 23.0), harmonics, spread, gain,
+      primarySeed + 211.0)
+  );
+  vec3 clamped = clamp(multiplied, vec3(0.0), vec3(1.0));
+  float alpha = clamped.r;
+  vec3 hsv = rgbToHsv(clamped);
+  hsv.x = fract(hsv.x - 150.0 / 360.0);
+  vec3 color = hsvToRgb(hsv) * 2.0;
   fragColor = vec4(color, alpha);
 }`
 
@@ -425,15 +599,17 @@ void main() {
   vec4 velocityOpacity = texelFetch(uVelocityOpacity, ivec2(slot, 0), 0);
   float sizeGate = clamp(texelFetch(uControlRelay, ivec2(0, 0), 0).g, 0.0, 1.0);
   vec2 cssViewport = max(uCssViewportLayers.xy, vec2(1.0));
-  vec2 spriteCssSize = max(uSizeOrthoSlots.xy * sizeGate, vec2(1e-6));
+  vec2 spriteOrthoSize = max(uSizeOrthoSlots.xy * sizeGate, vec2(1e-6));
   float aspect = cssViewport.x / cssViewport.y;
   float ortho = max(uSizeOrthoSlots.z, 1e-6);
   vec2 centerClip = vec2(
     positionAge.x * 2.0 / ortho,
     positionAge.y * 2.0 * aspect / ortho
   );
-  vec2 spriteClipOffset = (aCorner - vec2(0.5))
-    * spriteCssSize * 2.0 / cssViewport;
+  vec2 spriteClipOffset = (aCorner - vec2(0.5)) * vec2(
+    spriteOrthoSize.x * 2.0 / ortho,
+    spriteOrthoSize.y * 2.0 * aspect / ortho
+  );
   gl_Position = vec4(centerClip + spriteClipOffset, 0.0, 1.0);
   float phase = float(slot) / float(max(int(uSizeOrthoSlots.w + 0.5) - 1, 1)) * 60.0;
   float lifePhase = generationLife.a > 0.0 ? positionAge.a / generationLife.a * 60.0 : 0.0;
