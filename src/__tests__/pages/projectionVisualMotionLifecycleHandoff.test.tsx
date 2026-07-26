@@ -125,6 +125,12 @@ jest.mock('@/features/browserControl/useBrowserControlOwner', () => ({
   }),
 }))
 jest.mock('@/utils/projectionVisualQuery', () => ({
+  PROJECTION_VISUAL_PRESENTATION_ORDER: [
+    'background-input',
+    'avatar',
+    'effects',
+    'speech-hud',
+  ],
   readProjectionVisualQueryFromPath: () => ({}),
   resolveProjectionVisualQueryState: () => mockProjectionVisualQueryState,
 }))
@@ -305,12 +311,41 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     const avatar = screen.getByTestId('mock-projection-vrm-viewer')
     const effect = screen.getByTestId('avatar-fire-thunder-effect-layer')
     const bubble = screen.getByTestId('mock-projection-assistant-bubble')
+    const root = container.firstElementChild
+    const avatarLayer = screen.getByTestId('projection-visual-avatar-layer')
+    const speechHudLayer = screen.getByTestId(
+      'projection-visual-speech-hud-layer'
+    )
 
     expect(screen.getAllByTestId('mock-projection-vrm-viewer')).toHaveLength(1)
     expect(avatar).toHaveAttribute('data-remote-speech-active', 'true')
-    expect(container.firstElementChild).toHaveAttribute(
+    expect(root).toHaveAttribute(
       'data-projection-avatar-speech-motion',
       'active'
+    )
+    expect(root).toHaveAttribute(
+      'data-projection-effect-host-role',
+      'production-stage'
+    )
+    expect(root).toHaveAttribute(
+      'data-projection-background-input',
+      'stage-root'
+    )
+    expect(root).toHaveAttribute(
+      'data-projection-presentation-order',
+      'background-input avatar effects speech-hud'
+    )
+    expect(avatarLayer).toHaveAttribute(
+      'data-projection-presentation-layer',
+      'avatar'
+    )
+    expect(effect).toHaveAttribute(
+      'data-projection-effect-host-role',
+      'production-stage'
+    )
+    expect(speechHudLayer).toHaveAttribute(
+      'data-projection-presentation-layer',
+      'speech-hud'
     )
     expect(
       screen.getAllByTestId('avatar-fire-thunder-effect-layer')
@@ -324,6 +359,14 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     ).toBeTruthy()
     expect(
       effect.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      avatarLayer.compareDocumentPosition(effect) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      effect.compareDocumentPosition(speechHudLayer) &
+        Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
   })
 

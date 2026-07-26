@@ -59,6 +59,7 @@ export type AvatarFireThunderEffectLayerProps = Pick<
   'onStatusChange' | 'reducedMotion'
 > & {
   intentReceiverEnabled?: boolean
+  productionEffectHost?: boolean
   onHostStateChange?: (state: AvatarFireThunderHostState) => void
   onIntentReceiverStateChange?: (state: AvatarFireThunderReceiverState) => void
 }
@@ -69,6 +70,7 @@ export const AvatarFireThunderEffectLayer = forwardRef<
 >(function AvatarFireThunderEffectLayer(
   {
     intentReceiverEnabled = false,
+    productionEffectHost = false,
     onHostStateChange,
     onIntentReceiverStateChange,
     onStatusChange,
@@ -76,13 +78,14 @@ export const AvatarFireThunderEffectLayer = forwardRef<
   },
   forwardedRef
 ) {
+  const receiverEnabled = intentReceiverEnabled && productionEffectHost
   const controllerRef = useRef<FireThunderLabController | null>(null)
   const performancePlanLedgerRef = useRef(new ProjectionPerformancePlanLedger())
   const [hostState, setHostState] = useState<AvatarFireThunderHostState>('idle')
   const hostStateRef = useRef<AvatarFireThunderHostState>('idle')
   const [receiverState, setReceiverState] =
     useState<AvatarFireThunderReceiverState>(
-      intentReceiverEnabled ? 'cross-tab-unavailable' : 'inactive'
+      receiverEnabled ? 'cross-tab-unavailable' : 'inactive'
     )
   const reportHostState = (state: AvatarFireThunderHostState) => {
     const duplicateStarted =
@@ -126,7 +129,7 @@ export const AvatarFireThunderEffectLayer = forwardRef<
   )
 
   useEffect(() => {
-    if (!intentReceiverEnabled) {
+    if (!receiverEnabled) {
       setReceiverState('inactive')
       hostStateRef.current = 'idle'
       setHostState('idle')
@@ -240,13 +243,16 @@ export const AvatarFireThunderEffectLayer = forwardRef<
       performancePlanLedgerRef.current.clear()
       onIntentReceiverStateChange?.('disposed')
     }
-  }, [intentReceiverEnabled, onHostStateChange, onIntentReceiverStateChange])
+  }, [receiverEnabled, onHostStateChange, onIntentReceiverStateChange])
 
   return (
     <div
       className="pointer-events-none absolute inset-0 z-10"
       data-testid="avatar-fire-thunder-effect-layer"
       data-projection-anchor-contract="fixed-stage-relative"
+      data-projection-effect-host-role={
+        productionEffectHost ? 'production-stage' : 'manual'
+      }
       data-projection-effect-host-state={hostState}
       data-projection-effect-receiver-state={receiverState}
     >

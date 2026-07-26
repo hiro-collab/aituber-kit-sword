@@ -183,6 +183,10 @@ describe('AvatarFireThunderLabOverlay', () => {
     expect(avatarLayer).toHaveClass('z-0')
     expect(effectLayer).toHaveClass('z-10', 'pointer-events-none')
     expect(effectLayer).toHaveAttribute(
+      'data-projection-effect-host-role',
+      'manual'
+    )
+    expect(effectLayer).toHaveAttribute(
       'data-projection-anchor-contract',
       'fixed-stage-relative'
     )
@@ -284,6 +288,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
         onIntentReceiverStateChange={(state) => receiverStates.push(state)}
       />
@@ -396,6 +401,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
         onStatusChange={(result) => childStatuses.push(result)}
       />
@@ -445,6 +451,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -481,6 +488,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -542,6 +550,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -599,6 +608,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onIntentReceiverStateChange={(state) => receiverStates.push(state)}
       />
     )
@@ -639,10 +649,12 @@ describe('AvatarFireThunderLabOverlay', () => {
       <>
         <AvatarFireThunderEffectLayer
           intentReceiverEnabled={true}
+          productionEffectHost
           onIntentReceiverStateChange={(state) => primaryStates.push(state)}
         />
         <AvatarFireThunderEffectLayer
           intentReceiverEnabled={true}
+          productionEffectHost
           onIntentReceiverStateChange={(state) => conflictStates.push(state)}
         />
       </>
@@ -674,7 +686,12 @@ describe('AvatarFireThunderLabOverlay', () => {
           resolveStart = () => resolve(hostResult('started'))
         })
     )
-    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        productionEffectHost
+      />
+    )
 
     act(() => {
       publishProjectionEffectIntent({
@@ -718,7 +735,10 @@ describe('AvatarFireThunderLabOverlay', () => {
 
   it('deduplicates intents and ignores disabled or unmounted receivers', async () => {
     const enabled = render(
-      <AvatarFireThunderEffectLayer intentReceiverEnabled={true} />
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        productionEffectHost
+      />
     )
     const duplicate = {
       action: 'start' as const,
@@ -757,6 +777,36 @@ describe('AvatarFireThunderLabOverlay', () => {
     expect(mockLabController.start).not.toHaveBeenCalled()
   })
 
+  it('does not make a manual surface a production intent receiver', async () => {
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        productionEffectHost={false}
+      />
+    )
+
+    const layer = screen.getByTestId('avatar-fire-thunder-effect-layer')
+    expect(layer).toHaveAttribute('data-projection-effect-host-role', 'manual')
+    expect(layer).toHaveAttribute(
+      'data-projection-effect-receiver-state',
+      'inactive'
+    )
+
+    act(() => {
+      publishProjectionEffectIntent({
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000044',
+        turnId: 'turn-manual-surface',
+        action: 'start',
+        effectId: 'fire',
+      })
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(mockLabController.start).not.toHaveBeenCalled()
+  })
+
   it('reserves planned revisions before the queue and rejects duplicate, collision, and session mismatch', async () => {
     let resolvePlan!: () => void
     mockLabController.startPlan.mockImplementationOnce(
@@ -769,7 +819,12 @@ describe('AvatarFireThunderLabOverlay', () => {
             })
         })
     )
-    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        productionEffectHost
+      />
+    )
     const acceptedPlan = performancePlan()
 
     act(() => {
@@ -828,6 +883,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -862,7 +918,12 @@ describe('AvatarFireThunderLabOverlay', () => {
   it('rejects new and replayed live IDs at cap, then accepts after expiry', async () => {
     const now = jest.spyOn(Date, 'now').mockReturnValue(1_000)
     try {
-      render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
+      render(
+        <AvatarFireThunderEffectLayer
+          intentReceiverEnabled={true}
+          productionEffectHost
+        />
+      )
       const resetIntent = (index: number) => ({
         schemaVersion: 1 as const,
         eventId: `evt_${index.toString(16).padStart(32, '0')}`,
@@ -913,7 +974,12 @@ describe('AvatarFireThunderLabOverlay', () => {
           resolveFirst = () => resolve(hostResult('reset'))
         })
     )
-    render(<AvatarFireThunderEffectLayer intentReceiverEnabled={true} />)
+    render(
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        productionEffectHost
+      />
+    )
 
     act(() => {
       for (
@@ -991,6 +1057,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <AvatarFireThunderEffectLayer
         intentReceiverEnabled={true}
+        productionEffectHost
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -1045,7 +1112,10 @@ describe('AvatarFireThunderLabOverlay', () => {
         })
     )
     const mounted = render(
-      <AvatarFireThunderEffectLayer intentReceiverEnabled={true} />
+      <AvatarFireThunderEffectLayer
+        intentReceiverEnabled={true}
+        productionEffectHost
+      />
     )
     act(() => {
       publishProjectionEffectIntent({

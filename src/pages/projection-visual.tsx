@@ -32,6 +32,7 @@ import { useBrowserControlOwner } from '@/features/browserControl/useBrowserCont
 import { BrowserControlNotice } from '@/components/browserControlNotice'
 import {
   readProjectionVisualQueryFromPath,
+  PROJECTION_VISUAL_PRESENTATION_ORDER,
   resolveProjectionVisualQueryState,
 } from '@/utils/projectionVisualQuery'
 import { ProjectionVisualStimulusRefBridge } from '@/features/motionRuntime/projectionVisualStimulusRefBridge'
@@ -106,6 +107,7 @@ const ProjectionVisual = () => {
     shouldReceiveDisplayState,
     shouldRenderHud,
   } = resolveProjectionVisualQueryState(routeQuery)
+  const isProductionEffectHost = isStageOutputMode
   const captureOwnerOrigin = useMemo(() => {
     const value = router.query.captureOwnerOrigin
     return Array.isArray(value) ? value[0] : value
@@ -292,6 +294,13 @@ const ProjectionVisual = () => {
       data-projection-effect-id={projectionEffectId ?? 'none'}
       data-projection-effect-host-state={projectionEffectHostState}
       data-projection-effect-receiver-state={projectionEffectReceiverState}
+      data-projection-effect-host-role={
+        isProductionEffectHost ? 'production-stage' : 'non-production'
+      }
+      data-projection-presentation-order={PROJECTION_VISUAL_PRESENTATION_ORDER.join(
+        ' '
+      )}
+      data-projection-background-input="stage-root"
       data-projection-avatar-speech-motion={
         isDisplayOnlyMode && remoteSpeechOutputActive ? 'active' : 'idle'
       }
@@ -299,27 +308,31 @@ const ProjectionVisual = () => {
     >
       <Meta />
       <ProjectionVisualDisplayStateBridge mode={displayStateBridgeMode} />
-      {shouldRenderHud && (
-        <ProjectionVisualHud
-          variant={isDisplayOnlyMode ? 'passive' : 'operator'}
-        />
-      )}
-      {modelType === 'live2d' && isLive2DEnabled ? (
-        <Live2DViewer />
-      ) : modelType === 'pngtuber' ? (
-        <PNGTuberViewer />
-      ) : (
-        <VrmViewer
-          visualTestMode={projectionVisualTestMode}
-          motionStimulusAssetPath={motionStimulusAssetPath}
-          remoteSpeechOutputActive={
-            isDisplayOnlyMode ? remoteSpeechOutputActive : undefined
-          }
-          onDanceLifecycleAcceptanceReady={handleDanceLifecycleAcceptanceReady}
-        />
-      )}
+      <div
+        className="contents"
+        data-projection-presentation-layer="avatar"
+        data-testid="projection-visual-avatar-layer"
+      >
+        {modelType === 'live2d' && isLive2DEnabled ? (
+          <Live2DViewer />
+        ) : modelType === 'pngtuber' ? (
+          <PNGTuberViewer />
+        ) : (
+          <VrmViewer
+            visualTestMode={projectionVisualTestMode}
+            motionStimulusAssetPath={motionStimulusAssetPath}
+            remoteSpeechOutputActive={
+              isDisplayOnlyMode ? remoteSpeechOutputActive : undefined
+            }
+            onDanceLifecycleAcceptanceReady={
+              handleDanceLifecycleAcceptanceReady
+            }
+          />
+        )}
+      </div>
       <AvatarFireThunderEffectLayer
-        intentReceiverEnabled={isStageOutputMode}
+        intentReceiverEnabled={isProductionEffectHost}
+        productionEffectHost={isProductionEffectHost}
         onHostStateChange={setProjectionEffectHostState}
         onIntentReceiverStateChange={setProjectionEffectReceiverState}
       />
@@ -328,15 +341,26 @@ const ProjectionVisual = () => {
         stimulusRef={projectionVisualStimulusRef}
         acceptDanceLifecycleCandidate={danceLifecycleAcceptancePredicate}
       />
-      <ProjectionVisualAssistantBubble
-        variant={
-          isStageOutputMode
-            ? 'stage-output'
-            : isPassiveMode
-              ? 'passive'
-              : 'operator'
-        }
-      />
+      <div
+        className="contents"
+        data-projection-presentation-layer="speech-hud"
+        data-testid="projection-visual-speech-hud-layer"
+      >
+        <ProjectionVisualAssistantBubble
+          variant={
+            isStageOutputMode
+              ? 'stage-output'
+              : isPassiveMode
+                ? 'passive'
+                : 'operator'
+          }
+        />
+        {shouldRenderHud && (
+          <ProjectionVisualHud
+            variant={isDisplayOnlyMode ? 'passive' : 'operator'}
+          />
+        )}
+      </div>
       <ProjectionVisualCalibrationPanel
         enabled={!isDisplayOnlyMode && controlOwner.isOwner}
         framingEnabled={modelType === 'vrm'}

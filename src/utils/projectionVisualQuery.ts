@@ -6,6 +6,12 @@ import {
 type QueryValue = string | string[] | undefined
 export type ProjectionVisualMode = 'operator' | 'passive' | 'stage-output'
 export type ProjectionVisualTestMode = 'idle-neutral' | 'self-mirror-baseline'
+export const PROJECTION_VISUAL_PRESENTATION_ORDER = [
+  'background-input',
+  'avatar',
+  'effects',
+  'speech-hud',
+] as const
 
 export const HIDDEN_HUD_QUERY_VALUES = new Set([
   '0',
