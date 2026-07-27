@@ -632,8 +632,13 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
   it('waits for the Avatar execution receipt before completing a planned response', async () => {
     const channelHarness = installProjectionEffectChannel()
     const received: unknown[] = []
+    const lifecycle: string[] = []
+    const present = jest.fn(async () => {
+      lifecycle.push('present')
+    })
     const dispose = subscribeProjectionEffectIntents((intent) => {
       received.push(intent)
+      lifecycle.push('receipt')
       publishProjectionEffectExecutionReceipt({
         schemaVersion: 1,
         eventId: intent.eventId,
@@ -687,22 +692,21 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
     )
 
     await expect(
-      requestAcceptedPreparedSamplePresentation(
-        envelope,
-        jest.fn(async () => {}),
-        {
-          signal: new AbortController().signal,
-          deadlineMs: 30_000,
-        }
-      )
+      requestAcceptedPreparedSamplePresentation(envelope, present, {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      })
     ).resolves.toBeUndefined()
     expect(received).toEqual([plannedIntent])
+    expect(lifecycle).toEqual(['receipt', 'present'])
+    expect(present).toHaveBeenCalledTimes(1)
     dispose()
     channelHarness.restore()
   })
 
   it('fails fixed when Avatar rejects an otherwise valid planned response', async () => {
     const channelHarness = installProjectionEffectChannel()
+    const present = jest.fn(async () => {})
     const receive = jest.fn((intent: { eventId: string }) => {
       publishProjectionEffectExecutionReceipt({
         schemaVersion: 1,
@@ -742,18 +746,86 @@ describe('requestAcceptedPreparedSamplePresentation', () => {
     )
 
     await expect(
-      requestAcceptedPreparedSamplePresentation(
-        envelope,
-        jest.fn(async () => {}),
-        {
-          signal: new AbortController().signal,
-          deadlineMs: 30_000,
-        }
-      )
+      requestAcceptedPreparedSamplePresentation(envelope, present, {
+        signal: new AbortController().signal,
+        deadlineMs: 30_000,
+      })
     ).rejects.toThrow('accepted_prepared_sample_request_failed')
     expect(receive).toHaveBeenCalledTimes(1)
+    expect(present).not.toHaveBeenCalled()
     dispose()
     channelHarness.restore()
+  })
+
+  it('does not present when aborted immediately after the Projection receipt', async () => {
+    const channelHarness = installProjectionEffectChannel()
+    const controller = new AbortController()
+    const present = jest.fn(async () => {})
+    const removeEventListener = controller.signal.removeEventListener.bind(
+      controller.signal
+    )
+    const removeAbortListener = jest
+      .spyOn(controller.signal, 'removeEventListener')
+      .mockImplementation((type, listener, options) => {
+        removeEventListener(type, listener, options)
+        if (type === 'abort') controller.abort()
+      })
+    const receive = jest.fn((intent: { eventId: string }) => {
+      publishProjectionEffectExecutionReceipt({
+        schemaVersion: 1,
+        eventId: intent.eventId,
+        status: 'completed',
+        resultClass: 'started',
+      })
+    })
+    const dispose = subscribeProjectionEffectIntents(receive)
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'accepted.presentation.assistant_delta',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            delta: '炎を出します。',
+          },
+        },
+        {
+          type: 'accepted.presentation.projection_effect_intent',
+          data: {
+            conversation_attempt_ref: conversationAttemptRef,
+            intent: {
+              schemaVersion: 1,
+              eventId: 'evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              turnId: 'turn_projection_abort_after_receipt',
+              action: 'start',
+              effectId: 'fire',
+            },
+          },
+        },
+        {
+          type: 'accepted.presentation.completed',
+          data: { conversation_attempt_ref: conversationAttemptRef },
+        },
+      ])
+    )
+
+    try {
+      await expect(
+        requestAcceptedPreparedSamplePresentation(envelope, present, {
+          signal: controller.signal,
+          deadlineMs: 30_000,
+        })
+      ).rejects.toThrow('accepted_prepared_sample_request_failed')
+      expect(receive).toHaveBeenCalledTimes(1)
+      expect(removeAbortListener).toHaveBeenCalledWith(
+        'abort',
+        expect.any(Function)
+      )
+      expect(present).not.toHaveBeenCalled()
+    } finally {
+      removeAbortListener.mockRestore()
+      dispose()
+      channelHarness.restore()
+    }
   })
 
   it('waits for a rendered motion lifecycle and a 12-second no-late window', async () => {

@@ -1128,6 +1128,15 @@ export async function requestAcceptedPreparedSamplePresentation(
       reader.releaseLock()
     }
     if (!normalCompletion || options.signal.aborted) throw new Error()
+    for (const intent of projectionEffectIntents) {
+      const delivery = await deliverProjectionEffectIntent(intent, {
+        signal: options.signal,
+      })
+      if (!projectionEffectDeliverySucceeded(intent, delivery)) {
+        throw new Error()
+      }
+    }
+    if (options.signal.aborted) throw new Error()
     await presentAssistant(
       { conversationAttemptRef: expectedRef, assistantSpeech },
       options
@@ -1138,14 +1147,6 @@ export async function requestAcceptedPreparedSamplePresentation(
         motionEvent,
         options.signal
       )
-    }
-    for (const intent of projectionEffectIntents) {
-      const delivery = await deliverProjectionEffectIntent(intent, {
-        signal: options.signal,
-      })
-      if (!projectionEffectDeliverySucceeded(intent, delivery)) {
-        throw new Error()
-      }
     }
   } catch {
     throw new Error(ACCEPTED_PRESENTATION_FAILED)
