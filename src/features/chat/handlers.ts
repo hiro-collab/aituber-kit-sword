@@ -28,7 +28,14 @@ import {
 import {
   PREPARED_SAMPLE_PRESENTATION_TIMEOUT_MS,
   type AcceptedPreparedSamplePresentation,
+  type ThoughtCoreResponseMetadata,
 } from './thoughtCoreChat'
+import {
+  acknowledgeClosedLoopOutput,
+  closedLoopOutputFeedbackEnabled,
+  createClosedLoopOutputOnceState,
+  type ClosedLoopOutputOnceState,
+} from '@/features/closedLoop/closedLoopOutputFeedback'
 
 // セッションIDを生成する関数
 const generateSessionId = () => generateMessageId()
@@ -222,10 +229,12 @@ const extractSentence = (
 
 type AssistantSpeechLink = {
   assistantMessageId?: string
+  assistantSessionId?: string
   assistantTurnId?: string
   conversationAttemptRef?: string
   displayMessage?: string
   onComplete?: () => void
+  ttsFeedbackState?: ClosedLoopOutputOnceState
 }
 
 export type DirectSendAssistantContext = {
@@ -324,9 +333,11 @@ const handleSpeakAndStateUpdate = (
       emotion: emotion,
       motion: motionTag || undefined,
       sourceMessageId: speechLink.assistantMessageId,
+      sourceSessionId: speechLink.assistantSessionId,
       sourceTurnId: speechLink.assistantTurnId ?? sessionId,
       sourceConversationAttemptRef: speechLink.conversationAttemptRef,
       displayMessage: outputMessage,
+      closedLoopTtsFeedbackState: speechLink.ttsFeedbackState,
     },
     () => {
       hs.incrementChatProcessingCount()
@@ -683,13 +694,18 @@ export const processAIResponse = async (messages: Message[]) => {
 
   let stream
   let conversationAttemptRef: string | undefined
+  const responseMetadataQueue: ThoughtCoreResponseMetadata[] = []
+  const assistantTtsFeedbackState = createClosedLoopOutputOnceState()
 
   const currentSlideMessagesRef = { current: [] as string[] }
   const assistantMessageListRef = { current: [] as string[] }
 
   try {
     stream = await getAIChatResponseStream(messages, (metadata) => {
-      conversationAttemptRef = metadata.conversationAttemptRef
+      if (metadata.conversationAttemptRef) {
+        conversationAttemptRef = metadata.conversationAttemptRef
+      }
+      responseMetadataQueue.push(metadata)
     })
   } catch (e) {
     console.error(e)
@@ -715,6 +731,12 @@ export const processAIResponse = async (messages: Message[]) => {
   let currentThinkingContent = ''
   let hasSpeakBeenCalled = false
   let didStreamProcessingFail = false
+  let assistantSessionId: string | undefined
+  let assistantTurnId: string | undefined
+  let canonicalAssistantCorrelation:
+    | { sessionId: string; turnId: string; assistantMessageId: string }
+    | undefined
+  let displayAckAttempted = false
   const getCurrentAssistantMessageId = () => {
     if (currentMessageId === null) {
       currentMessageId = generateMessageId()
@@ -725,6 +747,63 @@ export const processAIResponse = async (messages: Message[]) => {
   try {
     while (true) {
       const { done, value } = await reader.read()
+      const responseMetadata = value ? responseMetadataQueue.shift() : undefined
+
+      if (value && closedLoopOutputFeedbackEnabled()) {
+        if (
+          !responseMetadata ||
+          !responseMetadata.sessionId ||
+          !responseMetadata.turnId ||
+          !responseMetadata.assistantMessageId
+        ) {
+          throw new Error('closed_loop_output_identity_missing')
+        }
+        const candidate = {
+          sessionId: responseMetadata.sessionId,
+          turnId: responseMetadata.turnId,
+          assistantMessageId: responseMetadata.assistantMessageId,
+        }
+        if (!canonicalAssistantCorrelation) {
+          if (!responseMetadata.displayBarrier) {
+            throw new Error('closed_loop_display_barrier_missing')
+          }
+          canonicalAssistantCorrelation = candidate
+        } else if (
+          canonicalAssistantCorrelation.sessionId !== candidate.sessionId ||
+          canonicalAssistantCorrelation.turnId !== candidate.turnId ||
+          canonicalAssistantCorrelation.assistantMessageId !==
+            candidate.assistantMessageId
+        ) {
+          throw new Error('closed_loop_output_identity_changed_mid_message')
+        }
+        if (
+          responseMetadata.displayBarrier &&
+          (responseMetadata.displayBarrier.sessionId !== candidate.sessionId ||
+            responseMetadata.displayBarrier.turnId !== candidate.turnId ||
+            responseMetadata.displayBarrier.assistantMessageId !==
+              candidate.assistantMessageId ||
+            responseMetadata.displayBarrier.channel !== 'display' ||
+            responseMetadata.displayBarrier.component !==
+              'aituber_message_store' ||
+            displayAckAttempted)
+        ) {
+          throw new Error('closed_loop_display_barrier_mismatch')
+        }
+        currentMessageId = candidate.assistantMessageId
+        assistantSessionId = candidate.sessionId
+        assistantTurnId = candidate.turnId
+      } else if (value && responseMetadata?.assistantMessageId) {
+        if (
+          currentMessageId &&
+          currentMessageId !== responseMetadata.assistantMessageId &&
+          currentMessageContent
+        ) {
+          throw new Error('closed_loop_output_identity_changed_mid_message')
+        }
+        currentMessageId = responseMetadata.assistantMessageId
+        assistantSessionId = responseMetadata.sessionId
+        assistantTurnId = responseMetadata.turnId
+      }
 
       if (value) {
         // 思考チャンクの検出（THINKING_MARKERプレフィックス）
@@ -765,6 +844,8 @@ export const processAIResponse = async (messages: Message[]) => {
                   thinking: currentThinkingContent,
                 }),
                 ...(conversationAttemptRef && { conversationAttemptRef }),
+                ...(assistantSessionId && { sessionId: assistantSessionId }),
+                ...(assistantTurnId && { turnId: assistantTurnId }),
               })
             }
           } else if (!isCodeBlock) {
@@ -779,8 +860,36 @@ export const processAIResponse = async (messages: Message[]) => {
                   thinking: currentThinkingContent,
                 }),
                 ...(conversationAttemptRef && { conversationAttemptRef }),
+                ...(assistantSessionId && { sessionId: assistantSessionId }),
+                ...(assistantTurnId && { turnId: assistantTurnId }),
               })
             }
+          }
+
+          if (responseMetadata?.displayBarrier) {
+            if (!currentMessageId || !currentMessageContent.trim()) {
+              throw new Error('closed_loop_display_store_update_missing')
+            }
+            homeStore.getState().upsertMessage({
+              id: currentMessageId,
+              ...(conversationAttemptRef && { conversationAttemptRef }),
+              ...(assistantSessionId && { sessionId: assistantSessionId }),
+              ...(assistantTurnId && { turnId: assistantTurnId }),
+            })
+            const stored = homeStore
+              .getState()
+              .chatLog.find((message) => message.id === currentMessageId)
+            if (
+              !stored ||
+              stored.role !== 'assistant' ||
+              stored.content !== currentMessageContent ||
+              stored.sessionId !== assistantSessionId ||
+              stored.turnId !== assistantTurnId
+            ) {
+              throw new Error('closed_loop_display_store_update_missing')
+            }
+            displayAckAttempted = true
+            await acknowledgeClosedLoopOutput(responseMetadata.displayBarrier)
           }
 
           // assistantMessage is now derived from chatLog, no need to set it separately
@@ -874,9 +983,11 @@ export const processAIResponse = async (messages: Message[]) => {
                     currentMotionTag || undefined,
                     {
                       assistantMessageId: getCurrentAssistantMessageId(),
-                      assistantTurnId: sessionId,
+                      assistantSessionId,
+                      assistantTurnId: assistantTurnId ?? sessionId,
                       conversationAttemptRef,
                       displayMessage: sentence,
+                      ttsFeedbackState: assistantTtsFeedbackState,
                     }
                   ) || hasSpeakBeenCalled
                 textToProcessBeforeCode = textAfterSentence
@@ -940,9 +1051,11 @@ export const processAIResponse = async (messages: Message[]) => {
                   currentMotionTag || undefined,
                   {
                     assistantMessageId: getCurrentAssistantMessageId(),
-                    assistantTurnId: sessionId,
+                    assistantSessionId,
+                    assistantTurnId: assistantTurnId ?? sessionId,
                     conversationAttemptRef,
                     displayMessage: sentence,
+                    ttsFeedbackState: assistantTtsFeedbackState,
                   }
                 ) || hasSpeakBeenCalled
               processableTextForSpeech = textAfterSentence
@@ -997,9 +1110,11 @@ export const processAIResponse = async (messages: Message[]) => {
                 currentMotionTag || undefined,
                 {
                   assistantMessageId: getCurrentAssistantMessageId(),
-                  assistantTurnId: sessionId,
+                  assistantSessionId,
+                  assistantTurnId: assistantTurnId ?? sessionId,
                   conversationAttemptRef,
                   displayMessage: finalTextAfterMotion,
+                  ttsFeedbackState: assistantTtsFeedbackState,
                 }
               ) || hasSpeakBeenCalled
           } else {
@@ -1054,6 +1169,8 @@ export const processAIResponse = async (messages: Message[]) => {
       content: currentMessageContent.trim(),
       ...(currentThinkingContent && { thinking: currentThinkingContent }),
       ...(conversationAttemptRef && { conversationAttemptRef }),
+      ...(assistantSessionId && { sessionId: assistantSessionId }),
+      ...(assistantTurnId && { turnId: assistantTurnId }),
     })
 
     // IndexedDBにアシスタントメッセージを保存

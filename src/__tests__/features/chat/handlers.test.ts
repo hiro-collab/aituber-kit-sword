@@ -814,5 +814,203 @@ describe('handlers', () => {
         expect.any(Function)
       )
     })
+
+    it('stores one canonical tuple before one display acknowledgement across buffered chunks and shares one TTS state', async () => {
+      const originalFetch = global.fetch
+      const originalEnabled =
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
+      global.fetch = jest.fn(async () => ({
+        ok: true,
+        json: async () => ({ ok: true, event_id: 'evt_display_ack' }),
+      })) as unknown as typeof fetch
+      let chatLog: Array<Record<string, unknown>> = []
+      const mockUpsertMessage = jest.fn((message: Record<string, unknown>) => {
+        const index = chatLog.findIndex((item) => item.id === message.id)
+        if (index >= 0) {
+          chatLog[index] = { ...chatLog[index], ...message }
+        } else {
+          chatLog.push({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+          })
+        }
+      })
+      const stream = new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue('閉ループ応答です。')
+          controller.enqueue('続きです。')
+          controller.close()
+        },
+      })
+      ;(settingsStore.getState as jest.Mock).mockReturnValue({
+        thinkingPoseEnabled: false,
+        modelType: 'live2d',
+      })
+      ;(homeStore.getState as jest.Mock).mockImplementation(() => ({
+        upsertMessage: mockUpsertMessage,
+        viewer: {},
+        chatLog,
+      }))
+      ;(getAIChatResponseStream as jest.Mock).mockImplementation(
+        async (_messages, onResponseMetadata) => {
+          onResponseMetadata?.({
+            sessionId: 'session_canonical_001',
+            turnId: 'turn_canonical_001',
+            assistantMessageId: 'msg_canonical_001',
+            displayBarrier: {
+              sessionId: 'session_canonical_001',
+              turnId: 'turn_canonical_001',
+              assistantMessageId: 'msg_canonical_001',
+              channel: 'display',
+              component: 'aituber_message_store',
+              sendEventId: 'evt_display_send',
+            },
+          })
+          onResponseMetadata?.({
+            sessionId: 'session_canonical_001',
+            turnId: 'turn_canonical_001',
+            assistantMessageId: 'msg_canonical_001',
+          })
+          return stream
+        }
+      )
+
+      try {
+        await processAIResponse([{ role: 'user', content: 'こんにちは' }])
+        expect(global.fetch).toHaveBeenCalledTimes(1)
+        expect(chatLog[0]).toEqual(
+          expect.objectContaining({
+            id: 'msg_canonical_001',
+            role: 'assistant',
+            content: '閉ループ応答です。続きです。',
+            sessionId: 'session_canonical_001',
+            turnId: 'turn_canonical_001',
+          })
+        )
+        expect(speakCharacter).toHaveBeenCalledTimes(2)
+        expect(speakCharacter).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            sourceMessageId: 'msg_canonical_001',
+            sourceSessionId: 'session_canonical_001',
+            sourceTurnId: 'turn_canonical_001',
+          }),
+          expect.any(Function),
+          expect.any(Function)
+        )
+        const firstTtsState = (speakCharacter as jest.Mock).mock.calls[0][1]
+          .closedLoopTtsFeedbackState
+        const secondTtsState = (speakCharacter as jest.Mock).mock.calls[1][1]
+          .closedLoopTtsFeedbackState
+        expect(firstTtsState).toBeDefined()
+        expect(secondTtsState).toBe(firstTtsState)
+      } finally {
+        global.fetch = originalFetch
+        if (originalEnabled === undefined) {
+          delete process.env
+            .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+        } else {
+          process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+            originalEnabled
+        }
+      }
+    })
+
+    it.each([
+      ['sessionId', 'session_changed_002'],
+      ['turnId', 'turn_changed_002'],
+      ['assistantMessageId', 'msg_changed_002'],
+    ] as const)(
+      'rejects a buffered metadata item whose canonical %s changes before appending it',
+      async (changedField, changedValue) => {
+        const originalFetch = global.fetch
+        const originalEnabled =
+          process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+          '1'
+        global.fetch = jest.fn(async () => ({
+          ok: true,
+          json: async () => ({ ok: true, event_id: 'evt_display_ack' }),
+        })) as unknown as typeof fetch
+        let chatLog: Array<Record<string, unknown>> = []
+        const mockUpsertMessage = jest.fn(
+          (message: Record<string, unknown>) => {
+            const index = chatLog.findIndex((item) => item.id === message.id)
+            if (index >= 0) {
+              chatLog[index] = { ...chatLog[index], ...message }
+            } else {
+              chatLog.push({ ...message })
+            }
+          }
+        )
+        const stream = new ReadableStream<string>({
+          start(controller) {
+            controller.enqueue('最初です。')
+            controller.enqueue('追加してはいけません。')
+            controller.close()
+          },
+        })
+        ;(settingsStore.getState as jest.Mock).mockReturnValue({
+          thinkingPoseEnabled: false,
+          modelType: 'live2d',
+        })
+        ;(homeStore.getState as jest.Mock).mockImplementation(() => ({
+          upsertMessage: mockUpsertMessage,
+          viewer: {},
+          chatLog,
+        }))
+        ;(getAIChatResponseStream as jest.Mock).mockImplementation(
+          async (_messages, onResponseMetadata) => {
+            onResponseMetadata?.({
+              sessionId: 'session_canonical_001',
+              turnId: 'turn_canonical_001',
+              assistantMessageId: 'msg_canonical_001',
+              displayBarrier: {
+                sessionId: 'session_canonical_001',
+                turnId: 'turn_canonical_001',
+                assistantMessageId: 'msg_canonical_001',
+                channel: 'display',
+                component: 'aituber_message_store',
+                sendEventId: 'evt_display_send',
+              },
+            })
+            onResponseMetadata?.({
+              sessionId:
+                changedField === 'sessionId'
+                  ? changedValue
+                  : 'session_canonical_001',
+              turnId:
+                changedField === 'turnId' ? changedValue : 'turn_canonical_001',
+              assistantMessageId:
+                changedField === 'assistantMessageId'
+                  ? changedValue
+                  : 'msg_canonical_001',
+            })
+            return stream
+          }
+        )
+
+        try {
+          await processAIResponse([{ role: 'user', content: 'こんにちは' }])
+          const assistant = chatLog.find(
+            (message) => message.id === 'msg_canonical_001'
+          )
+          expect(assistant?.content).toBe('最初です。')
+          expect(global.fetch).toHaveBeenCalledTimes(1)
+          expect(speakCharacter).toHaveBeenCalledTimes(1)
+        } finally {
+          global.fetch = originalFetch
+          if (originalEnabled === undefined) {
+            delete process.env
+              .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+          } else {
+            process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+              originalEnabled
+          }
+        }
+      }
+    )
   })
 })

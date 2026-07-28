@@ -16,6 +16,12 @@ import {
   type ProjectionEffectDeliveryResult,
   type ProjectionEffectIntent,
 } from '@/features/projectionEffects/projectionEffectIntent'
+import {
+  beginClosedLoopOutput,
+  closedLoopOutputFeedbackEnabled,
+  type ClosedLoopOutputBarrier,
+  type ClosedLoopOutputCorrelation,
+} from '@/features/closedLoop/closedLoopOutputFeedback'
 
 type ThoughtCoreErrorCause = {
   errorCode?: string
@@ -26,6 +32,10 @@ type JsonRecord = Record<string, unknown>
 
 export type ThoughtCoreResponseMetadata = {
   conversationAttemptRef?: string
+  sessionId?: string
+  turnId?: string
+  assistantMessageId?: string
+  displayBarrier?: ClosedLoopOutputBarrier | null
 }
 
 export type AcceptedPreparedSamplePresentation = {
@@ -58,6 +68,14 @@ const ACCEPTED_PRESENTATION_ASSISTANT_EVENT =
 const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
 const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
 const PROJECTION_EFFECT_DELIVERY_FAILED = 'projection_effect_delivery_failed'
+const CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED = 'closed_loop_output_feedback_failed'
+
+const outputDeliveryFailure = (error: unknown): string | null =>
+  error instanceof Error &&
+  (error.message === PROJECTION_EFFECT_DELIVERY_FAILED ||
+    error.message === CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
+    ? error.message
+    : null
 const ACCEPTED_PRESENTATION_MOTION_POLL_INTERVAL_MS = 100
 const ACCEPTED_PRESENTATION_NO_LATE_MOTION_MS = 12_000
 
@@ -1190,7 +1208,7 @@ export async function getThoughtCoreChatResponseStream(
     return new ReadableStream({
       async start(controller) {
         let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
-        let projectionDeliveryFailed = false
+        let outputDeliveryFailed = false
         try {
           if (!response.body) {
             throw new Error('API response from Thought Core is empty', {
@@ -1203,6 +1221,9 @@ export async function getThoughtCoreChatResponseStream(
           const decoder = new TextDecoder('utf-8')
           let buffer = ''
           const deliveredProjectionIntents = new Map<string, string>()
+          let canonicalAssistantCorrelation: ClosedLoopOutputCorrelation | null =
+            null
+          let displayBarrier: ClosedLoopOutputBarrier | null = null
 
           while (true) {
             const { done, value } = await reader.read()
@@ -1227,15 +1248,6 @@ export async function getThoughtCoreChatResponseStream(
                   event?.data && typeof event.data === 'object'
                     ? event.data
                     : {}
-
-                if (eventType.startsWith('assistant.')) {
-                  const conversationAttemptRef = safeConversationAttemptRef(
-                    data.conversation_attempt_ref
-                  )
-                  if (conversationAttemptRef) {
-                    onResponseMetadata?.({ conversationAttemptRef })
-                  }
-                }
 
                 if (eventType === THOUGHT_CORE_MOTION_REQUEST_EVENT) {
                   dispatchThoughtCoreMotionStimulus(event)
@@ -1268,11 +1280,61 @@ export async function getThoughtCoreChatResponseStream(
                   eventType === 'assistant.speech_delta' &&
                   typeof data.delta === 'string'
                 ) {
+                  const conversationAttemptRef = safeConversationAttemptRef(
+                    data.conversation_attempt_ref
+                  )
+                  if (closedLoopOutputFeedbackEnabled()) {
+                    const sessionId =
+                      typeof event.session_id === 'string'
+                        ? event.session_id
+                        : ''
+                    const turnId =
+                      typeof event.turn_id === 'string' ? event.turn_id : ''
+                    const assistantMessageId =
+                      typeof data.assistant_message_id === 'string'
+                        ? data.assistant_message_id
+                        : ''
+                    const correlation = {
+                      sessionId,
+                      turnId,
+                      assistantMessageId,
+                    }
+                    const previousCorrelation = canonicalAssistantCorrelation
+                    const isFirstCorrelatedChunk = previousCorrelation === null
+                    if (!previousCorrelation) {
+                      displayBarrier = await beginClosedLoopOutput(
+                        correlation,
+                        'display'
+                      )
+                      canonicalAssistantCorrelation = correlation
+                    } else if (
+                      previousCorrelation.sessionId !== sessionId ||
+                      previousCorrelation.turnId !== turnId ||
+                      previousCorrelation.assistantMessageId !==
+                        assistantMessageId
+                    ) {
+                      throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
+                    }
+                    onResponseMetadata?.({
+                      ...(conversationAttemptRef
+                        ? { conversationAttemptRef }
+                        : {}),
+                      sessionId,
+                      turnId,
+                      assistantMessageId,
+                      ...(isFirstCorrelatedChunk ? { displayBarrier } : {}),
+                    })
+                  } else if (conversationAttemptRef) {
+                    onResponseMetadata?.({ conversationAttemptRef })
+                  }
                   controller.enqueue(data.delta)
                 } else if (
                   eventType === 'feedback.requested' &&
                   typeof data.speech === 'string'
                 ) {
+                  if (closedLoopOutputFeedbackEnabled()) {
+                    throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
+                  }
                   controller.enqueue(data.speech)
                 } else if (eventType === 'turn.error') {
                   throw new Error(
@@ -1282,10 +1344,7 @@ export async function getThoughtCoreChatResponseStream(
                   )
                 }
               } catch (error) {
-                if (
-                  error instanceof Error &&
-                  error.message === PROJECTION_EFFECT_DELIVERY_FAILED
-                ) {
+                if (outputDeliveryFailure(error)) {
                   throw error
                 }
                 console.error('Error parsing Thought Core SSE:', error)
@@ -1294,18 +1353,16 @@ export async function getThoughtCoreChatResponseStream(
           }
         } catch (error) {
           if (outputCancelled) return
-          if (
-            error instanceof Error &&
-            error.message === PROJECTION_EFFECT_DELIVERY_FAILED
-          ) {
-            projectionDeliveryFailed = true
+          const deliveryFailure = outputDeliveryFailure(error)
+          if (deliveryFailure) {
+            outputDeliveryFailed = true
             projectionDeliveryAbortController.abort()
             try {
-              await reader?.cancel(PROJECTION_EFFECT_DELIVERY_FAILED)
+              await reader?.cancel(deliveryFailure)
             } catch {
               // The public stream error below is the sole fixed failure surface.
             }
-            controller.error(new Error(PROJECTION_EFFECT_DELIVERY_FAILED))
+            controller.error(new Error(deliveryFailure))
             return
           }
           console.error('Error fetching Thought Core API response:', error)
@@ -1316,7 +1373,7 @@ export async function getThoughtCoreChatResponseStream(
             tag: 'thought-core-api-error',
           })
         } finally {
-          if (!outputCancelled && !projectionDeliveryFailed) {
+          if (!outputCancelled && !outputDeliveryFailed) {
             controller.close()
           }
           if (reader) {

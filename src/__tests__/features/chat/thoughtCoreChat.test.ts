@@ -2294,6 +2294,196 @@ describe('getThoughtCoreChatResponseStream conversation attempt metadata', () =>
     })
   })
 
+  it('preserves one canonical Thought Core tuple and prepares one display chain across multiple deltas', async () => {
+    const originalEnabled =
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+    process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
+    const onResponseMetadata = jest.fn()
+    const feedbackEventIds = ['evt_display_intent', 'evt_display_send']
+    ;(global.fetch as jest.Mock).mockImplementation(
+      async (input: RequestInfo | URL) => {
+        if (String(input) === '/api/thoughtCoreChat/') {
+          return createSseResponse([
+            {
+              type: 'assistant.speech_delta',
+              session_id: 'session_canonical_001',
+              turn_id: 'turn_canonical_001',
+              data: {
+                delta: '応答します。',
+                conversation_attempt_ref: conversationAttemptRef,
+                assistant_message_id: 'msg_canonical_001',
+              },
+            },
+            {
+              type: 'assistant.speech_delta',
+              session_id: 'session_canonical_001',
+              turn_id: 'turn_canonical_001',
+              data: {
+                delta: '続けます。',
+                assistant_message_id: 'msg_canonical_001',
+              },
+            },
+          ])
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            event_id: feedbackEventIds.shift(),
+          }),
+        } as Response
+      }
+    )
+
+    try {
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: 'こんにちは' } as any],
+        '',
+        'session-bridge',
+        onResponseMetadata
+      )
+      await expect(readTextStream(stream)).resolves.toBe(
+        '応答します。続けます。'
+      )
+      expect(onResponseMetadata).toHaveBeenCalledTimes(2)
+      expect(onResponseMetadata).toHaveBeenNthCalledWith(1, {
+        conversationAttemptRef,
+        sessionId: 'session_canonical_001',
+        turnId: 'turn_canonical_001',
+        assistantMessageId: 'msg_canonical_001',
+        displayBarrier: {
+          sessionId: 'session_canonical_001',
+          turnId: 'turn_canonical_001',
+          assistantMessageId: 'msg_canonical_001',
+          channel: 'display',
+          component: 'aituber_message_store',
+          sendEventId: 'evt_display_send',
+        },
+      })
+      expect(onResponseMetadata).toHaveBeenNthCalledWith(2, {
+        sessionId: 'session_canonical_001',
+        turnId: 'turn_canonical_001',
+        assistantMessageId: 'msg_canonical_001',
+      })
+      expect((global.fetch as jest.Mock).mock.calls).toHaveLength(3)
+    } finally {
+      if (originalEnabled === undefined) {
+        delete process.env
+          .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      } else {
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+          originalEnabled
+      }
+    }
+  })
+
+  it.each([
+    ['session_id', 'session_changed_002'],
+    ['turn_id', 'turn_changed_002'],
+    ['assistant_message_id', 'msg_changed_002'],
+  ] as const)(
+    'rejects a later assistant delta whose canonical %s changes without opening another display chain',
+    async (changedField, changedValue) => {
+      const originalEnabled =
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
+      const secondEvent = {
+        type: 'assistant.speech_delta',
+        session_id: 'session_canonical_001',
+        turn_id: 'turn_canonical_001',
+        data: {
+          delta: '不一致です。',
+          assistant_message_id: 'msg_canonical_001',
+        },
+      }
+      if (changedField === 'assistant_message_id') {
+        secondEvent.data.assistant_message_id = changedValue
+      } else {
+        secondEvent[changedField] = changedValue
+      }
+      const feedbackEventIds = ['evt_display_intent', 'evt_display_send']
+      ;(global.fetch as jest.Mock).mockImplementation(
+        async (input: RequestInfo | URL) => {
+          if (String(input) === '/api/thoughtCoreChat/') {
+            return createSseResponse([
+              {
+                type: 'assistant.speech_delta',
+                session_id: 'session_canonical_001',
+                turn_id: 'turn_canonical_001',
+                data: {
+                  delta: '最初です。',
+                  assistant_message_id: 'msg_canonical_001',
+                },
+              },
+              secondEvent,
+            ])
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              event_id: feedbackEventIds.shift(),
+            }),
+          } as Response
+        }
+      )
+
+      try {
+        const stream = await getThoughtCoreChatResponseStream(
+          [{ content: 'こんにちは' } as any],
+          '',
+          'session-bridge'
+        )
+        await expect(readTextStream(stream)).rejects.toThrow(
+          'closed_loop_output_feedback_failed'
+        )
+        expect(global.fetch).toHaveBeenCalledTimes(3)
+      } finally {
+        if (originalEnabled === undefined) {
+          delete process.env
+            .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+        } else {
+          process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+            originalEnabled
+        }
+      }
+    }
+  )
+
+  it('fails closed instead of streaming an uncorrelated feedback speech when output feedback is enabled', async () => {
+    const originalEnabled =
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+    process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
+    ;(global.fetch as jest.Mock).mockResolvedValue(
+      createSseResponse([
+        {
+          type: 'feedback.requested',
+          data: { speech: 'もう一度確認します' },
+        },
+      ])
+    )
+
+    try {
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: 'こんにちは' } as any],
+        '',
+        'session-bridge'
+      )
+      await expect(readTextStream(stream)).rejects.toThrow(
+        'closed_loop_output_feedback_failed'
+      )
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+    } finally {
+      if (originalEnabled === undefined) {
+        delete process.env
+          .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      } else {
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+          originalEnabled
+      }
+    }
+  })
+
   it.each([
     undefined,
     'raw-private-marker',

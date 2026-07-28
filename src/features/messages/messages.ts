@@ -1,3 +1,5 @@
+import type { ClosedLoopOutputOnceState } from '@/features/closedLoop/closedLoopOutputFeedback'
+
 export type Message = {
   id?: string
   role: string // "assistant" | "system" | "user";
@@ -10,6 +12,7 @@ export type Message = {
   userName?: string // YouTubeコメント主名
   thinking?: string // 推論/思考内容（UI表示・永続化用、LLMには送信しない）
   conversationAttemptRef?: string
+  sessionId?: string
   turnId?: string
 }
 
@@ -29,9 +32,11 @@ export type Talk = {
   buffer?: ArrayBuffer
   motion?: string
   sourceMessageId?: string
+  sourceSessionId?: string
   sourceTurnId?: string
   sourceConversationAttemptRef?: string
   displayMessage?: string
+  closedLoopTtsFeedbackState?: ClosedLoopOutputOnceState
 }
 
 export const splitSentence = (text: string): string[] => {

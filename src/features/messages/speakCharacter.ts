@@ -30,9 +30,41 @@ import {
   writeWindowSpeechOutputDisplayState,
   writeWindowSpeechOutputSummary,
 } from '@/utils/speechOutputParitySummary'
+import {
+  acknowledgeClosedLoopOutputOnce,
+  beginClosedLoopOutputOnce,
+  closedLoopOutputFeedbackEnabled,
+  rejectClosedLoopOutputOnce,
+  type ClosedLoopOutputBarrier,
+} from '@/features/closedLoop/closedLoopOutputFeedback'
 
 const speakQueue = SpeakQueue.getInstance()
 const systemSpeechLifecycle = createSystemSpeechLifecycleController()
+
+const beginTtsOutputBarrier = async (
+  talk: Talk
+): Promise<ClosedLoopOutputBarrier | null> => {
+  if (!closedLoopOutputFeedbackEnabled()) return null
+  const hasCorrelation = Boolean(
+    talk.sourceSessionId || talk.sourceTurnId || talk.sourceMessageId
+  )
+  if (!hasCorrelation) return null
+  if (!talk.sourceSessionId || !talk.sourceTurnId || !talk.sourceMessageId) {
+    throw new Error('closed_loop_output_feedback_failed')
+  }
+  if (!talk.closedLoopTtsFeedbackState) {
+    throw new Error('closed_loop_output_feedback_failed')
+  }
+  return beginClosedLoopOutputOnce(
+    talk.closedLoopTtsFeedbackState,
+    {
+      sessionId: talk.sourceSessionId,
+      turnId: talk.sourceTurnId,
+      assistantMessageId: talk.sourceMessageId,
+    },
+    'tts'
+  )
+}
 
 export function preprocessMessage(
   message: string,
@@ -306,6 +338,8 @@ const createSpeakCharacter = () => {
         }
       }
 
+      const ttsFeedbackState = talk.closedLoopTtsFeedbackState
+      const ttsBarrier = await beginTtsOutputBarrier(talk)
       let buffer
       try {
         if (talk.message == '' && talk.buffer) {
@@ -319,14 +353,23 @@ const createSpeakCharacter = () => {
         }
       } catch (error) {
         handleTTSError(error, ss.selectVoice)
-        return null
+        if (ttsFeedbackState) {
+          await rejectClosedLoopOutputOnce(ttsFeedbackState, ttsBarrier)
+        }
+        throw error
       } finally {
         lastTime = Date.now()
       }
 
       // 合成開始前に取得した initialToken をそのまま保持する
       const tokenAtStart = initialToken
-      return { buffer, isNeedDecode, tokenAtStart }
+      return {
+        buffer,
+        isNeedDecode,
+        tokenAtStart,
+        ttsBarrier,
+        ttsFeedbackState,
+      }
     })
 
     prevFetchPromise = processAndSynthesizePromise.catch((err) => {
@@ -336,8 +379,14 @@ const createSpeakCharacter = () => {
     })
 
     processAndSynthesizePromise
-      .then((result) => {
+      .then(async (result) => {
         if (!result || !result.buffer || result.buffer.byteLength === 0) {
+          if (result?.ttsFeedbackState) {
+            await rejectClosedLoopOutputOnce(
+              result.ttsFeedbackState,
+              result.ttsBarrier
+            )
+          }
           if (onComplete && !called) {
             called = true
             onComplete()
@@ -347,6 +396,12 @@ const createSpeakCharacter = () => {
 
         // Stop ボタン後に生成された音声でないか確認
         if (result.tokenAtStart !== SpeakQueue.currentStopToken) {
+          if (result.ttsFeedbackState) {
+            await rejectClosedLoopOutputOnce(
+              result.ttsFeedbackState,
+              result.ttsBarrier
+            )
+          }
           // 生成中に Stop された => 破棄
           if (onComplete && !called) {
             called = true
@@ -374,6 +429,12 @@ const createSpeakCharacter = () => {
         }
 
         try {
+          if (result.ttsFeedbackState) {
+            await acknowledgeClosedLoopOutputOnce(
+              result.ttsFeedbackState,
+              result.ttsBarrier
+            )
+          }
           const queueResult = speakQueue.addTask({
             sessionId,
             audioBuffer: result.buffer,
