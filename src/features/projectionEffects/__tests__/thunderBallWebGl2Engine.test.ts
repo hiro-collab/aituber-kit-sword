@@ -15,6 +15,8 @@ import {
   resolveThunderWebGl2BlurOracle,
   resolveThunderWebGl2CompositeOracle,
   resolveThunderWebGl2RawOracle,
+  resolveThunderWebGl2StraightPresentationOracle,
+  THUNDER_WEBGL2_BLOOM_FRAGMENT_SHADER,
   THUNDER_WEBGL2_BLUR_FRAGMENT_SHADER,
   THUNDER_WEBGL2_FULLSCREEN_VERTEX_SHADER,
   THUNDER_WEBGL2_RIBBON_FRAGMENT_SHADER,
@@ -301,6 +303,67 @@ describe('Thunder Ball WebGL2 engine', () => {
       feedbackIndex: 1,
       resources: { total: THUNDER_WEBGL2_MAX_RESOURCE_COUNT },
     })
+    expect(
+      fake.uniform1f.mock.calls
+        .filter(([location]) => location?.name === 'uStraightAlphaPresentation')
+        .map(([, value]) => value)
+    ).toEqual([0, 1])
+  })
+
+  it('unassociates presentation RGB exactly once for the straight-alpha browser boundary', () => {
+    const transparent = resolveThunderWebGl2StraightPresentationOracle({
+      red: 0,
+      green: 0,
+      blue: 0,
+      alpha: 0,
+    })
+    const internal = {
+      red: 0.03,
+      green: 0.06,
+      blue: 0.09,
+      alpha: 0.12,
+    }
+    const presented = resolveThunderWebGl2StraightPresentationOracle(internal)
+
+    expect(transparent).toEqual({ red: 0, green: 0, blue: 0, alpha: 0 })
+    expect(presented).toEqual({
+      red: 0.25,
+      green: 0.5,
+      blue: 0.75,
+      alpha: 0.12,
+    })
+    expect(
+      sourceOver(
+        [presented.red, presented.green, presented.blue, presented.alpha],
+        [0, 1, 0]
+      )
+    ).toEqual([internal.red, internal.green + 0.88, internal.blue])
+    const highEnergy = {
+      red: 0.18,
+      green: 0.42,
+      blue: 0.76,
+      alpha: 0.64,
+    }
+    const highEnergyPresented =
+      resolveThunderWebGl2StraightPresentationOracle(highEnergy)
+    expect(highEnergyPresented.alpha).toBe(0.76)
+    expect(
+      sourceOver(
+        [
+          highEnergyPresented.red,
+          highEnergyPresented.green,
+          highEnergyPresented.blue,
+          highEnergyPresented.alpha,
+        ],
+        [0, 0, 0]
+      )
+    ).toEqual([highEnergy.red, highEnergy.green, highEnergy.blue])
+    expect(THUNDER_WEBGL2_BLOOM_FRAGMENT_SHADER).toContain(
+      'uStraightAlphaPresentation'
+    )
+    expect(THUNDER_WEBGL2_BLOOM_FRAGMENT_SHADER).toContain(
+      'color / outputAlpha'
+    )
   })
 
   it('advances temporal history only after direct presentation succeeds', () => {

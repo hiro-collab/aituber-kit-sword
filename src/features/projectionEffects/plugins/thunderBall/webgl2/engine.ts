@@ -528,6 +528,10 @@ export class ThunderBallWebGl2Engine {
       gl.getUniformLocation(program, 'uGamma'),
       clamp(tone.gamma, 0.1, 4)
     )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uStraightAlphaPresentation'),
+      0
+    )
     const glowColor = tone.glowColor ?? [0.12, 0.84, 1]
     gl.uniform3f(
       gl.getUniformLocation(program, 'uGlowColor'),
@@ -576,6 +580,10 @@ export class ThunderBallWebGl2Engine {
     gl.uniform1f(gl.getUniformLocation(program, 'uIntensity'), 0)
     gl.uniform1f(gl.getUniformLocation(program, 'uContrast'), 1)
     gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), 1)
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uStraightAlphaPresentation'),
+      1
+    )
     gl.uniform3f(gl.getUniformLocation(program, 'uGlowColor'), 0, 0, 0)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }

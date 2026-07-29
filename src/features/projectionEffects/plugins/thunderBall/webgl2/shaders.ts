@@ -63,6 +63,7 @@ uniform float uInputLevel;
 uniform float uIntensity;
 uniform float uContrast;
 uniform float uGamma;
+uniform float uStraightAlphaPresentation;
 uniform vec3 uGlowColor;
 out vec4 outColor;
 
@@ -96,7 +97,16 @@ void main() {
   bloom += originalRamp(luma) * max(uRampLevel, 0.0);
   vec3 color = rawColor.rgb * max(uInputLevel, 0.0) + bloom;
   float alpha = clamp(max(rawColor.a * max(uInputLevel, 0.0), luma), 0.0, 1.0);
-  outColor = vec4(color, alpha);
+  vec3 outputRgb = color;
+  float outputAlpha = alpha;
+  if (uStraightAlphaPresentation > 0.5) {
+    float colorCoverage = clamp(max(max(color.r, color.g), color.b), 0.0, 1.0);
+    outputAlpha = max(alpha, colorCoverage);
+    outputRgb = outputAlpha > 0.000001
+      ? clamp(color / outputAlpha, vec3(0.0), vec3(1.0))
+      : vec3(0.0);
+  }
+  outColor = vec4(outputRgb, outputAlpha);
 }
 `
 
@@ -179,6 +189,16 @@ export interface ThunderWebGl2RawOracleResult {
   alpha: number
 }
 
+export interface ThunderWebGl2StraightPresentationOracleInput {
+  red: number
+  green: number
+  blue: number
+  alpha: number
+}
+
+export type ThunderWebGl2StraightPresentationOracleResult =
+  ThunderWebGl2StraightPresentationOracleInput
+
 export function resolveThunderWebGl2RawOracle(
   input: Readonly<ThunderWebGl2RawOracleInput>
 ): Readonly<ThunderWebGl2RawOracleResult> {
@@ -191,6 +211,27 @@ export function resolveThunderWebGl2RawOracle(
     green: sourceEnergy,
     blue: sourceEnergy,
     alpha: sourceEnergy,
+  })
+}
+
+export function resolveThunderWebGl2StraightPresentationOracle(
+  input: Readonly<ThunderWebGl2StraightPresentationOracleInput>
+): Readonly<ThunderWebGl2StraightPresentationOracleResult> {
+  if (!Object.values(input).every(Number.isFinite)) {
+    return Object.freeze({ red: 0, green: 0, blue: 0, alpha: 0 })
+  }
+  const alpha = Math.max(
+    clamp(input.alpha, 0, 1),
+    clamp(Math.max(input.red, input.green, input.blue), 0, 1)
+  )
+  if (alpha <= 0.000001) {
+    return Object.freeze({ red: 0, green: 0, blue: 0, alpha: 0 })
+  }
+  return Object.freeze({
+    red: clamp(input.red / alpha, 0, 1),
+    green: clamp(input.green / alpha, 0, 1),
+    blue: clamp(input.blue / alpha, 0, 1),
+    alpha,
   })
 }
 
