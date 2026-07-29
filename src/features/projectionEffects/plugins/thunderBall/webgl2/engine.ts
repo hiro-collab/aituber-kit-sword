@@ -198,7 +198,7 @@ export class ThunderBallWebGl2Engine {
         targets.raw.texture,
         previousBlur,
         targets.bloom.framebuffer,
-        clamp(frame.tone.bloomGain, 0, 2)
+        frame.tone
       )
       this.assertGpuBoundary(activeStage)
 
@@ -211,8 +211,8 @@ export class ThunderBallWebGl2Engine {
         targets.bloom.texture,
         historyRead.texture,
         historyWrite,
-        clamp(frame.tone.feedback, 0, 0.82),
-        clamp(frame.tone.exposure, 0.5, 2),
+        clamp(frame.tone.feedback, 0, 0.9999),
+        clamp(frame.tone.exposure, 0, 2),
         clamp(frame.tone.gamma, 0.6, 1.4)
       )
       this.assertGpuBoundary(activeStage)
@@ -491,7 +491,7 @@ export class ThunderBallWebGl2Engine {
     raw: WebGLTexture,
     blurred: WebGLTexture,
     target: WebGLFramebuffer,
-    bloomGain: number
+    tone: Readonly<ThunderWebGl2EngineFrame['tone']>
   ): void {
     const gl = this.gl as WebGL2RenderingContext
     const program = (this.programs as ThunderPrograms).bloom
@@ -500,7 +500,41 @@ export class ThunderBallWebGl2Engine {
     gl.bindVertexArray(this.fullscreenVao)
     bindTexture(gl, program, 'uRaw', raw, 0)
     bindTexture(gl, program, 'uBlurred', blurred, 1)
-    gl.uniform1f(gl.getUniformLocation(program, 'uBloomGain'), bloomGain)
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uBloomGain'),
+      clamp(tone.bloomGain, 0, 2)
+    )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uGlowLevel'),
+      clamp(tone.glowLevel ?? 0.693, 0, 4)
+    )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uRampLevel'),
+      clamp(tone.rampLevel ?? 0.788, 0, 4)
+    )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uInputLevel'),
+      clamp(tone.inputLevel ?? 1, 0, 4)
+    )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uIntensity'),
+      clamp(tone.intensity ?? tone.exposure, 0, 2)
+    )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uContrast'),
+      clamp(tone.contrast ?? 1, 0, 4)
+    )
+    gl.uniform1f(
+      gl.getUniformLocation(program, 'uGamma'),
+      clamp(tone.gamma, 0.1, 4)
+    )
+    const glowColor = tone.glowColor ?? [0.12, 0.84, 1]
+    gl.uniform3f(
+      gl.getUniformLocation(program, 'uGlowColor'),
+      clamp(glowColor[0], 0, 4),
+      clamp(glowColor[1], 0, 4),
+      clamp(glowColor[2], 0, 4)
+    )
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
@@ -536,6 +570,13 @@ export class ThunderBallWebGl2Engine {
     bindTexture(gl, program, 'uRaw', temporal, 0)
     bindTexture(gl, program, 'uBlurred', temporal, 1)
     gl.uniform1f(gl.getUniformLocation(program, 'uBloomGain'), 0)
+    gl.uniform1f(gl.getUniformLocation(program, 'uGlowLevel'), 0)
+    gl.uniform1f(gl.getUniformLocation(program, 'uRampLevel'), 0)
+    gl.uniform1f(gl.getUniformLocation(program, 'uInputLevel'), 1)
+    gl.uniform1f(gl.getUniformLocation(program, 'uIntensity'), 0)
+    gl.uniform1f(gl.getUniformLocation(program, 'uContrast'), 1)
+    gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), 1)
+    gl.uniform3f(gl.getUniformLocation(program, 'uGlowColor'), 0, 0, 0)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
@@ -867,10 +908,19 @@ function isBoundedTone(
     boundedFinite(tone.coreLuminance, 0, 4) &&
     boundedFinite(tone.haloLuminance, 0, 2) &&
     boundedFinite(tone.bloomGain, 0, 2) &&
-    boundedFinite(tone.exposure, 0.5, 2) &&
+    boundedFinite(tone.exposure, 0, 2) &&
     boundedFinite(tone.gamma, 0.6, 1.4) &&
-    boundedFinite(tone.feedback, 0, 0.82) &&
-    boundedFinite(tone.pulse, 0, 1)
+    boundedFinite(tone.feedback, 0, 0.9999) &&
+    boundedFinite(tone.pulse, 0, 1) &&
+    optionalBoundedFinite(tone.contrast, 0, 4) &&
+    optionalBoundedFinite(tone.glowLevel, 0, 4) &&
+    optionalBoundedFinite(tone.inputLevel, 0, 4) &&
+    optionalBoundedFinite(tone.intensity, 0, 2) &&
+    optionalBoundedFinite(tone.rampLevel, 0, 4) &&
+    (tone.glowColor === undefined ||
+      (Array.isArray(tone.glowColor) &&
+        tone.glowColor.length === 3 &&
+        tone.glowColor.every((value) => boundedFinite(value, 0, 4))))
   )
 }
 
@@ -960,6 +1010,14 @@ function boundedFinite(
     value >= minimum &&
     value <= maximum
   )
+}
+
+function optionalBoundedFinite(
+  value: number | undefined,
+  minimum: number,
+  maximum: number
+): boolean {
+  return value === undefined || boundedFinite(value, minimum, maximum)
 }
 
 function flattenRibbon(

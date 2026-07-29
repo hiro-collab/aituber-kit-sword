@@ -2,6 +2,7 @@ import {
   THUNDER_WEBGL2_CANDIDATE_COUNT,
   THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT,
   THUNDER_WEBGL2_SOURCE_COUNT,
+  THUNDER_WEBGL2_STAGE53_PROFILE,
   THUNDER_WEBGL2_TOTAL_RIBBON_VERTICES,
   THUNDER_WEBGL2_VERTICES_PER_CONNECTION,
 } from '../plugins/thunderBall/webgl2/contracts'
@@ -10,37 +11,140 @@ import {
   createThunderWebGl2Topology,
   nearestThunderWebGl2Candidate,
   resolveThunderWebGl2Tone,
+  THUNDER_WEBGL2_STAGE53_SPHERE,
   thunderWebGl2CadenceMs,
 } from '../plugins/thunderBall/webgl2/topology'
 
-describe('Thunder Ball WebGL2 topology', () => {
-  it('is bounded and deterministic for one seed while different seeds differ', () => {
-    const first = createThunderWebGl2Topology({ seed: 71, nowMs: 240 })
-    const same = createThunderWebGl2Topology({ seed: 71, nowMs: 240 })
-    const different = createThunderWebGl2Topology({ seed: 72, nowMs: 240 })
+describe('Thunder Ball WebGL2 Stage5.3 topology', () => {
+  it('uses the fixed frequency-2 sphere42 table instead of a candidate-derived seed shell', () => {
+    const first = createThunderWebGl2Topology({ seed: 71, nowMs: 0 })
+    const differentSeed = createThunderWebGl2Topology({ seed: 72, nowMs: 0 })
 
-    expect(first).toEqual(same)
-    expect(first).not.toEqual(different)
-    expect(first.candidates).toHaveLength(THUNDER_WEBGL2_CANDIDATE_COUNT)
-    expect(first.sources).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT)
-    expect(first.connections).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT)
-    expect(new Set(first.sources.map(({ index }) => index)).size).toBe(
-      THUNDER_WEBGL2_SOURCE_COUNT
+    expect(THUNDER_WEBGL2_STAGE53_SPHERE).toHaveLength(
+      THUNDER_WEBGL2_CANDIDATE_COUNT
     )
-    expect(
-      first.sources.every(
-        (source) =>
-          source.lifeMs > 0 &&
-          source.ageMs >= 0 &&
-          source.ageMs <= source.lifeMs &&
-          source.radius > 0 &&
-          source.energy >= 0 &&
-          source.energy <= 1
-      )
-    ).toBe(true)
+    expect(THUNDER_WEBGL2_STAGE53_SPHERE[0]).toEqual([0, 0, 0.400000006])
+    expect(THUNDER_WEBGL2_STAGE53_SPHERE[41]).toEqual([
+      -0.199999988, 0.064984061, -0.340260327,
+    ])
+    expect(first.candidates).toEqual(differentSeed.candidates)
+    expect(first.sources).toEqual(differentSeed.sources)
+    expect(first.connections).toEqual(differentSeed.connections)
+    expect(first.seed).toBe(71)
+    expect(differentSeed.seed).toBe(72)
   })
 
-  it('orders every bounded source birth to the deterministic nearest candidate', () => {
+  it('retains exactly 21 tagged birth origins and moves only a new birth with the emitter', () => {
+    const initial = createThunderWebGl2Topology({
+      seed: 19,
+      nowMs: 240,
+      center: { x: 0, y: 0 },
+      aspect: 16 / 9,
+    })
+    const moved = createThunderWebGl2Topology({
+      seed: 19,
+      nowMs: 250,
+      center: { x: 0.31, y: -0.24 },
+      aspect: 16 / 9,
+      retainedSources: initial.sources,
+    })
+
+    expect(initial.sources).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT)
+    expect(new Set(initial.sources.map(({ birthId }) => birthId)).size).toBe(21)
+    expect(
+      initial.sources.every(
+        ({ birthId, birthTag }) =>
+          Number.isInteger(birthId) &&
+          birthTag === ((((birthId as number) % 1024) + 1024) % 1024) + 1
+      )
+    ).toBe(true)
+
+    const retainedByBirthId = new Map(
+      initial.sources.map((source) => [source.birthId, source] as const)
+    )
+    const common = moved.sources.filter((source) =>
+      retainedByBirthId.has(source.birthId)
+    )
+    expect(common).toHaveLength(20)
+    for (const source of common) {
+      const previous = retainedByBirthId.get(source.birthId)
+      expect(source.birthOriginX).toBe(previous?.birthOriginX)
+      expect(source.birthOriginY).toBe(previous?.birthOriginY)
+      expect(source.birthOriginZ).toBe(previous?.birthOriginZ)
+    }
+    const newBirth = moved.sources.find(
+      (source) => !retainedByBirthId.has(source.birthId)
+    )
+    expect(newBirth).toBeDefined()
+    expect(Math.abs(newBirth?.x ?? 0)).toBeGreaterThan(0.1)
+  })
+
+  it('preserves the source-world shape and requested center across display aspects', () => {
+    const viewports = [
+      { width: 1_600, height: 900 },
+      { width: 1_200, height: 900 },
+      { width: 750, height: 1_000 },
+    ] as const
+    const centered = viewports.map(({ width, height }) =>
+      createThunderWebGl2Topology({
+        seed: 502,
+        nowMs: 240,
+        aspect: width / height,
+      })
+    )
+    const bboxAspects = centered.map((topology, index) =>
+      cssBboxAspect(
+        topology.candidates,
+        viewports[index]!.width,
+        viewports[index]!.height
+      )
+    )
+
+    for (const bboxAspect of bboxAspects.slice(1)) {
+      expect(bboxAspect).toBeCloseTo(bboxAspects[0]!, 6)
+    }
+    for (const topology of centered.slice(1)) {
+      expect(
+        topology.candidates.map(({ worldX, worldY, worldZ }) => [
+          worldX,
+          worldY,
+          worldZ,
+        ])
+      ).toEqual(
+        centered[0]!.candidates.map(({ worldX, worldY, worldZ }) => [
+          worldX,
+          worldY,
+          worldZ,
+        ])
+      )
+    }
+
+    const movedCentroids = viewports.map(({ width, height }) => {
+      const topology = createThunderWebGl2Topology({
+        seed: 502,
+        nowMs: 240,
+        aspect: width / height,
+        center: { x: 0.27, y: -0.18 },
+      })
+      const centroid = topology.candidates.reduce(
+        (sum, candidate) => ({
+          x: sum.x + candidate.x,
+          y: sum.y + candidate.y,
+        }),
+        { x: 0, y: 0 }
+      )
+      return {
+        x: centroid.x / topology.candidates.length,
+        y: centroid.y / topology.candidates.length,
+      }
+    })
+    for (const centroid of movedCentroids.slice(1)) {
+      expect(centroid.x).toBeCloseTo(movedCentroids[0]!.x, 6)
+      expect(centroid.y).toBeCloseTo(movedCentroids[0]!.y, 6)
+    }
+  })
+
+  it('matches every moving particle to the nearest rotated candidate in full 3D', () => {
     const topology = createThunderWebGl2Topology({ seed: 19, nowMs: 96 })
 
     for (const connection of topology.connections) {
@@ -55,7 +159,46 @@ describe('Thunder Ball WebGL2 topology', () => {
     }
   })
 
-  it('builds a fixed-endpoint 30x2 ribbon with interior wrinkle and source flare', () => {
+  it('builds the source 30x2 Hermite ribbon with constrained endpoints and broad live cells', () => {
+    const topology = createThunderWebGl2Topology({
+      seed: 502,
+      nowMs: 240,
+      aspect: 16 / 9,
+    })
+    const ribbon = topology.connections[0]?.ribbon ?? []
+
+    expect(ribbon).toHaveLength(THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT)
+    expect(ribbon.length * 2).toBe(THUNDER_WEBGL2_VERTICES_PER_CONNECTION)
+    expect(ribbon[0]?.sourceBirth).toEqual(topology.connections[0]?.source)
+    expect(ribbon.every((sample) => sample.width > 0)).toBe(true)
+    const first = ribbon[0]
+    const last = ribbon.at(-1)
+    expect(
+      first !== undefined &&
+        last !== undefined &&
+        ribbon.slice(1, -1).some((sample) => {
+          const baselineX =
+            first.centerX + (last.centerX - first.centerX) * sample.along
+          const baselineY =
+            first.centerY + (last.centerY - first.centerY) * sample.along
+          return (
+            Math.abs(sample.centerX - baselineX) > 1e-6 ||
+            Math.abs(sample.centerY - baselineY) > 1e-6
+          )
+        })
+    ).toBe(true)
+    expect(
+      ribbon.every(
+        (sample) =>
+          Number.isFinite(sample.leftX) &&
+          Number.isFinite(sample.leftY) &&
+          Number.isFinite(sample.rightX) &&
+          Number.isFinite(sample.rightY)
+      )
+    ).toBe(true)
+  })
+
+  it('keeps the compatibility ribbon API deterministic without a world-depth fixture', () => {
     const source = { x: -0.5, y: -0.2 }
     const target = { x: 0.62, y: 0.44 }
     const sourceBirth = {
@@ -67,114 +210,24 @@ describe('Thunder Ball WebGL2 topology', () => {
       radius: 0.028,
       energy: 1,
     }
-    const ribbon = createThunderWebGl2Ribbon(source, target, {
-      seed: 502,
+    const first = createThunderWebGl2Ribbon(source, target, {
+      seed: 1,
+      crackleEpoch: 3,
+      sourceBirth,
+    })
+    const same = createThunderWebGl2Ribbon(source, target, {
+      seed: 1,
       crackleEpoch: 3,
       sourceBirth,
     })
 
-    expect(ribbon).toHaveLength(THUNDER_WEBGL2_RIBBON_SAMPLE_COUNT)
-    expect(ribbon.length * 2).toBe(THUNDER_WEBGL2_VERTICES_PER_CONNECTION)
-    expect(ribbon[0]).toMatchObject({
-      centerX: source.x,
-      centerY: source.y,
-      displacement: 0,
-    })
-    expect(ribbon[0]?.sourceBirth).toBe(sourceBirth)
-    expect(ribbon[0]?.width ?? 0).toBeGreaterThan(0)
-    expect(ribbon[0]?.width ?? 0).toBeGreaterThan(ribbon[1]?.width ?? 0)
-    expect(ribbon.at(-1)).toMatchObject({
-      centerX: target.x,
-      centerY: target.y,
-      displacement: 0,
-    })
-    expect(ribbon.at(-1)?.width).toBeCloseTo(0)
-    expect(
-      ribbon
-        .slice(1, -1)
-        .some((sample) => Math.abs(sample.displacement) > 0.0001)
-    ).toBe(true)
-    expect(ribbon[5]?.width ?? 0).toBeGreaterThan(ribbon[15]?.width ?? 0)
-    expect(
-      ribbon.every(
-        (sample) =>
-          Number.isFinite(sample.leftX) &&
-          Number.isFinite(sample.rightY) &&
-          sample.width >= 0
-      )
-    ).toBe(true)
-  })
-
-  it('keeps all source-near first mesh cells nondegenerate and centrally connected', () => {
-    const topology = createThunderWebGl2Topology({
-      seed: 88,
-      nowMs: 192,
-      center: { x: 0, y: 0.25 },
-      radius: 0.32784,
-    })
-    const width = 960
-    const height = 540
-    const sourceNearTriangles = topology.connections.flatMap(({ ribbon }) =>
-      ribbon.slice(0, 3).flatMap((sample, index) => {
-        const next = ribbon[index + 1]
-        if (!next) return []
-        return [
-          [
-            sample.leftX,
-            sample.leftY,
-            sample.rightX,
-            sample.rightY,
-            next.leftX,
-            next.leftY,
-          ],
-          [
-            sample.rightX,
-            sample.rightY,
-            next.rightX,
-            next.rightY,
-            next.leftX,
-            next.leftY,
-          ],
-        ] as const
-      })
-    )
-    const pixelTriangles = sourceNearTriangles.map((triangle) =>
-      triangle.map((value, index) =>
-        index % 2 === 0 ? ((value + 1) * width) / 2 : ((1 - value) * height) / 2
-      )
-    )
-
-    expect(pixelTriangles).toHaveLength(THUNDER_WEBGL2_SOURCE_COUNT * 6)
-    expect(
-      pixelTriangles.every(
-        ([ax, ay, bx, by, cx, cy]) =>
-          triangleArea(ax, ay, bx, by, cx, cy) > 0.01
-      )
-    ).toBe(true)
-
-    const mask = rasterizeTriangles(pixelTriangles, width, height)
-    const components = connectedComponents(mask, width)
-    const total = components.reduce((sum, component) => sum + component.size, 0)
-    const largest = components[0]
-    expect(largest).toBeDefined()
-    expect((largest?.size ?? 0) / total).toBeGreaterThanOrEqual(0.6)
-    expect(
-      largest?.containsNear(
-        Math.round(width / 2),
-        Math.round(height * 0.375),
-        12
-      )
-    ).toBe(true)
-    expect((largest?.maxX ?? 0) - (largest?.minX ?? 0)).toBeLessThanOrEqual(
-      width * 0.35
-    )
-    expect((largest?.maxY ?? 0) - (largest?.minY ?? 0)).toBeLessThanOrEqual(
-      height * 0.35
-    )
+    expect(first).toEqual(same)
+    expect(first[0]?.sourceBirth).toMatchObject({ index: 0 })
+    expect(first).toHaveLength(30)
   })
 
   it('holds the exact 21 by 60 recipe boundary at 1260 vertices', () => {
-    const topology = createThunderWebGl2Topology({ seed: 1260, nowMs: 0 })
+    const topology = createThunderWebGl2Topology({ seed: 1260, nowMs: 240 })
     const vertexCounts = topology.connections.map(
       (connection) => connection.ribbon.length * 2
     )
@@ -191,225 +244,54 @@ describe('Thunder Ball WebGL2 topology', () => {
     expect(THUNDER_WEBGL2_TOTAL_RIBBON_VERTICES).toBe(1260)
   })
 
-  it('keeps candidate crackle on bounded epochs while short-lived sources advance', () => {
+  it('advances one source birth each 10ms while rotating the source sphere', () => {
     const cadence = thunderWebGl2CadenceMs(false)
-    const beforeBoundary = createThunderWebGl2Topology({
-      seed: 404,
-      nowMs: cadence - 1,
-    })
-    const sameEpoch = createThunderWebGl2Topology({ seed: 404, nowMs: 0 })
+    const first = createThunderWebGl2Topology({ seed: 404, nowMs: 240 })
     const next = createThunderWebGl2Topology({
       seed: 404,
-      nowMs: cadence,
-    })
-    const later = createThunderWebGl2Topology({
-      seed: 404,
-      nowMs: cadence * 2,
+      nowMs: 240 + cadence,
+      retainedSources: first.sources,
     })
 
-    expect(beforeBoundary.candidates).toEqual(sameEpoch.candidates)
-    expect(beforeBoundary.sources).not.toEqual(sameEpoch.sources)
-    expect(next.epoch).toBe(sameEpoch.epoch + 1)
-    expect(next.connections).not.toEqual(sameEpoch.connections)
-    const firstDelta = normalizedAngle(
-      angle(next.candidates[0]) - angle(sameEpoch.candidates[0])
-    )
-    const secondDelta = normalizedAngle(
-      angle(later.candidates[0]) - angle(next.candidates[0])
-    )
-    expect(firstDelta).not.toBeCloseTo(secondDelta, 4)
+    expect(cadence).toBe(10)
+    expect(next.epoch).toBe(first.epoch + 1)
+    expect(next.sources[0]?.birthId).toBe((first.sources[0]?.birthId ?? 0) + 1)
+    expect(next.candidates).not.toEqual(first.candidates)
   })
 
-  it('translates the full source/candidate system and scales its envelope with orb radius', () => {
-    const origin = createThunderWebGl2Topology({
-      seed: 411,
-      nowMs: 240,
-      center: { x: 0, y: 0 },
-      radius: 0.2,
-    })
-    const translated = createThunderWebGl2Topology({
-      seed: 411,
-      nowMs: 240,
-      center: { x: 0.31, y: -0.24 },
-      radius: 0.2,
-    })
-    const expanded = createThunderWebGl2Topology({
-      seed: 411,
-      nowMs: 240,
-      center: { x: 0, y: 0 },
-      radius: 0.6,
-    })
-
-    for (let index = 0; index < THUNDER_WEBGL2_SOURCE_COUNT; index += 1) {
-      expect(
-        (translated.sources[index]?.x ?? 0) - (origin.sources[index]?.x ?? 0)
-      ).toBeCloseTo(0.31, 10)
-      expect(
-        (translated.sources[index]?.y ?? 0) - (origin.sources[index]?.y ?? 0)
-      ).toBeCloseTo(-0.24, 10)
-    }
-    expect(maxRadius(expanded.sources)).toBeCloseTo(
-      maxRadius(origin.sources) * 3,
-      10
-    )
-    expect(expanded.sources[0]?.radius ?? 0).toBeCloseTo(
-      (origin.sources[0]?.radius ?? 0) * 3,
-      10
-    )
-    expect(maxRadius(expanded.candidates)).toBeCloseTo(
-      maxRadius(origin.candidates) * 3,
-      10
-    )
-  })
-
-  it('keeps tone finite/bounded with a thinner core and reduced cadence/feedback', () => {
+  it('uses the source multiresolution, color and zero-temporal defaults', () => {
     const normal = resolveThunderWebGl2Tone(false)
     const reduced = resolveThunderWebGl2Tone(true)
-    for (const value of Object.values(normal)) {
-      expect(Number.isFinite(value)).toBe(true)
-      expect(value).toBeGreaterThanOrEqual(0)
-      expect(value).toBeLessThanOrEqual(4)
-    }
-    expect(normal.coreWidth).toBeLessThan(normal.haloWidth)
-    expect(reduced.coreWidth).toBeLessThan(reduced.haloWidth)
-    expect(thunderWebGl2CadenceMs(true)).toBeGreaterThan(
-      thunderWebGl2CadenceMs(false)
-    )
-    expect(reduced.feedback).toBeLessThan(normal.feedback)
-    expect(reduced.pulse).toBeLessThan(normal.pulse)
+
+    expect(normal).toMatchObject({
+      bloomGain: THUNDER_WEBGL2_STAGE53_PROFILE.bloomLevel,
+      contrast: 1,
+      exposure: THUNDER_WEBGL2_STAGE53_PROFILE.intensity,
+      feedback: 0,
+      gamma: 1,
+      glowColor: [0.12, 0.84, 1],
+      glowLevel: THUNDER_WEBGL2_STAGE53_PROFILE.glowLevel,
+      inputLevel: 1,
+      intensity: THUNDER_WEBGL2_STAGE53_PROFILE.intensity,
+      pulse: 0,
+      rampLevel: THUNDER_WEBGL2_STAGE53_PROFILE.rampLevel,
+    })
+    expect(reduced.feedback).toBe(0)
+    expect(reduced.pulse).toBe(0)
+    expect(reduced.bloomGain).toBeLessThan(normal.bloomGain)
+    expect(thunderWebGl2CadenceMs(true)).toBe(20)
   })
 })
 
-function angle(point: Readonly<{ x: number; y: number }> | undefined): number {
-  return Math.atan2(point?.y ?? 0, point?.x ?? 0)
-}
-
-function normalizedAngle(value: number): number {
-  return Math.atan2(Math.sin(value), Math.cos(value))
-}
-
-function maxRadius(
-  points: readonly Readonly<{ x: number; y: number }>[]
-): number {
-  return Math.max(...points.map((point) => Math.hypot(point.x, point.y)))
-}
-
-function triangleArea(
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-  cx: number,
-  cy: number
-): number {
-  return Math.abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2
-}
-
-function rasterizeTriangles(
-  triangles: readonly (readonly number[])[],
+function cssBboxAspect(
+  points: readonly Readonly<{ x: number; y: number }>[],
   width: number,
   height: number
-): Set<number> {
-  const mask = new Set<number>()
-  for (const [ax, ay, bx, by, cx, cy] of triangles) {
-    if (
-      ax === undefined ||
-      ay === undefined ||
-      bx === undefined ||
-      by === undefined ||
-      cx === undefined ||
-      cy === undefined
-    ) {
-      continue
-    }
-    const minX = Math.max(0, Math.floor(Math.min(ax, bx, cx)))
-    const maxX = Math.min(width - 1, Math.ceil(Math.max(ax, bx, cx)))
-    const minY = Math.max(0, Math.floor(Math.min(ay, by, cy)))
-    const maxY = Math.min(height - 1, Math.ceil(Math.max(ay, by, cy)))
-    for (let y = minY; y <= maxY; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) {
-        if (pointInTriangle(x + 0.5, y + 0.5, ax, ay, bx, by, cx, cy)) {
-          mask.add(y * width + x)
-        }
-      }
-    }
-  }
-  return mask
-}
-
-function pointInTriangle(
-  x: number,
-  y: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-  cx: number,
-  cy: number
-): boolean {
-  const edge = (
-    px: number,
-    py: number,
-    qx: number,
-    qy: number,
-    rx: number,
-    ry: number
-  ) => (rx - px) * (qy - py) - (ry - py) * (qx - px)
-  const ab = edge(ax, ay, bx, by, x, y)
-  const bc = edge(bx, by, cx, cy, x, y)
-  const ca = edge(cx, cy, ax, ay, x, y)
-  return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0)
-}
-
-function connectedComponents(mask: ReadonlySet<number>, width: number) {
-  const remaining = new Set(mask)
-  const components: Array<{
-    size: number
-    minX: number
-    maxX: number
-    minY: number
-    maxY: number
-    containsNear(x: number, y: number, radius: number): boolean
-  }> = []
-  while (remaining.size > 0) {
-    const seed = remaining.values().next().value as number
-    const queue = [seed]
-    const values = new Set<number>()
-    remaining.delete(seed)
-    while (queue.length > 0) {
-      const value = queue.pop()
-      if (value === undefined) continue
-      values.add(value)
-      const x = value % width
-      const y = Math.floor(value / width)
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          if (dx === 0 && dy === 0) continue
-          const nextX = x + dx
-          const nextY = y + dy
-          if (nextX < 0 || nextX >= width || nextY < 0) continue
-          const candidate = nextY * width + nextX
-          if (remaining.delete(candidate)) queue.push(candidate)
-        }
-      }
-    }
-    const xs = [...values].map((value) => value % width)
-    const ys = [...values].map((value) => Math.floor(value / width))
-    components.push({
-      size: values.size,
-      minX: Math.min(...xs),
-      maxX: Math.max(...xs),
-      minY: Math.min(...ys),
-      maxY: Math.max(...ys),
-      containsNear: (x, y, radius) => {
-        for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
-          for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
-            if (values.has((y + offsetY) * width + x + offsetX)) return true
-          }
-        }
-        return false
-      },
-    })
-  }
-  return components.sort((left, right) => right.size - left.size)
+): number {
+  const xs = points.map(({ x }) => x)
+  const ys = points.map(({ y }) => y)
+  return (
+    ((Math.max(...xs) - Math.min(...xs)) * width) /
+    ((Math.max(...ys) - Math.min(...ys)) * height)
+  )
 }

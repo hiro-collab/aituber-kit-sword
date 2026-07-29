@@ -34,7 +34,13 @@ export interface ThunderWebGl2FrameOptions {
   nowMs: number
   width?: number
   height?: number
+  projectionAspect?: number
   reducedMotion?: boolean
+  centerX?: number
+  centerY?: number
+  radiusScale?: number
+  widthScale?: number
+  wrinkleScale?: number
 }
 
 export interface ThunderWebGl2StopOptions {
@@ -130,10 +136,26 @@ export class ThunderBallWebGl2Renderer {
     }
 
     if (this.stateValue === 'running' && this.birthsEnabledValue) {
+      const width = boundedSize(options.width ?? this.engine.audit().width)
+      const height = boundedSize(options.height ?? this.engine.audit().height)
+      const projectionAspect = clamp(
+        finiteOr(options.projectionAspect, width / Math.max(1, height)),
+        0.25,
+        4
+      )
       const nextTopology = createThunderWebGl2Topology({
         seed: this.seedValue,
         nowMs: simulationNowMs,
         reducedMotion: this.reducedMotionValue,
+        center: {
+          x: finiteOr(options.centerX, 0),
+          y: finiteOr(options.centerY, 0),
+        },
+        radius: 0.4 * clamp(finiteOr(options.radiusScale, 1), 0.1, 4),
+        aspect: projectionAspect,
+        retainedSources: this.topologyValue?.sources,
+        widthScale: clamp(finiteOr(options.widthScale, 1), 0.1, 4),
+        wrinkleScale: clamp(finiteOr(options.wrinkleScale, 1), 0, 4),
       })
       if (nextTopology.epoch !== this.topologyValue?.epoch) {
         this.topologyValue = nextTopology
@@ -159,20 +181,10 @@ export class ThunderBallWebGl2Renderer {
     }
 
     const baseTone = resolveThunderWebGl2Tone(this.reducedMotionValue)
-    const pulse =
-      1 +
-      Math.sin(
-        (simulationNowMs + (this.topologyValue?.epoch ?? 0) * 19) *
-          (this.reducedMotionValue ? 0.004 : 0.011)
-      ) *
-        baseTone.pulse
     const rendered = this.engine.render({
       ribbons: liveConnections.map((connection) => connection.ribbon),
-      tone: Object.freeze({
-        ...baseTone,
-        coreLuminance: clamp(baseTone.coreLuminance * pulse, 0, 4),
-        haloLuminance: clamp(baseTone.haloLuminance * pulse, 0, 2),
-      }),
+      sources: liveConnections.map((connection) => connection.source),
+      tone: baseTone,
     })
     if (rendered.state !== 'ready') return this.quarantineFrom(rendered)
     return this.result(this.stateValue === 'draining' ? 'draining' : 'rendered')

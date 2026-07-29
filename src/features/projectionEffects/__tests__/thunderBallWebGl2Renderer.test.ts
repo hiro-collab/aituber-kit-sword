@@ -9,6 +9,7 @@ import {
   ThunderBallWebGl2Renderer,
   type ThunderWebGl2EngineBoundary,
 } from '../plugins/thunderBall/webgl2/renderer'
+import { createThunderWebGl2Topology } from '../plugins/thunderBall/webgl2/topology'
 
 describe('Thunder Ball WebGL2 renderer lifecycle', () => {
   it('starts, renders, disables births on stop, and drains within five seconds', () => {
@@ -81,7 +82,7 @@ describe('Thunder Ball WebGL2 renderer lifecycle', () => {
     })
   })
 
-  it('deterministically lowers feedback and pulse in reduced motion', () => {
+  it('keeps source temporal smoothing disabled while reducing glow cadence', () => {
     const normalEngine = new FakeEngine()
     const normal = new ThunderBallWebGl2Renderer({
       engine: normalEngine,
@@ -101,12 +102,35 @@ describe('Thunder Ball WebGL2 renderer lifecycle', () => {
     reduced.renderFrame({ nowMs: 40 })
     const reducedFrame = reducedEngine.render.mock.calls[0]?.[0]
 
-    expect(reducedFrame?.tone.feedback).toBeLessThan(
-      normalFrame?.tone.feedback ?? 0
+    expect(normalFrame?.tone.feedback).toBe(0)
+    expect(reducedFrame?.tone.feedback).toBe(0)
+    expect(normalFrame?.tone.pulse).toBe(0)
+    expect(reducedFrame?.tone.pulse).toBe(0)
+    expect(reducedFrame?.tone.glowLevel ?? 0).toBeLessThan(
+      normalFrame?.tone.glowLevel ?? 0
     )
-    expect(reducedFrame?.tone.pulse).toBeLessThan(normalFrame?.tone.pulse ?? 0)
     expect(reduced.topologySnapshot()?.cadenceMs).toBeGreaterThan(
       normal.topologySnapshot()?.cadenceMs ?? Number.POSITIVE_INFINITY
+    )
+  })
+
+  it('uses the explicit CSS projection aspect independently of backing size', () => {
+    const engine = new FakeEngine()
+    const renderer = new ThunderBallWebGl2Renderer({ engine, seed: 502 })
+    renderer.start({ nowMs: 240 })
+    renderer.renderFrame({
+      nowMs: 240,
+      width: 720,
+      height: 405,
+      projectionAspect: 4 / 3,
+    })
+
+    expect(renderer.topologySnapshot()).toEqual(
+      createThunderWebGl2Topology({
+        seed: 502,
+        nowMs: 240,
+        aspect: 4 / 3,
+      })
     )
   })
 

@@ -8,13 +8,9 @@ import {
   THUNDER_WEBGL2_MAX_DRAIN_MS,
   THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE,
   THUNDER_WEBGL2_PASS_GRAPH,
-  THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT,
-  THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT,
-  THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT,
   type ThunderWebGl2EngineFrame,
   type ThunderWebGl2EngineResult,
   type ThunderWebGl2GpuFailureStage,
-  type ThunderWebGl2SourceBirth,
   ThunderWebGl2RendererResult,
   ThunderWebGl2RendererState,
 } from './contracts'
@@ -83,7 +79,6 @@ const DEFAULT_LINE_WIDTH = 4
 const DEFAULT_MASTER_INTENSITY = 0.82
 const DEFAULT_BLOOM_GAIN = 0.65
 const DEFAULT_WRINKLE_STRENGTH = 0.08
-const THUNDER_WEBGL2_FILMING_ENVELOPE_SCALE = 0.42
 const MAX_DRAIN_PRESENTATIONS = 6
 const DRAIN_WAIT_GRACE_MS = 50
 const MAX_CANVAS_SIZE = 8192
@@ -450,8 +445,19 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
     options: Readonly<ThunderWebGl2FrameOptions>
   ): ThunderWebGl2RendererResult {
     const renderer = this.ensureRenderer()
-    const { width, height } = this.syncCanvasSize()
-    const result = renderer.renderFrame({ ...options, width, height })
+    const { width, height, projectionAspect } = this.syncCanvasSize()
+    const result = renderer.renderFrame({
+      ...options,
+      width,
+      height,
+      projectionAspect,
+      centerX: this.config.centerX,
+      centerY: this.config.centerY,
+      radiusScale: this.config.orbRadius / DEFAULT_ORB_RADIUS,
+      widthScale: this.config.lineWidth / DEFAULT_LINE_WIDTH,
+      wrinkleScale:
+        this.config.wrinkleStrength / Math.max(DEFAULT_WRINKLE_STRENGTH, 1e-6),
+    })
     this.publishFailureStage(renderer)
     return result
   }
@@ -514,7 +520,11 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
     return this.renderer
   }
 
-  private syncCanvasSize(): { width: number; height: number } {
+  private syncCanvasSize(): {
+    width: number
+    height: number
+    projectionAspect: number
+  } {
     const cssWidth = Math.max(1, this.canvas.clientWidth || this.canvas.width)
     const cssHeight = Math.max(
       1,
@@ -530,7 +540,11 @@ class ThunderBallWebGl2CanvasSurface implements ThunderWebGl2AdapterSurface {
     )
     if (this.canvas.width !== width) this.canvas.width = width
     if (this.canvas.height !== height) this.canvas.height = height
-    return { width, height }
+    return {
+      width,
+      height,
+      projectionAspect: cssWidth / Math.max(1, cssHeight),
+    }
   }
 
   private publishFailureStage(
@@ -661,98 +675,38 @@ export function mapThunderWebGl2EngineFrame(
   frame: Readonly<ThunderWebGl2EngineFrame>,
   config: Readonly<ThunderWebGl2AdapterConfig>
 ): ThunderWebGl2EngineFrame {
-  const spatialScale =
-    (config.orbRadius / DEFAULT_ORB_RADIUS) *
-    THUNDER_WEBGL2_FILMING_ENVELOPE_SCALE
-  const wrinkleScale =
-    config.wrinkleStrength / Math.max(DEFAULT_WRINKLE_STRENGTH, 1e-6)
-  const widthScale = config.lineWidth / DEFAULT_LINE_WIDTH
-  const sources: ThunderWebGl2SourceBirth[] = []
-  const ribbons = frame.ribbons.map((ribbon) => {
-    const source = ribbon[0]
-    const target = ribbon[ribbon.length - 1]
-    if (!source || !target) return ribbon
-    return Object.freeze(
-      ribbon.map((sample) => {
-        const baselineX =
-          source.centerX + (target.centerX - source.centerX) * sample.along
-        const baselineY =
-          source.centerY + (target.centerY - source.centerY) * sample.along
-        const localCenterX =
-          baselineX + (sample.centerX - baselineX) * wrinkleScale
-        const localCenterY =
-          baselineY + (sample.centerY - baselineY) * wrinkleScale
-        const centerX = boundedCoordinate(
-          config.centerX + localCenterX * spatialScale
-        )
-        const centerY = boundedCoordinate(
-          config.centerY + localCenterY * spatialScale
-        )
-        const leftOffsetX =
-          (sample.leftX - sample.centerX) * spatialScale * widthScale
-        const leftOffsetY =
-          (sample.leftY - sample.centerY) * spatialScale * widthScale
-        const rightOffsetX =
-          (sample.rightX - sample.centerX) * spatialScale * widthScale
-        const rightOffsetY =
-          (sample.rightY - sample.centerY) * spatialScale * widthScale
-        const sourceBirth = sample.sourceBirth
-          ? Object.freeze({
-              ...sample.sourceBirth,
-              x: centerX,
-              y: centerY,
-              radius: clamp(
-                sample.sourceBirth.radius * spatialScale * widthScale,
-                0,
-                THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT
-              ),
-              energy: clamp(
-                sample.sourceBirth.energy * config.masterIntensity,
-                0,
-                1
-              ),
-            })
-          : undefined
-        if (sourceBirth) sources.push(sourceBirth)
-        return Object.freeze({
-          along: sample.along,
-          centerX,
-          centerY,
-          displacement: clamp(
-            sample.displacement * spatialScale * wrinkleScale,
-            -THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT,
-            THUNDER_WEBGL2_SAMPLE_DISPLACEMENT_LIMIT
-          ),
-          leftX: boundedCoordinate(centerX + leftOffsetX),
-          leftY: boundedCoordinate(centerY + leftOffsetY),
-          rightX: boundedCoordinate(centerX + rightOffsetX),
-          rightY: boundedCoordinate(centerY + rightOffsetY),
-          width: clamp(
-            sample.width * spatialScale * widthScale,
-            0,
-            THUNDER_WEBGL2_SAMPLE_WIDTH_LIMIT
-          ),
-          sourceBirth,
-        })
-      })
-    )
-  })
   const bloomScale = config.bloomGain / Math.max(DEFAULT_BLOOM_GAIN, 1e-6)
+  const intensityScale = config.masterIntensity / DEFAULT_MASTER_INTENSITY
+  const sourceInput =
+    frame.sources ??
+    frame.ribbons.flatMap((ribbon) => {
+      const source = ribbon[0]?.sourceBirth
+      return source ? [source] : []
+    })
   return Object.freeze({
-    ribbons: Object.freeze(ribbons),
-    sources: Object.freeze(sources),
+    ribbons: frame.ribbons,
+    sources: Object.freeze(
+      sourceInput.map((source) =>
+        Object.freeze({
+          ...source,
+          energy: clamp(source.energy * config.masterIntensity, 0, 1),
+        })
+      )
+    ),
     passGraph: THUNDER_WEBGL2_PASS_GRAPH,
     tone: Object.freeze({
       ...frame.tone,
-      coreLuminance: frame.tone.coreLuminance,
+      coreLuminance: frame.tone.coreLuminance * intensityScale,
       haloLuminance: config.postProcessing ? frame.tone.haloLuminance : 0,
       bloomGain: config.postProcessing ? frame.tone.bloomGain * bloomScale : 0,
-      exposure: clamp(frame.tone.exposure, 0.5, 2),
+      exposure: clamp(frame.tone.exposure, 0, 2),
       gamma: clamp(frame.tone.gamma, 0.6, 1.4),
       feedback:
         config.postProcessing && config.masterIntensity > 0
           ? frame.tone.feedback
           : 0,
+      glowLevel: config.postProcessing ? frame.tone.glowLevel : 0,
+      rampLevel: config.postProcessing ? frame.tone.rampLevel : 0,
     }),
   })
 }
@@ -788,14 +742,6 @@ function mixParameterSeed(...values: readonly number[]): number {
     seed = Math.imul(seed ^ Math.round(value * 1000), 0x01000193)
   }
   return (seed ^ (seed >>> 16)) >>> 0
-}
-
-function boundedCoordinate(value: number): number {
-  return clamp(
-    value,
-    -THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT,
-    THUNDER_WEBGL2_SAMPLE_COORDINATE_LIMIT
-  )
 }
 
 function monotonicTime(value: number, previous: number): number {

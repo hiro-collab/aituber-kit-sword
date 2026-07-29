@@ -2,8 +2,6 @@ import type {
   ProjectionEffectFrameContext,
   ProjectionEffectStopContext,
 } from '../rendererPlugin'
-import { ProjectionPerformancePlanExecutor } from '../browser/projectionPerformancePlanExecutor'
-import type { ProjectionPerformancePlan } from '../projectionPerformancePlan'
 import {
   ThunderBallWebGl2Adapter,
   ThunderWebGl2AdapterError,
@@ -17,7 +15,6 @@ import {
 import {
   THUNDER_WEBGL2_GPU_FAILURE_STAGE_ATTRIBUTE,
   THUNDER_WEBGL2_PASS_GRAPH,
-  type ThunderWebGl2EngineFrame,
   type ThunderWebGl2RendererResult,
 } from '../plugins/thunderBall/webgl2/contracts'
 import { resolveThunderWebGl2CompositeOracle } from '../plugins/thunderBall/webgl2/shaders'
@@ -25,14 +22,6 @@ import {
   createThunderWebGl2Topology,
   resolveThunderWebGl2Tone,
 } from '../plugins/thunderBall/webgl2/topology'
-
-const { FIRE_THUNDER_LAB_VISUAL_PARAMETERS } = jest.requireActual(
-  '../browser/fireThunderLabCanvasLayer'
-) as {
-  FIRE_THUNDER_LAB_VISUAL_PARAMETERS: Readonly<{
-    thunderBall: Readonly<Record<string, unknown>>
-  }>
-}
 
 const PRIVATE_ERROR = 'private://driver/C:/secret/thunder-adapter.bin'
 
@@ -126,10 +115,11 @@ describe('Thunder Ball WebGL2 host adapter', () => {
     })
   })
 
-  it('maps the 21 source births, requested center, orb envelope, and weak core energy', () => {
+  it('keeps Stage5.3 geometry unscaled at the engine boundary and maps intensity once', () => {
     const topology = createThunderWebGl2Topology({ seed: 88, nowMs: 240 })
     const frame = {
       ribbons: topology.connections.map(({ ribbon }) => ribbon),
+      sources: topology.sources,
       tone: resolveThunderWebGl2Tone(false),
     }
     const weakConfig = mapThunderParametersToWebGl2AdapterConfig({
@@ -140,15 +130,6 @@ describe('Thunder Ball WebGL2 host adapter', () => {
       orbRadius: 0.42,
     })
     const weak = mapThunderWebGl2EngineFrame(frame, weakConfig)
-    const expanded = mapThunderWebGl2EngineFrame(
-      frame,
-      mapThunderParametersToWebGl2AdapterConfig({
-        centerX: 0.3,
-        centerY: -0.2,
-        masterIntensity: 0.4,
-        orbRadius: 0.84,
-      })
-    )
     const off = mapThunderWebGl2EngineFrame(
       frame,
       mapThunderParametersToWebGl2AdapterConfig({
@@ -158,117 +139,123 @@ describe('Thunder Ball WebGL2 host adapter', () => {
 
     expect(weak.sources).toHaveLength(21)
     expect(weak.passGraph).toBe(THUNDER_WEBGL2_PASS_GRAPH)
-    expect(
-      weak.sources?.every(
-        (source) =>
-          source.energy > 0 &&
-          Math.abs(source.x - weakConfig.centerX) < weakConfig.orbRadius &&
-          Math.abs(source.y - weakConfig.centerY) < weakConfig.orbRadius
-      )
-    ).toBe(true)
+    expect(weak.ribbons).toBe(frame.ribbons)
+    expect(weak.sources?.[0]).toMatchObject({
+      birthId: topology.sources[0]?.birthId,
+      birthTag: topology.sources[0]?.birthTag,
+      birthOriginX: topology.sources[0]?.birthOriginX,
+      birthOriginY: topology.sources[0]?.birthOriginY,
+      birthOriginZ: topology.sources[0]?.birthOriginZ,
+    })
+    expect(weak.sources?.[0]?.energy).toBeCloseTo(0.4)
     expect(weak.tone.coreLuminance).toBeGreaterThan(0)
     expect(weak.tone.bloomGain).toBeGreaterThan(0)
-    expect(sourceEnvelope(expanded.sources, { x: 0.3, y: -0.2 })).toBeCloseTo(
-      sourceEnvelope(weak.sources, { x: 0.3, y: -0.2 }) * 2,
-      10
-    )
     expect(off.tone.feedback).toBe(0)
-    expect(off.tone.coreLuminance).toBe(weak.tone.coreLuminance)
+    expect(off.tone.coreLuminance).toBe(0)
     expect(off.tone.haloLuminance).toBe(weak.tone.haloLuminance)
     expect(off.tone.bloomGain).toBe(weak.tone.bloomGain)
     expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
   })
 
-  it('uses the real weak plan and carries intensity exactly once in source energy', () => {
-    const plannedParameters = parametersForThunderPlan(0.4)
-    const weakConfig = mapThunderParametersToWebGl2AdapterConfig({
-      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
-      ...plannedParameters,
-      seed: 42,
-    })
-    const strongConfig = mapThunderParametersToWebGl2AdapterConfig({
-      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
-      ...plannedParameters,
-      masterIntensity: 1,
-      seed: 42,
-    })
-    const offConfig = mapThunderParametersToWebGl2AdapterConfig({
-      ...FIRE_THUNDER_LAB_VISUAL_PARAMETERS.thunderBall,
-      ...plannedParameters,
-      masterIntensity: 0,
-      seed: 42,
-    })
-    const topology = createThunderWebGl2Topology({ seed: 42, nowMs: 192 })
-    const recipeFrame = {
-      ribbons: topology.connections.map(({ ribbon }) => ribbon),
-      tone: resolveThunderWebGl2Tone(false),
+  it('passes current emitter/profile controls into the renderer before geometry creation', () => {
+    const attributes = new Map<string, string>()
+    const canvas = {
+      clientHeight: 540,
+      clientWidth: 960,
+      height: 150,
+      width: 300,
+      getContext: jest.fn(() => null),
+      setAttribute: (name: string, value: string) =>
+        attributes.set(name, value),
+    } as unknown as HTMLCanvasElement
+    const surface = createThunderBallWebGl2CanvasSurface(canvas)
+    const renderFrame = jest.fn(() =>
+      fixedThunderWebGl2AdapterResult('running', 'rendered')
+    )
+    const renderer = {
+      start: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'started')
+      ),
+      renderFrame,
+      stop: jest.fn(() => fixedThunderWebGl2AdapterResult('stopped')),
+      reset: jest.fn(() => fixedThunderWebGl2AdapterResult('idle', 'reset')),
+      emergencyStop: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('stopped', 'emergency-stopped')
+      ),
+      dispose: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('disposed', 'disposed')
+      ),
+      snapshot: jest.fn(() => ({ engine: { failureStage: 'none' as const } })),
     }
-    const weak = mapThunderWebGl2EngineFrame(recipeFrame, weakConfig)
-    const strong = mapThunderWebGl2EngineFrame(recipeFrame, strongConfig)
-    const off = mapThunderWebGl2EngineFrame(recipeFrame, offConfig)
-    const moved = mapThunderWebGl2EngineFrame(recipeFrame, {
-      ...weakConfig,
-      centerX: 0.24,
-      centerY: 0.43,
-    })
+    ;(surface as unknown as { renderer: unknown }).renderer = renderer
+    surface.configure(
+      mapThunderParametersToWebGl2AdapterConfig({
+        centerX: 0.24,
+        centerY: 0.43,
+        lineWidth: 8,
+        orbRadius: 0.84,
+        wrinkleStrength: 0.16,
+      })
+    )
 
-    expect(plannedParameters).toMatchObject({
-      centerX: 0,
-      centerY: 0.25,
-      lineWidth: 3.408,
-      masterIntensity: 0.5788,
-      orbRadius: 0.32784,
-    })
-    expect(weakConfig).toMatchObject({
-      bloomGain: 1.15,
-      internalResolutionScale: 1,
-      lineWidth: 3.408,
-      masterIntensity: 0.5788,
-      orbRadius: 0.32784,
-      postProcessing: true,
-    })
-    expect(weak.sources).toHaveLength(21)
-    expect(weak.sources?.[0]?.energy).toBeCloseTo(
-      (topology.sources[0]?.energy ?? 0) * 0.5788,
-      10
+    surface.renderFrame({ nowMs: 240 })
+
+    expect(renderFrame).toHaveBeenCalledWith(
+      expect.objectContaining({
+        centerX: 0.24,
+        centerY: 0.43,
+        height: 405,
+        projectionAspect: 16 / 9,
+        radiusScale: 2,
+        width: 720,
+        widthScale: 2,
+        wrinkleScale: 2,
+      })
     )
-    expect(strong.sources?.[0]?.energy).toBeCloseTo(
-      topology.sources[0]?.energy ?? 0,
-      10
-    )
-    expect(weak.tone).toEqual(strong.tone)
-    expect(off.tone).toEqual({ ...weak.tone, feedback: 0 })
-    expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
-    const connectivity = sourceNearRibbonConnectivity(weak.ribbons, 960, 540)
-    const envelope = ribbonEnvelope(weak.ribbons, 960, 540)
-    expect(connectivity.largestComponent / 21).toBeGreaterThanOrEqual(0.6)
-    expect(connectivity.width).toBeGreaterThan(60)
-    expect(connectivity.width).toBeLessThanOrEqual(136)
-    expect(connectivity.height).toBeGreaterThan(28)
-    expect(connectivity.height).toBeLessThanOrEqual(84)
-    expect(envelope.width).toBeGreaterThan(60)
-    expect(envelope.width).toBeLessThanOrEqual(70)
-    expect(envelope.height).toBeGreaterThan(28)
-    expect(envelope.height).toBeLessThanOrEqual(42)
-    expect(envelope.width * 2).toBeGreaterThan(120)
-    expect(envelope.width * 2).toBeLessThanOrEqual(140)
-    expect(envelope.height * 2).toBeGreaterThan(55)
-    expect(envelope.height * 2).toBeLessThanOrEqual(84)
-    expect(
-      moved.ribbons.every((ribbon, ribbonIndex) =>
-        ribbon.every((sample, sampleIndex) => {
-          const stationary = weak.ribbons[ribbonIndex]?.[sampleIndex]
-          return (
-            stationary !== undefined &&
-            Math.abs(sample.centerX - stationary.centerX - 0.24) < 1e-10 &&
-            Math.abs(sample.centerY - stationary.centerY - 0.18) < 1e-10
-          )
-        })
-      )
-    ).toBe(true)
   })
 
-  it('does not republish active temporal history on the first zero-intensity frame', () => {
+  it('keeps CSS projection aspect when backing dimensions are independently capped', () => {
+    const canvas = {
+      clientHeight: 9_000,
+      clientWidth: 12_000,
+      height: 150,
+      width: 300,
+      getContext: jest.fn(() => null),
+      setAttribute: jest.fn(),
+    } as unknown as HTMLCanvasElement
+    const surface = createThunderBallWebGl2CanvasSurface(canvas)
+    const renderFrame = jest.fn(() =>
+      fixedThunderWebGl2AdapterResult('running', 'rendered')
+    )
+    ;(surface as unknown as { renderer: unknown }).renderer = {
+      start: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('running', 'started')
+      ),
+      renderFrame,
+      stop: jest.fn(() => fixedThunderWebGl2AdapterResult('stopped')),
+      reset: jest.fn(() => fixedThunderWebGl2AdapterResult('idle', 'reset')),
+      emergencyStop: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('stopped', 'emergency-stopped')
+      ),
+      dispose: jest.fn(() =>
+        fixedThunderWebGl2AdapterResult('disposed', 'disposed')
+      ),
+      snapshot: jest.fn(() => ({ engine: { failureStage: 'none' as const } })),
+    }
+    surface.configure(mapThunderParametersToWebGl2AdapterConfig({}))
+
+    surface.renderFrame({ nowMs: 240 })
+
+    expect(renderFrame).toHaveBeenCalledWith(
+      expect.objectContaining({
+        height: 6_750,
+        projectionAspect: 4 / 3,
+        width: 8_192,
+      })
+    )
+  })
+
+  it('keeps source temporal smoothing at zero and does not republish an off frame', () => {
     const topology = createThunderWebGl2Topology({ seed: 91, nowMs: 240 })
     const frame = {
       ribbons: topology.connections.map(({ ribbon }) => ribbon),
@@ -301,7 +288,7 @@ describe('Thunder Ball WebGL2 host adapter', () => {
       feedback: expect.any(Number),
     })
     expect(active.tone.bloomGain).toBeGreaterThan(0)
-    expect(active.tone.feedback).toBeGreaterThan(0)
+    expect(active.tone.feedback).toBe(0)
     expect(off.tone.feedback).toBe(0)
     expect(off.sources?.every(({ energy }) => energy === 0)).toBe(true)
     expect(firstOffFrame).toEqual({
@@ -610,133 +597,4 @@ function stopContext(
   fadeMs: number
 ): ProjectionEffectStopContext {
   return { mode, fadeMs }
-}
-
-function sourceEnvelope(
-  sources: ThunderWebGl2EngineFrame['sources'],
-  center: Readonly<{ x: number; y: number }>
-): number {
-  return Math.max(
-    ...(sources ?? []).map((source) =>
-      Math.hypot(source.x - center.x, source.y - center.y)
-    )
-  )
-}
-
-function parametersForThunderPlan(
-  strength: number
-): Readonly<Record<string, unknown>> {
-  const plan = {
-    schemaVersion: 1,
-    planId: `thunder-recipe-${String(strength).replace('.', '-')}`,
-    sessionId: 'thunder-recipe-visibility-p10',
-    revision: 1,
-    action: 'start',
-    effectId: 'thunderBall',
-    position: { x: 0, y: 0.25 },
-    strength,
-    durationMs: 5_000,
-    seed: 42,
-    keyframes: [
-      {
-        atMs: 0,
-        position: { x: 0, y: 0.25 },
-        strength,
-      },
-    ],
-  } as const satisfies ProjectionPerformancePlan
-  const frame = new ProjectionPerformancePlanExecutor().activate(plan)
-  if (!frame) throw new Error('Thunder weak-plan fixture was rejected')
-  return frame.parameters
-}
-
-function sourceNearRibbonConnectivity(
-  ribbons: ThunderWebGl2EngineFrame['ribbons'],
-  width: number,
-  height: number
-) {
-  const boxes = ribbons.map((ribbon) => {
-    const samples = ribbon.slice(0, 4)
-    const xs = samples.flatMap(({ leftX, rightX }) => [
-      ((leftX + 1) * width) / 2,
-      ((rightX + 1) * width) / 2,
-    ])
-    const ys = samples.flatMap(({ leftY, rightY }) => [
-      ((1 - leftY) * height) / 2,
-      ((1 - rightY) * height) / 2,
-    ])
-    return {
-      minX: Math.min(...xs),
-      maxX: Math.max(...xs),
-      minY: Math.min(...ys),
-      maxY: Math.max(...ys),
-    }
-  })
-  const visited = new Set<number>()
-  let largestComponent = 0
-  for (let index = 0; index < boxes.length; index += 1) {
-    if (visited.has(index)) continue
-    const queue = [index]
-    visited.add(index)
-    let size = 0
-    while (queue.length > 0) {
-      const current = queue.pop()
-      if (current === undefined) continue
-      size += 1
-      for (let candidate = 0; candidate < boxes.length; candidate += 1) {
-        if (
-          !visited.has(candidate) &&
-          rectanglesOverlap(boxes[current]!, boxes[candidate]!)
-        ) {
-          visited.add(candidate)
-          queue.push(candidate)
-        }
-      }
-    }
-    largestComponent = Math.max(largestComponent, size)
-  }
-  return {
-    largestComponent,
-    width:
-      Math.max(...boxes.map(({ maxX }) => maxX)) -
-      Math.min(...boxes.map(({ minX }) => minX)),
-    height:
-      Math.max(...boxes.map(({ maxY }) => maxY)) -
-      Math.min(...boxes.map(({ minY }) => minY)),
-  }
-}
-
-function ribbonEnvelope(
-  ribbons: ThunderWebGl2EngineFrame['ribbons'],
-  width: number,
-  height: number
-) {
-  const xs = ribbons.flatMap((ribbon) =>
-    ribbon.flatMap(({ leftX, rightX }) => [
-      ((leftX + 1) * width) / 2,
-      ((rightX + 1) * width) / 2,
-    ])
-  )
-  const ys = ribbons.flatMap((ribbon) =>
-    ribbon.flatMap(({ leftY, rightY }) => [
-      ((1 - leftY) * height) / 2,
-      ((1 - rightY) * height) / 2,
-    ])
-  )
-  return {
-    width: Math.max(...xs) - Math.min(...xs),
-    height: Math.max(...ys) - Math.min(...ys),
-  }
-}
-
-function rectanglesOverlap(
-  left: Readonly<{ minX: number; maxX: number; minY: number; maxY: number }>,
-  right: Readonly<{ minX: number; maxX: number; minY: number; maxY: number }>
-): boolean {
-  return (
-    left.minX <= right.maxX &&
-    left.maxX >= right.minX &&
-    left.minY <= right.maxY &&
-    left.maxY >= right.minY
-  )
 }

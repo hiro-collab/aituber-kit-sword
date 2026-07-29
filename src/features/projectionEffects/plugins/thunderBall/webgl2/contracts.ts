@@ -22,6 +22,36 @@ export const THUNDER_WEBGL2_BLUR_WEIGHTS = Object.freeze([
   0.15, 0.35, 0.7, 1.1, 1.6, 2.1,
 ] as const)
 
+export const THUNDER_WEBGL2_STAGE53_PROFILE = Object.freeze({
+  blurSize: 20,
+  bloomLevel: 0.53,
+  centerFrequency: 22,
+  contrast: 1,
+  fovDegrees: 45,
+  gainLateral: 0.054,
+  gainPerpendicular: 0.604,
+  gamma: 1,
+  glowColor: Object.freeze([0.12, 0.84, 1] as const),
+  glowLevel: 0.693,
+  inputLevel: 1,
+  intensity: 0.46,
+  noiseAmount: 0.04,
+  noiseSpeed: 30,
+  particleSpeed: 0.34,
+  preShrink: 1,
+  projectionDepth: 5,
+  radius: 0.4,
+  rampLevel: 0.788,
+  ribbonWidth: 0.077,
+  sampleStep: 1,
+  spinDegreesPerSecond: Object.freeze([600, 180, 300] as const),
+  temporalSmooth: 0,
+  threshold: 0,
+  wrinkleDrift: 0.12,
+  wrinkleSigma: 0.158,
+  wrinkleSpeed: 8,
+})
+
 export const THUNDER_WEBGL2_PASS_GRAPH = Object.freeze([
   'raw',
   'blur-1',
@@ -56,6 +86,11 @@ export type ThunderWebGl2GpuFailureStage =
 export interface ThunderWebGl2Point {
   x: number
   y: number
+  /** Stage5.3 topology depth. Optional only for legacy test fixtures. */
+  z?: number
+  worldX?: number
+  worldY?: number
+  worldZ?: number
 }
 
 export interface ThunderWebGl2Candidate extends ThunderWebGl2Point {
@@ -64,6 +99,11 @@ export interface ThunderWebGl2Candidate extends ThunderWebGl2Point {
 
 export interface ThunderWebGl2SourceBirth extends ThunderWebGl2Point {
   index: number
+  birthId?: number
+  birthTag?: number
+  birthOriginX?: number
+  birthOriginY?: number
+  birthOriginZ?: number
   bornAtMs: number
   lifeMs: number
   ageMs: number
@@ -115,6 +155,12 @@ export interface ThunderWebGl2Tone {
   gamma: number
   feedback: number
   pulse: number
+  contrast?: number
+  glowColor?: readonly [number, number, number]
+  glowLevel?: number
+  inputLevel?: number
+  intensity?: number
+  rampLevel?: number
 }
 
 export interface ThunderWebGl2SurfaceBoundary {

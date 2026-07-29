@@ -194,7 +194,7 @@ describe('Thunder Ball WebGL2 engine', () => {
     )
   })
 
-  it('renders an exact recipe frame, a reduced live subset in the same epoch, and an empty temporal-decay frame', () => {
+  it('renders an exact recipe frame, a reduced live subset, and an empty zero-temporal frame', () => {
     const fake = createFakeThunderGl()
     const engine = new ThunderBallWebGl2Engine({
       gl: fake.gl,
@@ -232,7 +232,7 @@ describe('Thunder Ball WebGL2 engine', () => {
     const reducedFrame = frameFromConnections(liveConnections)
     const emptyFrame = frameFromConnections(Object.freeze([]))
 
-    expect(sameEpoch.epoch).toBe(topology.epoch)
+    expect(sameEpoch.epoch).toBeGreaterThan(topology.epoch)
     expect(exactFrame.ribbons).toHaveLength(21)
     expect(reducedFrame.ribbons.length).toBeGreaterThan(0)
     expect(reducedFrame.ribbons.length).toBeLessThan(21)
@@ -404,7 +404,7 @@ describe('Thunder Ball WebGL2 engine', () => {
     })
   })
 
-  it('restores white source core, subordinate cyan branches, and straight coverage', () => {
+  it('keeps the raw mesh white so Stage5.3 color is applied only after blur', () => {
     const base = {
       sourceEnergy: 0.5788,
       coreWidth: 0.08,
@@ -435,28 +435,14 @@ describe('Thunder Ball WebGL2 engine', () => {
     })
 
     expect(black).toEqual({ red: 0, green: 0, blue: 0, alpha: 0 })
-    expect(sourceCore.red).toBeGreaterThan(1)
-    expect(sourceCore.green).toBeGreaterThanOrEqual(sourceCore.red)
-    expect(sourceCore.blue).toBeGreaterThanOrEqual(sourceCore.green)
-    expect(sourceCore.alpha).toBeGreaterThanOrEqual(0.88)
-    expect(sourceCore.alpha).toBeLessThanOrEqual(1)
-    expect(1 - sourceCore.alpha).toBeLessThanOrEqual(0.12)
-    expect(sourceCore.red).toBeGreaterThan(branchCore.red * 4)
-    expect(branchHalo.blue).toBeGreaterThan(branchHalo.green)
-    expect(branchHalo.green).toBeGreaterThan(branchHalo.red)
-    expect(branchHalo.alpha).toBeGreaterThan(0)
-    expect(branchHalo.alpha).toBeLessThan(0.2)
-    expect(branchHalo.blue).toBeGreaterThan(branchHalo.alpha)
-    const union = [sourceCore, sourceCore, branchHalo].reduce(
-      (peak, sample) => ({
-        red: Math.max(peak.red, sample.red),
-        green: Math.max(peak.green, sample.green),
-        blue: Math.max(peak.blue, sample.blue),
-        alpha: Math.max(peak.alpha, sample.alpha),
-      }),
-      { red: 0, green: 0, blue: 0, alpha: 0 }
-    )
-    expect(union).toEqual(sourceCore)
+    expect(sourceCore).toEqual({
+      red: base.sourceEnergy,
+      green: base.sourceEnergy,
+      blue: base.sourceEnergy,
+      alpha: base.sourceEnergy,
+    })
+    expect(branchCore).toEqual(sourceCore)
+    expect(branchHalo).toEqual(sourceCore)
     const coreOverGreen = sourceOver([0.92, 0.96, 1, 0.84], [0, 1, 0])
     const haloOverGreen = sourceOver([0.04, 0.22, 0.38, 0.12], [0, 1, 0])
     expect(distance(coreOverGreen, [0.92, 0.96, 1])).toBeLessThan(
@@ -466,7 +452,7 @@ describe('Thunder Ball WebGL2 engine', () => {
       distance(haloOverGreen, [0.04, 0.22, 0.38])
     )
     expect(THUNDER_WEBGL2_RIBBON_FRAGMENT_SHADER).toContain(
-      'float coverage = 1.0 - pow(1.0 - carriedEnergy, 4.0)'
+      'outColor = vec4(vec3(sourceEnergy), sourceEnergy)'
     )
   })
 
@@ -546,10 +532,10 @@ describe('Thunder Ball WebGL2 engine', () => {
         .sort((left, right) => left - right)
     )
     expect(THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER).toContain(
-      '1.0 - pow(1.0 - clamp(visibleEnergy, 0.0, 1.0), 2.0)'
+      'mix(current, history, clamp(uFeedback, 0.0, 0.9999))'
     )
     expect(THUNDER_WEBGL2_TEMPORAL_FRAGMENT_SHADER).not.toContain(
-      'accumulated.a'
+      'max(current, history'
     )
   })
 
@@ -1081,6 +1067,7 @@ function createFakeThunderGl(
     uniform1f,
     uniform1i: jest.fn(),
     uniform2f: blurSteps,
+    uniform3f: jest.fn(),
     uniform4f: jest.fn(),
     useProgram: jest.fn(),
     vertexAttribPointer: jest.fn(),
