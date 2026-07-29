@@ -10,16 +10,6 @@ const FIRE_P027_LUMA_G = 0.7152
 const FIRE_P027_LUMA_B = 0.0722
 const FIRE_P027_ALPHA_LUMA_START = 0.015
 const FIRE_P027_ALPHA_LUMA_END = 0.18
-const FIRE_P027_DISPLAY_EXPOSURE = 1.32
-const FIRE_P027_DISPLAY_GAMMA = 1.8
-const FIRE_P027_CORE_LUMA_START = 0.72
-const FIRE_P027_CORE_LUMA_END = 0.94
-const FIRE_P027_CORE_MIX = 0.62
-const FIRE_P027_CORE_COLOR = {
-  r: 1,
-  g: 0.96,
-  b: 0.82,
-} as const
 
 /**
  * CPU reference for the raster shader's additive contribution.
@@ -57,32 +47,22 @@ export function composeFireP027SpriteSample(
   }
 }
 
-/** CPU reference for the bounded final display transform used by WebGL2. */
+/**
+ * CPU reference for the O1-compatible fixed-output display boundary.
+ *
+ * The source recipe accumulates its colored sprite layers into a bounded
+ * target. Presentation therefore preserves the accumulated straight RGBA
+ * channel-by-channel and only applies the fixed target's 0..1 clamp. It does
+ * not add a second exposure, gamma, white-core, or luminance-alpha transform.
+ */
 export function toneMapFireP027DisplaySample(
   accumulated: Readonly<FireP027ColorSample>
 ): FireP027ColorSample {
-  const toneMappedLinearRgb = {
-    r: toneMapLinearChannel(accumulated.r),
-    g: toneMapLinearChannel(accumulated.g),
-    b: toneMapLinearChannel(accumulated.b),
-  }
-  const toneMappedLinearLuminance = luminance(toneMappedLinearRgb)
-  const core =
-    smoothstep(
-      FIRE_P027_CORE_LUMA_START,
-      FIRE_P027_CORE_LUMA_END,
-      toneMappedLinearLuminance
-    ) * FIRE_P027_CORE_MIX
-  const displayLinearRgb = {
-    r: mix(toneMappedLinearRgb.r, FIRE_P027_CORE_COLOR.r, core),
-    g: mix(toneMappedLinearRgb.g, FIRE_P027_CORE_COLOR.g, core),
-    b: mix(toneMappedLinearRgb.b, FIRE_P027_CORE_COLOR.b, core),
-  }
   return {
-    r: gammaEncodeChannel(displayLinearRgb.r),
-    g: gammaEncodeChannel(displayLinearRgb.g),
-    b: gammaEncodeChannel(displayLinearRgb.b),
-    a: clamp01(luminance(displayLinearRgb)),
+    r: clamp01(accumulated.r),
+    g: clamp01(accumulated.g),
+    b: clamp01(accumulated.b),
+    a: clamp01(accumulated.a),
   }
 }
 
@@ -102,6 +82,20 @@ export interface FireP027MetricSummary {
   hotPixels: number
   warmPixels: number
   hotToWarmRatio: number
+  clippedPixels: number
+  clippedArea: number
+  nearWhitePixels: number
+  nearWhiteFraction: number
+  saturatedRedFraction: number
+  saturatedOrangeFraction: number
+  saturatedYellowFraction: number
+  internalLuminanceMean: number
+  internalLuminanceVariance: number
+  hotCentroidX: number
+  hotCentroidY: number
+  warmCentroidX: number
+  warmCentroidY: number
+  hotInsideWarmBbox: boolean
   outsideSupportMaxRgb: number
   outsideSupportAlphaMin: number
   outsideSupportAlphaMax: number
@@ -133,6 +127,21 @@ export function summarizeFireP027RgbaMetrics(
   let supportPixels = 0
   let hotPixels = 0
   let warmPixels = 0
+  let clippedPixels = 0
+  let nearWhitePixels = 0
+  let saturatedRedPixels = 0
+  let saturatedOrangePixels = 0
+  let saturatedYellowPixels = 0
+  let luminanceMean = 0
+  let luminanceM2 = 0
+  let hotX = 0
+  let hotY = 0
+  let warmX = 0
+  let warmY = 0
+  let warmMinX = safeWidth
+  let warmMinY = safeHeight
+  let warmMaxXExclusive = 0
+  let warmMaxYExclusive = 0
   let minX = safeWidth
   let minY = safeHeight
   let maxXExclusive = 0
@@ -179,6 +188,9 @@ export function summarizeFireP027RgbaMetrics(
       binaryX += x + 0.5
       binaryY += y + 0.5
       const pixelLuminance = luminance({ r, g, b })
+      const luminanceDelta = pixelLuminance - luminanceMean
+      luminanceMean += luminanceDelta / supportPixels
+      luminanceM2 += luminanceDelta * (pixelLuminance - luminanceMean)
       weightedX += (x + 0.5) * pixelLuminance
       weightedY += (y + 0.5) * pixelLuminance
       weightSum += pixelLuminance
@@ -186,9 +198,34 @@ export function summarizeFireP027RgbaMetrics(
       if (y >= (safeHeight * 2) / 3) lowerThirdSupport += 1
 
       const hot = pixelLuminance >= 0.7 && r >= 0.7 && g >= 0.35
-      if (hot) hotPixels += 1
-      else if (pixelLuminance >= 0.05 && r >= 0.9 * g && g >= 1.1 * b) {
+      const warm =
+        !hot && pixelLuminance >= 0.05 && r >= 0.9 * g && g >= 1.1 * b
+      if (hot) {
+        hotPixels += 1
+        hotX += x + 0.5
+        hotY += y + 0.5
+      } else if (warm) {
         warmPixels += 1
+        warmX += x + 0.5
+        warmY += y + 0.5
+        warmMinX = Math.min(warmMinX, x)
+        warmMinY = Math.min(warmMinY, y)
+        warmMaxXExclusive = Math.max(warmMaxXExclusive, x + 1)
+        warmMaxYExclusive = Math.max(warmMaxYExclusive, y + 1)
+      }
+
+      if (maximumRgb >= 254 / 255) clippedPixels += 1
+      const minimumRgb = Math.min(r, g, b)
+      if (minimumRgb >= 0.92 && maximumRgb - minimumRgb <= 0.08) {
+        nearWhitePixels += 1
+      }
+      const saturation =
+        maximumRgb > 0 ? (maximumRgb - minimumRgb) / maximumRgb : 0
+      if (saturation >= 0.25) {
+        const hue = rgbHueDegrees(r, g, b)
+        if (hue < 30 || hue >= 330) saturatedRedPixels += 1
+        else if (hue < 55) saturatedOrangePixels += 1
+        else if (hue < 75) saturatedYellowPixels += 1
       }
     }
   }
@@ -219,6 +256,27 @@ export function summarizeFireP027RgbaMetrics(
     hotPixels,
     warmPixels,
     hotToWarmRatio: hotPixels / Math.max(1, warmPixels),
+    clippedPixels,
+    clippedArea: clippedPixels / Math.max(1, supportPixels),
+    nearWhitePixels,
+    nearWhiteFraction: nearWhitePixels / Math.max(1, supportPixels),
+    saturatedRedFraction: saturatedRedPixels / Math.max(1, supportPixels),
+    saturatedOrangeFraction: saturatedOrangePixels / Math.max(1, supportPixels),
+    saturatedYellowFraction: saturatedYellowPixels / Math.max(1, supportPixels),
+    internalLuminanceMean: luminanceMean,
+    internalLuminanceVariance:
+      supportPixels > 0 ? luminanceM2 / supportPixels : 0,
+    hotCentroidX: hotPixels > 0 ? hotX / hotPixels / safeWidth : 0,
+    hotCentroidY: hotPixels > 0 ? hotY / hotPixels / safeHeight : 0,
+    warmCentroidX: warmPixels > 0 ? warmX / warmPixels / safeWidth : 0,
+    warmCentroidY: warmPixels > 0 ? warmY / warmPixels / safeHeight : 0,
+    hotInsideWarmBbox:
+      hotPixels > 0 &&
+      warmPixels > 0 &&
+      hotX / hotPixels >= warmMinX &&
+      hotX / hotPixels <= warmMaxXExclusive &&
+      hotY / hotPixels >= warmMinY &&
+      hotY / hotPixels <= warmMaxYExclusive,
     outsideSupportMaxRgb: outsideMaxRgb,
     outsideSupportAlphaMin: outsideCount > 0 ? outsideAlphaMin : 0,
     outsideSupportAlphaMax: outsideAlphaMax,
@@ -648,35 +706,8 @@ uniform sampler2D uAccumulatedFire;
 layout(location = 0) out vec4 fragColor;
 void main() {
   vec4 accumulated = texture(uAccumulatedFire, vUV);
-  vec3 nonNegativeRgb = max(accumulated.rgb, vec3(0.0));
-  vec3 toneMappedLinearRgb = vec3(1.0) - exp(-nonNegativeRgb * ${FIRE_P027_DISPLAY_EXPOSURE});
-  float toneMappedLinearLuminance = dot(toneMappedLinearRgb, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B}));
-  float core = smoothstep(${FIRE_P027_CORE_LUMA_START}, ${FIRE_P027_CORE_LUMA_END}, toneMappedLinearLuminance)
-    * ${FIRE_P027_CORE_MIX};
-  vec3 displayLinearRgb = mix(
-    toneMappedLinearRgb,
-    vec3(${FIRE_P027_CORE_COLOR.r.toFixed(2)}, ${FIRE_P027_CORE_COLOR.g.toFixed(2)}, ${FIRE_P027_CORE_COLOR.b.toFixed(2)}),
-    core
-  );
-  float visibleAlpha = clamp(
-    dot(displayLinearRgb, vec3(${FIRE_P027_LUMA_R}, ${FIRE_P027_LUMA_G}, ${FIRE_P027_LUMA_B})),
-    0.0,
-    1.0
-  );
-  vec3 displayRgb = pow(
-    clamp(displayLinearRgb, vec3(0.0), vec3(1.0)),
-    vec3(1.0 / ${FIRE_P027_DISPLAY_GAMMA})
-  );
-  fragColor = vec4(displayRgb, visibleAlpha);
+  fragColor = clamp(accumulated, vec4(0.0), vec4(1.0));
 }`
-
-function toneMapLinearChannel(value: number): number {
-  return 1 - Math.exp(-nonNegative(value) * FIRE_P027_DISPLAY_EXPOSURE)
-}
-
-function gammaEncodeChannel(value: number): number {
-  return Math.pow(clamp01(value), 1 / FIRE_P027_DISPLAY_GAMMA)
-}
 
 function coherentNoise1(
   position: Readonly<FireP027VectorSample>,
@@ -768,14 +799,23 @@ function luminance(
   )
 }
 
+function rgbHueDegrees(r: number, g: number, b: number): number {
+  const maximum = Math.max(r, g, b)
+  const minimum = Math.min(r, g, b)
+  const delta = maximum - minimum
+  if (delta === 0) return 0
+  const sector =
+    maximum === r
+      ? ((g - b) / delta) % 6
+      : maximum === g
+        ? (b - r) / delta + 2
+        : (r - g) / delta + 4
+  return (((sector * 60) % 360) + 360) % 360
+}
+
 function smoothstep(edge0: number, edge1: number, value: number): number {
   const t = clamp01((finiteOr(value, edge0) - edge0) / (edge1 - edge0))
   return t * t * (3 - 2 * t)
-}
-
-function mix(left: number, right: number, amount: number): number {
-  const t = clamp01(amount)
-  return left * (1 - t) + right * t
 }
 
 function nonNegative(value: number): number {

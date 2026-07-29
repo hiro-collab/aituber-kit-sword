@@ -646,9 +646,9 @@ export class FireP027WebGlEngine implements FireP027Surface {
       this.resources,
       width,
       height,
-      gl.RGBA16F,
+      gl.RGBA8,
       gl.RGBA,
-      gl.HALF_FLOAT,
+      gl.UNSIGNED_BYTE,
       gl.LINEAR
     )
     this.outputFramebuffer = createFramebuffer(gl, this.resources, [

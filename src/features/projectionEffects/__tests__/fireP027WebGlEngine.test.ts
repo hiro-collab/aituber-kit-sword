@@ -30,6 +30,7 @@ interface FakeP027WebGl2 {
   deleteAttempts: Record<ResourceKind, FakeResource[]>
   drawCalls: jest.Mock
   successfulDeletes: Record<ResourceKind, FakeResource[]>
+  texImage2D: jest.Mock
   uniform4f: jest.Mock
 }
 
@@ -125,6 +126,7 @@ function createFakeP027WebGl2(
     RGBA: 22,
     RGBA16F: 23,
     RGBA32F: 24,
+    RGBA8: 41,
     STATIC_DRAW: 25,
     TEXTURE0: 30,
     TEXTURE_2D: 31,
@@ -134,11 +136,13 @@ function createFakeP027WebGl2(
     TEXTURE_WRAP_S: 35,
     TEXTURE_WRAP_T: 36,
     TRIANGLES: 37,
+    UNSIGNED_BYTE: 42,
     VERTEX_SHADER: 38,
   }
   const drawCalls = jest.fn()
   const blendEquation = jest.fn()
   const blendFunc = jest.fn()
+  const texImage2D = jest.fn()
   const uniform4f = jest.fn()
   const gl = {
     ...constants,
@@ -202,7 +206,7 @@ function createFakeP027WebGl2(
     readBuffer: jest.fn(),
     readPixels: jest.fn(),
     shaderSource: jest.fn(),
-    texImage2D: jest.fn(),
+    texImage2D,
     texParameteri: jest.fn(),
     texStorage3D: jest.fn(),
     texSubImage2D: jest.fn(),
@@ -232,6 +236,7 @@ function createFakeP027WebGl2(
     deleteAttempts,
     drawCalls,
     successfulDeletes,
+    texImage2D,
     uniform4f,
   }
 }
@@ -309,6 +314,23 @@ describe('P027 Fire WebGL engine boundary', () => {
 
     expect(fake.blendEquation).toHaveBeenCalledWith(12)
     expect(fake.blendFunc).toHaveBeenCalledWith(40, 21)
+    engine.dispose()
+  })
+
+  it('uses an O1-compatible fixed RGBA8 accumulation target', () => {
+    const fake = createFakeP027WebGl2()
+    const engine = new FireP027WebGlEngine(fake.canvas)
+
+    const rgba8Allocations = fake.texImage2D.mock.calls.filter(
+      ([, , internalFormat, , , , format, type]) =>
+        internalFormat === 41 && format === 22 && type === 42
+    )
+    const floatingAllocations = fake.texImage2D.mock.calls.filter(
+      ([, , internalFormat]) => internalFormat === 23
+    )
+
+    expect(rgba8Allocations).toHaveLength(1)
+    expect(floatingAllocations).toHaveLength(0)
     engine.dispose()
   })
 

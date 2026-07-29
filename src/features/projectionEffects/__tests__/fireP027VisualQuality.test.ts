@@ -76,7 +76,7 @@ describe('P027 Fire visual compositing quality', () => {
     }
   })
 
-  it('tone maps brightness monotonically with finite bounded alpha', () => {
+  it('clamps accumulated fixed output monotonically without recoloring it', () => {
     const samples = [0, 0.08, 0.25, 0.8, 2, 8].map((energy) =>
       toneMapFireP027DisplaySample({
         r: energy,
@@ -99,39 +99,32 @@ describe('P027 Fire visual compositing quality', () => {
     }
   })
 
-  it('derives bounded coverage from linear display luminance before RGB gamma', () => {
-    const black = toneMapFireP027DisplaySample({ r: 0, g: 0, b: 0, a: 9 })
-    const dark = toneMapFireP027DisplaySample({
-      r: 0.005,
-      g: 0.001,
+  it('preserves straight alpha instead of replacing it with display luminance', () => {
+    const opaqueBlack = toneMapFireP027DisplaySample({
+      r: 0,
+      g: 0,
       b: 0,
-      a: 9,
+      a: 0.7,
     })
-    const orange = toneMapFireP027DisplaySample({
+    const transparentOrange = toneMapFireP027DisplaySample({
       r: 0.8,
       g: 0.25,
       b: 0.02,
       a: 0,
     })
-    const hot = toneMapFireP027DisplaySample({
+    const bounded = toneMapFireP027DisplaySample({
       r: 8,
       g: 5,
       b: 0.4,
-      a: 0,
+      a: 3,
     })
 
-    expect(black).toEqual({ r: 0, g: 0, b: 0, a: 0 })
-    expect(dark.a).toBeGreaterThan(0)
-    expect(dark.a).toBeLessThan(0.01)
-    expect(orange.a).toBeGreaterThan(0.25)
-    expect(orange.a).toBeLessThan(0.7)
-    expect(hot.a).toBeGreaterThan(0.9)
-    expect(hot.a).toBeLessThanOrEqual(1)
-    expect(orange.r).toBeGreaterThan(orange.g)
-    expect(orange.g).toBeGreaterThan(orange.b)
+    expect(opaqueBlack).toEqual({ r: 0, g: 0, b: 0, a: 0.7 })
+    expect(transparentOrange).toEqual({ r: 0.8, g: 0.25, b: 0.02, a: 0 })
+    expect(bounded).toEqual({ r: 1, g: 1, b: 0.4, a: 1 })
   })
 
-  it('produces a yellow-white core without flattening the whole result to white', () => {
+  it('keeps the accumulated orange body distinct from the hottest tail', () => {
     const edge = toneMapFireP027DisplaySample({
       r: 0.35,
       g: 0.08,
@@ -139,17 +132,15 @@ describe('P027 Fire visual compositing quality', () => {
       a: 0.25,
     })
     const core = toneMapFireP027DisplaySample({
-      r: 8,
-      g: 5,
-      b: 0.4,
-      a: 4,
+      r: 0.94,
+      g: 0.71,
+      b: 0.12,
+      a: 0.91,
     })
 
-    expect(edge.r).toBeGreaterThan(edge.g)
-    expect(edge.g).toBeGreaterThan(edge.b)
-    expect(core.r).toBeGreaterThanOrEqual(core.g)
-    expect(core.g).toBeGreaterThan(core.b)
-    expect(core.r).toBeLessThan(1)
+    expect(edge).toEqual({ r: 0.35, g: 0.08, b: 0, a: 0.25 })
+    expect(core).toEqual({ r: 0.94, g: 0.71, b: 0.12, a: 0.91 })
+    expect(core.r - core.g).toBeGreaterThan(edge.g - edge.b)
     expect(core).not.toEqual({ r: 1, g: 1, b: 1, a: 1 })
   })
 
@@ -215,101 +206,28 @@ describe('P027 Fire visual compositing quality', () => {
     expect(core.g).toBeGreaterThan(core.b)
     expect(composite.r).toBeGreaterThan(0.65)
     expect(composite.r).toBeGreaterThan(composite.g - 0.05)
-    expect(composite.b).toBeGreaterThan(greenBackground.b)
+    expect(composite.b).toBeLessThanOrEqual(greenBackground.b + 0.01)
     expect(greenBackground.g * (1 - core.a)).toBeLessThan(0.13)
     expect(darkVeil.a).toBeLessThan(0.01)
   })
 
-  it('keeps hot white-yellow samples a minority while warm midtones dominate the weak flame body', () => {
-    const controls = mapFireParametersToP027Controls({
-      masterIntensity: 0.5788,
-      temperature: 0.93,
-      bloomGain: 0.92,
-      postProcessing: true,
-    })
-    const tint = {
-      r: controls.tintR,
-      g: controls.tintG,
-      b: controls.tintB,
-      a: controls.tintA,
-    }
+  it('does not turn distinct source-orange samples into a common pale core', () => {
     const displays = [
-      ...Array.from({ length: 8 }, (_, index) =>
-        toneMapFireP027DisplaySample(
-          composeFireP027SpriteSample(
-            {
-              r: 0.01 + index * 0.003,
-              g: 0.002 + index * 0.001,
-              b: 0,
-              a: 0.04 + index * 0.005,
-            },
-            tint,
-            1
-          )
-        )
-      ),
-      ...Array.from({ length: 6 }, (_, index) =>
-        toneMapFireP027DisplaySample(
-          accumulateSamples(
-            Array.from({ length: 2 }, () =>
-              composeFireP027SpriteSample(
-                {
-                  r: 0.42 + index * 0.04,
-                  g: 0.12 + index * 0.025,
-                  b: 0.006,
-                  a: 0.28 + index * 0.02,
-                },
-                tint,
-                1
-              )
-            )
-          )
-        )
-      ),
-      ...Array.from({ length: 2 }, (_, index) =>
-        toneMapFireP027DisplaySample(
-          accumulateSamples(
-            Array.from({ length: 4 }, () =>
-              composeFireP027SpriteSample(
-                {
-                  r: 1.1 + index * 0.2,
-                  g: 0.68 + index * 0.08,
-                  b: 0.08,
-                  a: 0.6 + index * 0.04,
-                },
-                tint,
-                1
-              )
-            )
-          )
-        )
-      ),
-    ]
-    const hotWhiteYellow = displays.filter(
-      (sample) =>
-        sample.r > 0.82 && sample.g > 0.72 && sample.b > 0.1 && sample.a > 0.7
-    )
-    const warmMidtones = displays.filter(
-      (sample) =>
-        sample.r > sample.g &&
-        sample.g > sample.b &&
-        sample.r > 0.35 &&
-        sample.r < 0.9 &&
-        sample.a > 0.15
-    )
-    const paleFogOutsideCore = displays.slice(0, 14).filter((sample) => {
-      const maximum = Math.max(sample.r, sample.g, sample.b)
-      const minimum = Math.min(sample.r, sample.g, sample.b)
-      return sample.a > 0.25 && maximum - minimum < 0.08
-    })
+      { r: 0.22, g: 0.04, b: 0, a: 0.16 },
+      { r: 0.48, g: 0.17, b: 0.01, a: 0.41 },
+      { r: 0.73, g: 0.39, b: 0.03, a: 0.68 },
+      { r: 0.94, g: 0.76, b: 0.13, a: 0.92 },
+    ].map(toneMapFireP027DisplaySample)
 
-    expect(hotWhiteYellow.length).toBeGreaterThan(0)
-    expect(hotWhiteYellow.length).toBeLessThan(displays.length / 3)
-    expect(warmMidtones.length).toBeGreaterThan(paleFogOutsideCore.length)
+    expect(displays).toEqual([
+      { r: 0.22, g: 0.04, b: 0, a: 0.16 },
+      { r: 0.48, g: 0.17, b: 0.01, a: 0.41 },
+      { r: 0.73, g: 0.39, b: 0.03, a: 0.68 },
+      { r: 0.94, g: 0.76, b: 0.13, a: 0.92 },
+    ])
     for (const sample of displays) {
-      expect(Object.values(sample).every(Number.isFinite)).toBe(true)
-      expect(sample.a).toBeGreaterThanOrEqual(0)
-      expect(sample.a).toBeLessThanOrEqual(1)
+      expect(sample.r).toBeGreaterThan(sample.g)
+      expect(sample.g).toBeGreaterThan(sample.b)
     }
   })
 
@@ -336,10 +254,10 @@ describe('P027 Fire visual compositing quality', () => {
     expect(display.a).toBeGreaterThan(0.95)
     expect(display.a).toBeLessThanOrEqual(1)
     expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('0.86')
-    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('dot(displayLinearRgb')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('dot(')
   })
 
-  it('locks the shader to monotonic additive energy and straight display RGBA', () => {
+  it('locks additive energy and an O1-compatible straight fixed-output display', () => {
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).not.toContain(
       'sourceColor.rgb *= sourceColor.a'
     )
@@ -351,15 +269,12 @@ describe('P027 Fire visual compositing quality', () => {
       'fragColor = vec4(sourceRgb, correlatedAlpha);'
     )
     expect(FIRE_P027_RASTER_FRAGMENT_SHADER).toContain('correlatedAlpha')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('exp(')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('pow(')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('smoothstep(')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('visibleAlpha')
     expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
-      'toneMappedLinearLuminance'
-    )
-    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
-      'vec3 displayRgb = pow('
-    )
-    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain('visibleAlpha')
-    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
-      'fragColor = vec4(displayRgb, visibleAlpha);'
+      'fragColor = clamp(accumulated, vec4(0.0), vec4(1.0));'
     )
   })
 })

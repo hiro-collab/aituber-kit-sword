@@ -7,10 +7,12 @@ import {
 } from '../plugins/fire/p027/contracts'
 import { mapFireParametersToP027Controls } from '../plugins/fire/p027/renderer'
 import {
+  FIRE_P027_DISPLAY_FRAGMENT_SHADER,
   FIRE_P027_GENERATOR_FRAGMENT_SHADER,
   FIRE_P027_RASTER_FRAGMENT_SHADER,
   FIRE_P027_RASTER_VERTEX_SHADER,
   summarizeFireP027RgbaMetrics,
+  toneMapFireP027DisplaySample,
 } from '../plugins/fire/p027/shaders'
 
 describe('P027 Fire O1 source-oracle parity boundary', () => {
@@ -129,6 +131,35 @@ describe('P027 Fire O1 source-oracle parity boundary', () => {
     )
   })
 
+  it('preserves the O1 yellow core and orange-red pattern vocabulary without white expansion', () => {
+    const rgba = rgbaRows([
+      [BLACK, BLACK, BLACK, BLACK, BLACK],
+      [BLACK, RED, ORANGE, RED, BLACK],
+      [BLACK, ORANGE, YELLOW, ORANGE, BLACK],
+      [BLACK, RED, NEAR_WHITE, RED, BLACK],
+      [BLACK, BLACK, BLACK, BLACK, BLACK],
+    ])
+    const summary = summarizeFireP027RgbaMetrics(rgba, 5, 5)
+
+    expect(summary.supportArea).toBeCloseTo(9 / 25, 12)
+    expect(summary.clippedArea).toBeCloseTo(2 / 9, 12)
+    expect(summary.nearWhiteFraction).toBeCloseTo(1 / 9, 12)
+    expect(summary.nearWhiteFraction).toBeLessThan(summary.clippedArea)
+    expect(summary.saturatedRedFraction).toBeGreaterThan(0)
+    expect(summary.saturatedOrangeFraction).toBeGreaterThan(0)
+    expect(summary.saturatedYellowFraction).toBeGreaterThan(0)
+    expect(summary.internalLuminanceVariance).toBeGreaterThan(0.02)
+    expect(summary.hotInsideWarmBbox).toBe(true)
+
+    expect(toneMapFireP027DisplaySample(ORANGE)).toEqual(ORANGE)
+    expect(toneMapFireP027DisplaySample(YELLOW)).toEqual(YELLOW)
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('exp(')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).not.toContain('pow(')
+    expect(FIRE_P027_DISPLAY_FRAGMENT_SHADER).toContain(
+      'fragColor = clamp(accumulated, vec4(0.0), vec4(1.0));'
+    )
+  })
+
   it('reduces transient pixels to bounded oracle vocabulary without retaining them', () => {
     const rgba = new Float32Array([
       0, 0, 0, 0.2, 1, 0.8, 0.2, 0.7, 0, 0, 0, 0, 0, 0, 0, 0.1, 0.82, 0.39,
@@ -176,6 +207,25 @@ function advanceLag(previous: number, rawGate: number): number {
     1 -
     Math.exp(-FIRE_P027_FIXED_DT_SECONDS / FIRE_P027_SOURCE_SIZE_LAG_SECONDS)
   return previous + (rawGate - previous) * response
+}
+
+const BLACK = { r: 0, g: 0, b: 0, a: 0 } as const
+const RED = { r: 0.8, g: 0.25, b: 0.02, a: 0.65 } as const
+const ORANGE = { r: 0.9, g: 0.5, b: 0.03, a: 0.75 } as const
+const YELLOW = { r: 1, g: 1, b: 0.1, a: 1 } as const
+const NEAR_WHITE = { r: 1, g: 0.96, b: 0.93, a: 1 } as const
+
+function rgbaRows(
+  rows: readonly (readonly Readonly<{
+    r: number
+    g: number
+    b: number
+    a: number
+  }>[])[]
+): Float32Array {
+  return new Float32Array(
+    rows.flatMap((row) => row.flatMap(({ r, g, b, a }) => [r, g, b, a]))
+  )
 }
 
 function advanceLagFrames(
