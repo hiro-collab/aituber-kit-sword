@@ -510,7 +510,11 @@ export class FireP027WebGlEngine implements FireP027Surface {
     gl.texStorage3D(
       gl.TEXTURE_2D_ARRAY,
       1,
-      gl.RGBA16F,
+      // O1 stores each generated layer at a fixed RGBA boundary. RGBA8
+      // clamps fragment output to [0, 1] and quantizes it before the layer is
+      // sampled by the particle raster, preventing HDR generator values from
+      // flattening the orange-red structure during later accumulation.
+      gl.RGBA8,
       FIRE_P027_SLICE_SIZE,
       FIRE_P027_SLICE_SIZE,
       FIRE_P027_LAYER_COUNT

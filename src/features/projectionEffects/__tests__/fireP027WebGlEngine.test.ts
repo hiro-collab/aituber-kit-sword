@@ -1,5 +1,7 @@
 import {
   FIRE_P027_DEFAULT_CONTROLS,
+  FIRE_P027_LAYER_COUNT,
+  FIRE_P027_SLICE_SIZE,
   FireP027CapabilityError,
 } from '../plugins/fire/p027/contracts'
 import {
@@ -31,6 +33,7 @@ interface FakeP027WebGl2 {
   drawCalls: jest.Mock
   successfulDeletes: Record<ResourceKind, FakeResource[]>
   texImage2D: jest.Mock
+  texStorage3D: jest.Mock
   uniform4f: jest.Mock
 }
 
@@ -143,6 +146,7 @@ function createFakeP027WebGl2(
   const blendEquation = jest.fn()
   const blendFunc = jest.fn()
   const texImage2D = jest.fn()
+  const texStorage3D = jest.fn()
   const uniform4f = jest.fn()
   const gl = {
     ...constants,
@@ -208,7 +212,7 @@ function createFakeP027WebGl2(
     shaderSource: jest.fn(),
     texImage2D,
     texParameteri: jest.fn(),
-    texStorage3D: jest.fn(),
+    texStorage3D,
     texSubImage2D: jest.fn(),
     uniform1i: jest.fn(),
     uniform4f,
@@ -237,6 +241,7 @@ function createFakeP027WebGl2(
     drawCalls,
     successfulDeletes,
     texImage2D,
+    texStorage3D,
     uniform4f,
   }
 }
@@ -317,7 +322,7 @@ describe('P027 Fire WebGL engine boundary', () => {
     engine.dispose()
   })
 
-  it('uses an O1-compatible fixed RGBA8 accumulation target', () => {
+  it('uses O1-compatible fixed RGBA8 boundaries for all 120 snapshots and accumulation', () => {
     const fake = createFakeP027WebGl2()
     const engine = new FireP027WebGlEngine(fake.canvas)
 
@@ -331,6 +336,26 @@ describe('P027 Fire WebGL engine boundary', () => {
 
     expect(rgba8Allocations).toHaveLength(1)
     expect(floatingAllocations).toHaveLength(0)
+    expect(fake.texStorage3D).toHaveBeenCalledTimes(1)
+    expect(fake.texStorage3D).toHaveBeenCalledWith(
+      32,
+      1,
+      41,
+      FIRE_P027_SLICE_SIZE,
+      FIRE_P027_SLICE_SIZE,
+      FIRE_P027_LAYER_COUNT
+    )
+    expect(
+      fake.texStorage3D.mock.calls.some(
+        ([target, levels, internalFormat, width, height, depth]) =>
+          target === 32 &&
+          levels === 1 &&
+          internalFormat === 23 &&
+          width === FIRE_P027_SLICE_SIZE &&
+          height === FIRE_P027_SLICE_SIZE &&
+          depth === FIRE_P027_LAYER_COUNT
+      )
+    ).toBe(false)
     engine.dispose()
   })
 
