@@ -1916,7 +1916,7 @@ describe('getThoughtCoreChatResponseStream motion bridge', () => {
     window.removeEventListener(MOTION_STIMULUS_RECEIVER_EVENT, listener)
   })
 
-  it('suppresses unsafe motion payloads without breaking speech streaming', async () => {
+  it('suppresses unsafe motion and a feedback candidate while streaming only the later authoritative response with feedback disabled', async () => {
     const dispatched: CustomEvent[] = []
     window.addEventListener(MOTION_STIMULUS_RECEIVER_EVENT, (event) => {
       dispatched.push(event as CustomEvent)
@@ -1928,7 +1928,18 @@ describe('getThoughtCoreChatResponseStream motion bridge', () => {
         }),
         {
           type: 'feedback.requested',
+          session_id: 'session_feedback_disabled',
+          turn_id: 'turn_feedback_disabled',
           data: { speech: 'もう一度確認します' },
+        },
+        {
+          type: 'assistant.speech_delta',
+          session_id: 'session_feedback_disabled',
+          turn_id: 'turn_feedback_disabled',
+          data: {
+            delta: '正規の応答だけを表示します。',
+            assistant_message_id: 'msg_feedback_disabled',
+          },
         },
       ])
     )
@@ -1940,9 +1951,89 @@ describe('getThoughtCoreChatResponseStream motion bridge', () => {
     )
     const text = await readTextStream(stream)
 
-    expect(text).toBe('もう一度確認します')
+    expect(text).toBe('正規の応答だけを表示します。')
     expect(dispatched).toHaveLength(0)
+    expect(global.fetch).toHaveBeenCalledTimes(1)
   })
+
+  it.each([
+    [
+      'pending candidate at EOF',
+      [
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_disabled_eof',
+          turn_id: 'turn_feedback_disabled_eof',
+          data: { speech: '候補だけでは完了しません。' },
+        },
+      ],
+    ],
+    [
+      'duplicate pending candidate',
+      [
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_disabled_duplicate',
+          turn_id: 'turn_feedback_disabled_duplicate',
+          data: { speech: '最初の候補です。' },
+        },
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_disabled_duplicate',
+          turn_id: 'turn_feedback_disabled_duplicate',
+          data: { speech: '重複候補です。' },
+        },
+      ],
+    ],
+    [
+      'mismatched authoritative response',
+      [
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_disabled_mismatch',
+          turn_id: 'turn_feedback_disabled_mismatch',
+          data: { speech: '相関待ちです。' },
+        },
+        {
+          type: 'assistant.speech_delta',
+          session_id: 'session_feedback_disabled_mismatch',
+          turn_id: 'turn_feedback_disabled_changed',
+          data: {
+            delta: '不一致の応答です。',
+            assistant_message_id: 'msg_feedback_disabled_mismatch',
+          },
+        },
+      ],
+    ],
+  ])(
+    'fails closed for %s while output feedback submission is disabled',
+    async (_label, events) => {
+      const originalEnabled =
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '0'
+      ;(global.fetch as jest.Mock).mockResolvedValue(createSseResponse(events))
+
+      try {
+        const stream = await getThoughtCoreChatResponseStream(
+          [{ content: 'こんにちは' } as any],
+          '',
+          'session-bridge'
+        )
+        await expect(readTextStream(stream)).rejects.toThrow(
+          'closed_loop_output_feedback_failed'
+        )
+        expect(global.fetch).toHaveBeenCalledTimes(1)
+      } finally {
+        if (originalEnabled === undefined) {
+          delete process.env
+            .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+        } else {
+          process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+            originalEnabled
+        }
+      }
+    }
+  )
 
   it('suppresses motion payloads with unsafe track mask array values', async () => {
     const dispatched: CustomEvent[] = []
@@ -2450,7 +2541,180 @@ describe('getThoughtCoreChatResponseStream conversation attempt metadata', () =>
     }
   )
 
-  it('fails closed instead of streaming an uncorrelated feedback speech when output feedback is enabled', async () => {
+  it('holds feedback.requested until one later correlated canonical response presents without duplicate output or feedback sends', async () => {
+    const originalEnabled =
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+    process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
+    const onResponseMetadata = jest.fn()
+    const feedbackEventIds = ['evt_feedback_intent', 'evt_feedback_send']
+    ;(global.fetch as jest.Mock).mockImplementation(
+      async (input: RequestInfo | URL) => {
+        if (String(input) === '/api/thoughtCoreChat/') {
+          return createSseResponse([
+            {
+              type: 'feedback.requested',
+              session_id: 'session_feedback_001',
+              turn_id: 'turn_feedback_001',
+              data: { speech: '保留中の案内です。' },
+            },
+            {
+              type: 'assistant.speech_delta',
+              session_id: 'session_feedback_001',
+              turn_id: 'turn_feedback_001',
+              data: {
+                delta: '正規の応答だけを表示します。',
+                assistant_message_id: 'msg_feedback_001',
+              },
+            },
+          ])
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            event_id: feedbackEventIds.shift(),
+          }),
+        } as Response
+      }
+    )
+
+    try {
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: 'こんにちは' } as any],
+        '',
+        'session-bridge',
+        onResponseMetadata
+      )
+      await expect(readTextStream(stream)).resolves.toBe(
+        '正規の応答だけを表示します。'
+      )
+      expect(onResponseMetadata).toHaveBeenCalledTimes(1)
+      expect(onResponseMetadata).toHaveBeenCalledWith({
+        sessionId: 'session_feedback_001',
+        turnId: 'turn_feedback_001',
+        assistantMessageId: 'msg_feedback_001',
+        displayBarrier: {
+          sessionId: 'session_feedback_001',
+          turnId: 'turn_feedback_001',
+          assistantMessageId: 'msg_feedback_001',
+          channel: 'display',
+          component: 'aituber_message_store',
+          sendEventId: 'evt_feedback_send',
+        },
+      })
+      const feedbackCalls = (global.fetch as jest.Mock).mock.calls.filter(
+        ([input]) => String(input) === '/api/closed-loop-feedback'
+      )
+      expect(feedbackCalls).toHaveLength(2)
+      expect(feedbackCalls.map(([, init]) => JSON.parse(init.body))).toEqual([
+        expect.objectContaining({
+          event_kind: 'output.dispatch_intent',
+          assistant_message_id: 'msg_feedback_001',
+        }),
+        expect.objectContaining({
+          event_kind: 'output.feedback',
+          assistant_message_id: 'msg_feedback_001',
+          causal_parent_event_id: 'evt_feedback_intent',
+        }),
+      ])
+      expect(JSON.stringify(feedbackCalls)).not.toContain('保留中の案内です。')
+    } finally {
+      if (originalEnabled === undefined) {
+        delete process.env
+          .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      } else {
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+          originalEnabled
+      }
+    }
+  })
+
+  it.each([
+    [
+      'an invalid authoritative response',
+      [
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_002',
+          turn_id: 'turn_feedback_002',
+          data: { speech: '確認が必要です。' },
+        },
+        {
+          type: 'assistant.speech_delta',
+          session_id: 'session_feedback_002',
+          turn_id: 'turn_feedback_002',
+          data: { delta: '識別子がありません。' },
+        },
+      ],
+    ],
+    [
+      'a duplicate pending candidate',
+      [
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_003',
+          turn_id: 'turn_feedback_003',
+          data: { speech: '最初の確認です。' },
+        },
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_003',
+          turn_id: 'turn_feedback_003',
+          data: { speech: '重複した確認です。' },
+        },
+      ],
+    ],
+    [
+      'a mismatched authoritative response',
+      [
+        {
+          type: 'feedback.requested',
+          session_id: 'session_feedback_004',
+          turn_id: 'turn_feedback_004',
+          data: { speech: '相関待ちです。' },
+        },
+        {
+          type: 'assistant.speech_delta',
+          session_id: 'session_feedback_004',
+          turn_id: 'turn_feedback_changed',
+          data: {
+            delta: '別の応答です。',
+            assistant_message_id: 'msg_feedback_004',
+          },
+        },
+      ],
+    ],
+  ])(
+    'fails closed before output feedback submission for %s',
+    async (_label, events) => {
+      const originalEnabled =
+        process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+      process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
+      ;(global.fetch as jest.Mock).mockResolvedValue(createSseResponse(events))
+
+      try {
+        const stream = await getThoughtCoreChatResponseStream(
+          [{ content: 'こんにちは' } as any],
+          '',
+          'session-bridge'
+        )
+        await expect(readTextStream(stream)).rejects.toThrow(
+          'closed_loop_output_feedback_failed'
+        )
+        expect(global.fetch).toHaveBeenCalledTimes(1)
+      } finally {
+        if (originalEnabled === undefined) {
+          delete process.env
+            .NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+        } else {
+          process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED =
+            originalEnabled
+        }
+      }
+    }
+  )
+
+  it('fails closed at EOF instead of streaming a feedback-only pending candidate when output feedback is enabled', async () => {
     const originalEnabled =
       process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
     process.env.NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = '1'
@@ -2458,6 +2722,8 @@ describe('getThoughtCoreChatResponseStream conversation attempt metadata', () =>
       createSseResponse([
         {
           type: 'feedback.requested',
+          session_id: 'session_feedback_eof',
+          turn_id: 'turn_feedback_eof',
           data: { speech: 'もう一度確認します' },
         },
       ])

@@ -69,6 +69,12 @@ const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
 const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
 const PROJECTION_EFFECT_DELIVERY_FAILED = 'projection_effect_delivery_failed'
 const CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED = 'closed_loop_output_feedback_failed'
+const CLOSED_LOOP_OUTPUT_TOKEN = /^[A-Za-z0-9_.:+-]{1,180}$/
+
+const safeClosedLoopOutputToken = (value: unknown): string | null =>
+  typeof value === 'string' && CLOSED_LOOP_OUTPUT_TOKEN.test(value)
+    ? value
+    : null
 
 const outputDeliveryFailure = (error: unknown): string | null =>
   error instanceof Error &&
@@ -1224,6 +1230,13 @@ export async function getThoughtCoreChatResponseStream(
           let canonicalAssistantCorrelation: ClosedLoopOutputCorrelation | null =
             null
           let displayBarrier: ClosedLoopOutputBarrier | null = null
+          const outputFeedbackEnabled = closedLoopOutputFeedbackEnabled()
+          let assistantSpeechDeltaSeen = false
+          let feedbackRequestedSeen = false
+          let pendingFeedbackRequest: {
+            sessionId: string
+            turnId: string
+          } | null = null
 
           while (true) {
             const { done, value } = await reader.read()
@@ -1283,29 +1296,41 @@ export async function getThoughtCoreChatResponseStream(
                   const conversationAttemptRef = safeConversationAttemptRef(
                     data.conversation_attempt_ref
                   )
-                  if (closedLoopOutputFeedbackEnabled()) {
-                    const sessionId =
-                      typeof event.session_id === 'string'
-                        ? event.session_id
-                        : ''
-                    const turnId =
-                      typeof event.turn_id === 'string' ? event.turn_id : ''
-                    const assistantMessageId =
-                      typeof data.assistant_message_id === 'string'
-                        ? data.assistant_message_id
-                        : ''
+                  const correlationRequired =
+                    outputFeedbackEnabled ||
+                    pendingFeedbackRequest !== null ||
+                    canonicalAssistantCorrelation !== null
+                  if (correlationRequired) {
+                    const sessionId = safeClosedLoopOutputToken(event.session_id)
+                    const turnId = safeClosedLoopOutputToken(event.turn_id)
+                    const assistantMessageId = safeClosedLoopOutputToken(
+                      data.assistant_message_id
+                    )
+                    if (!sessionId || !turnId || !assistantMessageId) {
+                      throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
+                    }
                     const correlation = {
                       sessionId,
                       turnId,
                       assistantMessageId,
                     }
                     const previousCorrelation = canonicalAssistantCorrelation
+                    if (
+                      pendingFeedbackRequest &&
+                      (previousCorrelation !== null ||
+                        pendingFeedbackRequest.sessionId !== sessionId ||
+                        pendingFeedbackRequest.turnId !== turnId)
+                    ) {
+                      throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
+                    }
                     const isFirstCorrelatedChunk = previousCorrelation === null
                     if (!previousCorrelation) {
-                      displayBarrier = await beginClosedLoopOutput(
-                        correlation,
-                        'display'
-                      )
+                      if (outputFeedbackEnabled) {
+                        displayBarrier = await beginClosedLoopOutput(
+                          correlation,
+                          'display'
+                        )
+                      }
                       canonicalAssistantCorrelation = correlation
                     } else if (
                       previousCorrelation.sessionId !== sessionId ||
@@ -1315,27 +1340,49 @@ export async function getThoughtCoreChatResponseStream(
                     ) {
                       throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
                     }
-                    onResponseMetadata?.({
-                      ...(conversationAttemptRef
-                        ? { conversationAttemptRef }
-                        : {}),
-                      sessionId,
-                      turnId,
-                      assistantMessageId,
-                      ...(isFirstCorrelatedChunk ? { displayBarrier } : {}),
-                    })
+                    if (pendingFeedbackRequest) {
+                      pendingFeedbackRequest = null
+                    }
+                    if (outputFeedbackEnabled) {
+                      onResponseMetadata?.({
+                        ...(conversationAttemptRef
+                          ? { conversationAttemptRef }
+                          : {}),
+                        sessionId,
+                        turnId,
+                        assistantMessageId,
+                        ...(isFirstCorrelatedChunk ? { displayBarrier } : {}),
+                      })
+                    } else if (conversationAttemptRef) {
+                      onResponseMetadata?.({ conversationAttemptRef })
+                    }
                   } else if (conversationAttemptRef) {
                     onResponseMetadata?.({ conversationAttemptRef })
                   }
+                  assistantSpeechDeltaSeen = true
                   controller.enqueue(data.delta)
-                } else if (
-                  eventType === 'feedback.requested' &&
-                  typeof data.speech === 'string'
-                ) {
-                  if (closedLoopOutputFeedbackEnabled()) {
+                } else if (eventType === 'feedback.requested') {
+                  const feedbackSessionId = safeClosedLoopOutputToken(
+                    event.session_id
+                  )
+                  const feedbackTurnId = safeClosedLoopOutputToken(event.turn_id)
+                  if (
+                    !feedbackSessionId ||
+                    !feedbackTurnId ||
+                    typeof data.speech !== 'string' ||
+                    !data.speech.trim() ||
+                    data.assistant_message_id !== undefined ||
+                    assistantSpeechDeltaSeen ||
+                    canonicalAssistantCorrelation !== null ||
+                    feedbackRequestedSeen
+                  ) {
                     throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
                   }
-                  controller.enqueue(data.speech)
+                  feedbackRequestedSeen = true
+                  pendingFeedbackRequest = {
+                    sessionId: feedbackSessionId,
+                    turnId: feedbackTurnId,
+                  }
                 } else if (eventType === 'turn.error') {
                   throw new Error(
                     typeof data.message === 'string'
@@ -1350,6 +1397,9 @@ export async function getThoughtCoreChatResponseStream(
                 console.error('Error parsing Thought Core SSE:', error)
               }
             }
+          }
+          if (pendingFeedbackRequest) {
+            throw new Error(CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED)
           }
         } catch (error) {
           if (outputCancelled) return
