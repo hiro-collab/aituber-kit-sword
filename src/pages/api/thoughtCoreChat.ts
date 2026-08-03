@@ -1373,25 +1373,39 @@ const MINIMAL_TEXT_TOKEN = /^[A-Za-z0-9_.:-]{1,180}$/
 async function readMinimalTextResponse(
   body: ReadableStream<Uint8Array> | null,
   sessionId: string,
-  turnId: string
+  turnId: string,
+  signal: AbortSignal,
+  bindReader: (reader: ReadableStreamDefaultReader<Uint8Array>) => void,
+  cancelReader: () => void
 ) {
   if (!body) throw new Error()
   const reader = body.getReader()
+  bindReader(reader)
   const chunks: Uint8Array[] = []
   let byteLength = 0
+  let rejectAbort!: () => void
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = () => reject(new Error())
+  })
+  const onAbort = () => rejectAbort()
+  signal.addEventListener('abort', onAbort, { once: true })
+  if (signal.aborted) onAbort()
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await Promise.race([reader.read(), aborted])
       if (done) break
       byteLength += value.byteLength
       if (byteLength > 65_536) {
-        await reader.cancel().catch(() => undefined)
+        cancelReader()
         throw new Error()
       }
       chunks.push(value)
     }
   } finally {
-    reader.releaseLock()
+    signal.removeEventListener('abort', onAbort)
+    try {
+      reader.releaseLock()
+    } catch {}
   }
   const bounded = new Uint8Array(byteLength)
   let offset = 0
@@ -1500,12 +1514,45 @@ export default async function handler(
     ) {
       return res.status(400).json({ error: 'minimal_text_request_failed' })
     }
+    const controller = new AbortController()
+    let fenced = false
+    let cancelStarted = false
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+    const cancelReader = () => {
+      if (cancelStarted || !reader) return
+      cancelStarted = true
+      try {
+        void reader.cancel().catch(() => undefined)
+      } catch {}
+    }
+    const stopRequest = () => {
+      if (fenced) return
+      fenced = true
+      controller.abort()
+      cancelReader()
+    }
+    const requestEvents = req as any
+    const responseEvents = res as any
+    const onResponseClose = () => {
+      if (!responseEvents.writableEnded) stopRequest()
+    }
+    requestEvents.once?.('aborted', stopRequest)
+    responseEvents.once?.('close', onResponseClose)
+    const detach = () => {
+      try {
+        if (requestEvents.off) requestEvents.off('aborted', stopRequest)
+        else requestEvents.removeListener?.('aborted', stopRequest)
+        if (responseEvents.off) responseEvents.off('close', onResponseClose)
+        else responseEvents.removeListener?.('close', onResponseClose)
+      } catch {}
+    }
     try {
       const upstream = await fetch(
         `${resolveThoughtCoreBaseUrl(undefined)}/turn?stream=true`,
         {
           method: 'POST',
           redirect: 'manual',
+          signal: controller.signal,
           headers: {
             Accept: 'text/event-stream',
             'Content-Type': 'application/json',
@@ -1522,13 +1569,36 @@ export default async function handler(
           }),
         }
       )
+      if (fenced) {
+        try {
+          reader = upstream.body?.getReader() ?? null
+          cancelReader()
+          reader?.releaseLock()
+        } catch {}
+        return
+      }
       if (upstream.status >= 300 && upstream.status < 400) throw new Error()
       if (!upstream.ok) throw new Error()
+      const result = await readMinimalTextResponse(
+        upstream.body,
+        sessionId,
+        turnId,
+        controller.signal,
+        (activeReader) => {
+          reader = activeReader
+          if (fenced) cancelReader()
+        },
+        cancelReader
+      )
+      if (fenced) return
       return res
         .status(200)
-        .json(await readMinimalTextResponse(upstream.body, sessionId, turnId))
+        .json(result)
     } catch {
+      if (fenced) return
       return res.status(502).json({ error: 'minimal_text_request_failed' })
+    } finally {
+      detach()
     }
   }
   const { query, url, sessionId, turnId, locale, contextRefs, stream } =

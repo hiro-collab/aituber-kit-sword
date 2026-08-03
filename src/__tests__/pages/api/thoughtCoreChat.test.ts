@@ -1308,6 +1308,119 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
     expect(stream.releaseLock).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    ['request aborted', 'request', 'reject'],
+    ['premature response close', 'response', 'never'],
+  ])('fences %s without awaiting reader cancellation', async (_label, source, cancelMode) => {
+    let resolveRead!: (value: ReadableStreamReadResult<Uint8Array>) => void
+    const read = jest.fn(() => new Promise<ReadableStreamReadResult<Uint8Array>>(
+      (resolve) => { resolveRead = resolve }
+    ))
+    const cancel = cancelMode === 'reject'
+      ? jest.fn().mockRejectedValue(new Error('PRIVATE_CANCEL_REJECT'))
+      : jest.fn(() => new Promise<void>(() => undefined))
+    const releaseLock = jest.fn()
+    const upstream = { ok: true, status: 200, body: {
+      getReader: () => ({ read, cancel, releaseLock }),
+    } }
+    let requestAbort!: () => void
+    let responseClose!: () => void
+    const req = createMockReq({ body: body(), headers: {
+      'x-sword-ait-request-mode': mode,
+    } })
+    ;(req as any).once = jest.fn((event, listener) => {
+      if (event === 'aborted') requestAbort = listener
+    })
+    ;(req as any).off = jest.fn()
+    const res = createMockRes()
+    ;(res as any).once = jest.fn((event, listener) => {
+      if (event === 'close') responseClose = listener
+    })
+    ;(res as any).off = jest.fn()
+    let upstreamSignal!: AbortSignal
+    global.fetch = jest.fn(async (_url, init) => {
+      upstreamSignal = init.signal
+      return upstream
+    }) as any
+    const abort = jest.spyOn(AbortController.prototype, 'abort')
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const currentFs = jest.requireMock('fs') as {
+      mkdirSync: jest.Mock
+      appendFileSync: jest.Mock
+    }
+    const pending = handler(req, res)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(read).toHaveBeenCalledTimes(1)
+    ;(source === 'request' ? requestAbort : responseClose)()
+    await pending
+    expect(upstreamSignal.aborted).toBe(true)
+    expect(abort).toHaveBeenCalledTimes(1)
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+    expect(res._json).toBeNull()
+    resolveRead({ done: false, value: new TextEncoder().encode('PRIVATE_LATE_CHUNK') })
+    await Promise.resolve()
+    expect(res._json).toBeNull()
+    expect(currentFs.mkdirSync).not.toHaveBeenCalled()
+    expect(currentFs.appendFileSync).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['request abort with rejected cancel', 'request', 'reject'],
+    ['response close with pending cancel', 'response', 'never'],
+  ])('owns a late upstream body after %s', async (_label, source, cancelMode) => {
+    let resolveFetch!: (value: unknown) => void
+    const fetchPending = new Promise((resolve) => { resolveFetch = resolve })
+    const read = jest.fn(async () => ({
+      done: false,
+      value: new TextEncoder().encode('PRIVATE_LATE_BODY_CHUNK'),
+    }))
+    const cancel = cancelMode === 'reject'
+      ? jest.fn().mockRejectedValue(new Error('PRIVATE_LATE_CANCEL'))
+      : jest.fn(() => new Promise<void>(() => undefined))
+    const releaseLock = jest.fn()
+    const getReader = jest.fn(() => ({ read, cancel, releaseLock }))
+    let requestAbort!: () => void
+    let responseClose!: () => void
+    const req = createMockReq({ body: body(), headers: {
+      'x-sword-ait-request-mode': mode,
+    } })
+    ;(req as any).once = jest.fn((event, listener) => {
+      if (event === 'aborted') requestAbort = listener
+    })
+    ;(req as any).off = jest.fn()
+    const res = createMockRes()
+    ;(res as any).once = jest.fn((event, listener) => {
+      if (event === 'close') responseClose = listener
+    })
+    ;(res as any).off = jest.fn()
+    let upstreamSignal!: AbortSignal
+    global.fetch = jest.fn((_url, init) => {
+      upstreamSignal = init.signal
+      return fetchPending
+    }) as any
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const currentFs = jest.requireMock('fs') as {
+      mkdirSync: jest.Mock
+      appendFileSync: jest.Mock
+    }
+    const pending = handler(req, res)
+    ;(source === 'request' ? requestAbort : responseClose)()
+    expect(upstreamSignal.aborted).toBe(true)
+    resolveFetch({ ok: true, status: 200, body: { getReader } })
+    await pending
+    expect(getReader).toHaveBeenCalledTimes(1)
+    expect(read).not.toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+    expect(res._json).toBeNull()
+    expect(JSON.stringify([res._json, consoleSpy.mock.calls])).not.toMatch(/PRIVATE/)
+    expect(currentFs.mkdirSync).not.toHaveBeenCalled()
+    expect(currentFs.appendFileSync).not.toHaveBeenCalled()
+  })
+
   it('rejects duplicate JSON keys and preserves the existing local security gate', async () => {
     const duplicate = '{"type":"agentic.decision","type":"assistant.message","session_id":"ait_session_001","turn_id":"ait_turn_001","data":{}}'
     const res = await run(body(), mode, readerFor([`data: ${duplicate}\n\n`]).upstream)
