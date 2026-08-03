@@ -1144,6 +1144,200 @@ describe('/api/thoughtCoreChat', () => {
   })
 })
 
+describe('/api/thoughtCoreChat minimal transient text', () => {
+  const originalFetch = global.fetch
+  const originalEnv = process.env
+  const sessionId = 'ait_session_001'
+  const turnId = 'ait_turn_001'
+  const assistantMessageId = 'assistant_001'
+  const mode = 'minimal-transient-text-v1'
+  const event = (type: string, data: Record<string, unknown> = {}) => ({
+    type, session_id: sessionId, turn_id: turnId,
+    provider_ref: 'PRIVATE_PROVIDER_REF', data,
+  })
+  const canonical = (delta = true) => [
+    event('agentic.decision', {
+      status: 'accepted', semantic_authority: 'agentic_provider', capability_present: false,
+    }),
+    ...(delta ? [event('assistant.speech_delta', {
+      assistant_message_id: assistantMessageId, delta: 'safe response',
+    })] : []),
+    event('assistant.message', {
+      assistant_message_id: assistantMessageId,
+      display: 'safe response', raw: 'PRIVATE_RAW_SENTINEL',
+    }),
+    event('turn.completed', {
+      status: 'response', semantic_authority: 'agentic_provider', capability_executed: false,
+    }),
+  ]
+  const readerFor = (parts: string[]) => {
+    const chunks = parts.map((part) => new TextEncoder().encode(part))
+    let index = 0
+    const read = jest.fn(async () => index < chunks.length
+      ? { done: false, value: chunks[index++] }
+      : { done: true, value: undefined })
+    const cancel = jest.fn(async () => undefined)
+    const releaseLock = jest.fn()
+    return {
+      upstream: { ok: true, status: 200, body: {
+        getReader: () => ({ read, cancel, releaseLock }),
+      } }, read, cancel, releaseLock,
+    }
+  }
+  const responseFor = (events: unknown[]) => readerFor([
+    events.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(''),
+  ])
+  const run = async (
+    body: Record<string, unknown>,
+    header: string | string[] | undefined,
+    upstream: unknown = responseFor(canonical()).upstream
+  ) => {
+    global.fetch = jest.fn().mockResolvedValue(upstream) as any
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const currentFs = jest.requireMock('fs') as {
+      mkdirSync: jest.Mock
+      appendFileSync: jest.Mock
+    }
+    const res = createMockRes()
+    await handler(createMockReq({ body, headers: header === undefined
+      ? {} : { 'x-sword-ait-request-mode': header } }), res)
+    expect(currentFs.mkdirSync).not.toHaveBeenCalled()
+    expect(currentFs.appendFileSync).not.toHaveBeenCalled()
+    return res
+  }
+  const body = () => ({ query: 'operator text', sessionId, turnId })
+
+  beforeEach(() => {
+    process.env = { ...originalEnv }
+    delete process.env.THOUGHT_CORE_BASE_URL
+    delete process.env.NEXT_PUBLIC_THOUGHT_CORE_BASE_URL
+    jest.resetModules()
+    jest.clearAllMocks()
+  })
+  afterEach(() => {
+    global.fetch = originalFetch
+    process.env = originalEnv
+    jest.restoreAllMocks()
+  })
+
+  it.each([true, false])('returns the exact DTO with optional delta=%s', async (delta) => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const stream = responseFor(canonical(delta))
+    const res = await run(body(), mode, stream.upstream)
+    expect(res._status).toBe(200)
+    expect(res._json).toEqual({ sessionId, turnId, assistantMessageId, response: 'safe response' })
+    expect(JSON.stringify(res._json)).not.toMatch(/PRIVATE|provider_ref|raw/)
+    expect(JSON.stringify(consoleSpy.mock.calls)).not.toMatch(/PRIVATE/)
+    expect(stream.releaseLock).toHaveBeenCalledTimes(1)
+    expect(stream.cancel).not.toHaveBeenCalled()
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:18888/turn?stream=true')
+    expect(init).toEqual(expect.objectContaining({ method: 'POST', redirect: 'manual',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' } }))
+    expect(JSON.parse(init.body)).toEqual({
+      text: 'operator text', session_id: sessionId, turn_id: turnId,
+      locale: 'ja-JP', context_refs: { source: 'aituber-kit', route: 'projection-visual' },
+    })
+  })
+
+  it.each([
+    ['missing mode', undefined, body()],
+    ['wrong mode', 'wrong', body()],
+    ['duplicate mode', [mode, mode], body()],
+    ['extra key', mode, { ...body(), url: 'http://private/' }],
+    ['missing key', mode, { query: 'operator text', sessionId }],
+  ])('rejects %s before dispatch', async (_label, header, requestBody) => {
+    const res = await run(requestBody, header)
+    expect(res._status).toBe(400)
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects a 127-prefixed hostname before private query dispatch', async () => {
+    process.env.THOUGHT_CORE_BASE_URL = 'http://127.attacker.example:18888'
+    const res = await run({ ...body(), query: 'PRIVATE_QUERY_SENTINEL' }, mode)
+    expect(res._status).toBe(502)
+    expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+    expect(JSON.stringify(res._json)).not.toContain('PRIVATE_QUERY_SENTINEL')
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('accepts a bracketed IPv6 loopback minimal route', async () => {
+    process.env.THOUGHT_CORE_BASE_URL = 'http://[::1]:18888'
+    const stream = responseFor(canonical(false))
+    const res = await run(body(), mode, stream.upstream)
+    expect(res._status).toBe(200)
+    expect(res._json).toEqual({ sessionId, turnId, assistantMessageId, response: 'safe response' })
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://[::1]:18888/turn?stream=true')
+  })
+
+  it.each([307, 308])('rejects redirect %s before reading its body', async (status) => {
+    const bodyRead = jest.fn()
+    const res = await run(body(), mode, { ok: false, status,
+      get body() { bodyRead(); throw new Error('PRIVATE_REDIRECT_BODY') } })
+    expect(res._status).toBe(502)
+    expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+    expect(bodyRead).not.toHaveBeenCalled()
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['nonterminal', () => canonical().slice(0, -1)],
+    ['duplicate', () => [...canonical(), canonical()[3]]],
+    ['out of order', () => canonical().slice().reverse()],
+    ['action', () => [event('action.proposed'), ...canonical()]],
+    ['wrong identity', () => canonical().map((value, index) =>
+      index === 2 ? { ...value, turn_id: 'ait_turn_wrong' } : value)],
+    ['overflow display', () => canonical(false).map((value, index) =>
+      index === 1 ? { ...value, data: { ...value.data, display: 'x'.repeat(8001) } } : value)],
+  ] as const)('fails closed on semantic %s with fetch1', async (_label, events) => {
+    const res = await run(body(), mode, responseFor(events()).upstream)
+    expect(res._status).toBe(502)
+    expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops at the first raw byte above 65,536 and releases the reader', async () => {
+    const stream = readerFor([' '.repeat(65_536), 'x', 'PRIVATE_LATER_CHUNK'])
+    const res = await run(body(), mode, stream.upstream)
+    expect(res._status).toBe(502)
+    expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+    expect(stream.read).toHaveBeenCalledTimes(2)
+    expect(stream.cancel).toHaveBeenCalledTimes(1)
+    expect(stream.releaseLock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects duplicate JSON keys and preserves the existing local security gate', async () => {
+    const duplicate = '{"type":"agentic.decision","type":"assistant.message","session_id":"ait_session_001","turn_id":"ait_turn_001","data":{}}'
+    const res = await run(body(), mode, readerFor([`data: ${duplicate}\n\n`]).upstream)
+    expect(res._status).toBe(502)
+
+    process.env.LOCAL_API_REQUIRE_TOKEN = 'true'
+    process.env.LOCAL_API_REMOTE_TOKEN = 'expected-token'
+    jest.resetModules()
+    global.fetch = jest.fn() as any
+    const handler = require('@/pages/api/thoughtCoreChat').default
+    const currentFs = jest.requireMock('fs') as {
+      mkdirSync: jest.Mock
+      appendFileSync: jest.Mock
+    }
+    for (const headers of [
+      { origin: 'https://evil.example', host: '127.0.0.1:3000', 'x-api-token': 'expected-token' },
+      { origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000', 'x-api-token': 'forged' },
+    ]) {
+      const blocked = createMockRes()
+      await handler(createMockReq({ body: body(), headers: {
+        ...headers, 'x-sword-ait-request-mode': mode,
+      } }), blocked)
+      expect([401, 403]).toContain(blocked._status)
+    }
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(currentFs.mkdirSync).not.toHaveBeenCalled()
+    expect(currentFs.appendFileSync).not.toHaveBeenCalled()
+  })
+})
+
 describe('projection effect intent SSE projection', () => {
   const turnId = 'turn_projection_phase1'
   const sessionId = 'session_projection_phase1'

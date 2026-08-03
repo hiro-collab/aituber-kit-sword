@@ -1,6 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next'
 import { pipeResponse } from '@/utils/pipeResponse'
 import fs from 'fs'
+import { isIP } from 'net'
 import path from 'path'
 import { enforceLocalApiRequest } from '@/utils/localApiSecurity'
 import {
@@ -643,9 +644,9 @@ const CONVERSATION_LOG_FILE = path.join(
 
 const isLoopbackHost = (host: string) =>
   host === 'localhost' ||
-  host === '127.0.0.1' ||
   host === '::1' ||
-  host.startsWith('127.')
+  host === '[::1]' ||
+  (isIP(host) === 4 && host.split('.')[0] === '127')
 
 function appendThoughtCoreTrace(
   event: string,
@@ -1366,6 +1367,104 @@ export function createTracedThoughtCoreStream(
   })
 }
 
+const MINIMAL_TEXT_MODE = 'minimal-transient-text-v1'
+const MINIMAL_TEXT_TOKEN = /^[A-Za-z0-9_.:-]{1,180}$/
+
+async function readMinimalTextResponse(
+  body: ReadableStream<Uint8Array> | null,
+  sessionId: string,
+  turnId: string
+) {
+  if (!body) throw new Error()
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let byteLength = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      byteLength += value.byteLength
+      if (byteLength > 65_536) {
+        await reader.cancel().catch(() => undefined)
+        throw new Error()
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bounded = new Uint8Array(byteLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    bounded.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  const wire = new TextDecoder('utf-8', { fatal: true }).decode(bounded)
+  if (!wire) throw new Error()
+  const events = wire
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .map((line) => {
+      if (!line.startsWith('data:')) throw new Error()
+      const json = line.slice(5).trim()
+      if (scanJsonForDuplicateObjectKeys(json) !== 'unique') throw new Error()
+      const event = JSON.parse(json)
+      if (
+        !isRecord(event) ||
+        !isRecord(event.data) ||
+        event.session_id !== sessionId ||
+        event.turn_id !== turnId
+      ) {
+        throw new Error()
+      }
+      return event
+    })
+  const types = events.map((event) => event.type)
+  const deltaIndex = types[1] === 'assistant.speech_delta' ? 1 : -1
+  if (
+    types.length !== (deltaIndex === 1 ? 4 : 3) ||
+    types[0] !== 'agentic.decision' ||
+    types[deltaIndex === 1 ? 2 : 1] !== 'assistant.message' ||
+    types[deltaIndex === 1 ? 3 : 2] !== 'turn.completed'
+  ) {
+    throw new Error()
+  }
+  const decision = events[0].data as Record<string, unknown>
+  const delta =
+    deltaIndex === 1 ? (events[1].data as Record<string, unknown>) : null
+  const message = events[deltaIndex === 1 ? 2 : 1].data as Record<
+    string,
+    unknown
+  >
+  const completed = events[deltaIndex === 1 ? 3 : 2].data as Record<
+    string,
+    unknown
+  >
+  const assistantMessageId = message.assistant_message_id
+  const response =
+    typeof message.display === 'string' ? message.display.trim() : ''
+  if (
+    decision.status !== 'accepted' ||
+    decision.semantic_authority !== 'agentic_provider' ||
+    decision.capability_present !== false ||
+    typeof assistantMessageId !== 'string' ||
+    !MINIMAL_TEXT_TOKEN.test(assistantMessageId) ||
+    !response ||
+    response.length > 8_000 ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(response) ||
+    (delta &&
+      (delta.assistant_message_id !== assistantMessageId ||
+        typeof delta.delta !== 'string' ||
+        !delta.delta.trim())) ||
+    completed.status !== 'response' ||
+    completed.semantic_authority !== 'agentic_provider' ||
+    completed.capability_executed !== false
+  ) {
+    throw new Error()
+  }
+  return { sessionId, turnId, assistantMessageId, response }
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -1381,6 +1480,57 @@ export default async function handler(
   }
 
   const requestBody = isRecord(req.body) ? req.body : {}
+  const requestMode = req.headers?.['x-sword-ait-request-mode']
+  const requestKeys = Object.keys(requestBody).sort()
+  const hasExactMinimalKeys = requestKeys.join(',') === 'query,sessionId,turnId'
+  if (requestMode !== undefined || hasExactMinimalKeys) {
+    const query =
+      typeof requestBody.query === 'string' ? requestBody.query.trim() : ''
+    const sessionId = requestBody.sessionId
+    const turnId = requestBody.turnId
+    if (
+      requestMode !== MINIMAL_TEXT_MODE ||
+      !hasExactMinimalKeys ||
+      !query ||
+      query.length > 8_000 ||
+      typeof sessionId !== 'string' ||
+      !MINIMAL_TEXT_TOKEN.test(sessionId) ||
+      typeof turnId !== 'string' ||
+      !MINIMAL_TEXT_TOKEN.test(turnId)
+    ) {
+      return res.status(400).json({ error: 'minimal_text_request_failed' })
+    }
+    try {
+      const upstream = await fetch(
+        `${resolveThoughtCoreBaseUrl(undefined)}/turn?stream=true`,
+        {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            Accept: 'text/event-stream',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text: query,
+            session_id: sessionId,
+            turn_id: turnId,
+            locale: process.env.THOUGHT_CORE_LOCALE || 'ja-JP',
+            context_refs: {
+              source: 'aituber-kit',
+              route: 'projection-visual',
+            },
+          }),
+        }
+      )
+      if (upstream.status >= 300 && upstream.status < 400) throw new Error()
+      if (!upstream.ok) throw new Error()
+      return res
+        .status(200)
+        .json(await readMinimalTextResponse(upstream.body, sessionId, turnId))
+    } catch {
+      return res.status(502).json({ error: 'minimal_text_request_failed' })
+    }
+  }
   const { query, url, sessionId, turnId, locale, contextRefs, stream } =
     requestBody
   const startedAt = Date.now()
