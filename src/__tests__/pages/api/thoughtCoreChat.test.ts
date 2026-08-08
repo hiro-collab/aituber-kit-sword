@@ -9,6 +9,7 @@ jest.mock('fs', () => ({
 }))
 
 import type { NextApiRequest, NextApiResponse } from 'next'
+import { createHash } from 'crypto'
 import path from 'path'
 import { createAcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampleBrowserStt'
 
@@ -1151,25 +1152,110 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
   const turnId = 'ait_turn_001'
   const assistantMessageId = 'assistant_001'
   const mode = 'minimal-transient-text-v1'
-  const event = (type: string, data: Record<string, unknown> = {}) => ({
-    type, session_id: sessionId, turn_id: turnId,
-    provider_ref: 'PRIVATE_PROVIDER_REF', data,
+  const eventId = (seq: number, offset = 0) =>
+    `evt_${(seq + offset).toString(16).padStart(32, '0')}`
+  const event = (
+    type: string,
+    data: Record<string, unknown>,
+    seq: number,
+    options: { session?: string; turn?: string; offset?: number } = {}
+  ) => ({
+    schema_version: 'thought-core.event.v0',
+    event_id: eventId(seq, options.offset),
+    turn_id: options.turn ?? turnId,
+    session_id: options.session ?? sessionId,
+    seq,
+    timestamp: '2026-08-09T00:00:00.000Z',
+    source: 'thought-core',
+    type,
+    data,
   })
-  const canonical = (delta = true) => [
-    event('agentic.decision', {
-      status: 'accepted', semantic_authority: 'agentic_provider', capability_present: false,
-    }),
-    ...(delta ? [event('assistant.speech_delta', {
-      assistant_message_id: assistantMessageId, delta: 'safe response',
-    })] : []),
-    event('assistant.message', {
-      assistant_message_id: assistantMessageId,
-      display: 'safe response', raw: 'PRIVATE_RAW_SENTINEL',
-    }),
-    event('turn.completed', {
-      status: 'response', semantic_authority: 'agentic_provider', capability_executed: false,
-    }),
-  ]
+  const canonical = ({
+    response = 'safe response',
+    assistantId = assistantMessageId,
+    kind = 'conversation',
+    session = sessionId,
+    turn = turnId,
+    offset = 0,
+  }: {
+    response?: string
+    assistantId?: string
+    kind?: 'conversation' | 'clarification' | 'hold'
+    session?: string
+    turn?: string
+    offset?: number
+  } = {}) => {
+    const options = { session, turn, offset }
+    const events = [
+      event('thought.stage', { stage: 'environment.observe.before_decision' }, 1, options),
+      event('tool.started', { tool: 'environment.observe', tool_call_id: 'tc_0001' }, 2, options),
+      event('tool.result', { tool: 'environment.observe', tool_call_id: 'tc_0001' }, 3, options),
+      event('observation.received', { status: 'ok' }, 4, options),
+      event('thought.stage', { stage: 'memory.retrieve' }, 5, options),
+      event('tool.started', { tool: 'memory.retrieve', tool_call_id: 'tc_0002' }, 6, options),
+      event('tool.result', { tool: 'memory.retrieve', tool_call_id: 'tc_0002' }, 7, options),
+      event('memory.retrieved', { status: 'ok' }, 8, options),
+      event('agentic.decision', {
+        status: 'accepted',
+        kind,
+        semantic_authority: 'agentic_provider',
+        capability_present: false,
+      }, 9, options),
+      event('assistant.speech_delta', {
+        assistant_message_id: assistantId,
+        delta: response,
+      }, 10, options),
+      event('assistant.message', {
+        assistant_message_id: assistantId,
+        display: response,
+        raw: 'PRIVATE_RAW_SENTINEL',
+      }, 11, options),
+      event('turn.completed', {
+        status: kind,
+        semantic_authority: 'agentic_provider',
+        capability_executed: false,
+        provider_attempt_evidence: {
+          evidence_class: 'sword.thought_core.provider_authorship.v1',
+          decision_event_id: eventId(9, offset),
+          assistant_message_id: assistantId,
+          upstream_attempt_count: 1,
+          retry_count: 0,
+          fallback_count: 0,
+          attempt_terminal_class: 'upstream_response_accepted',
+          authorship_class:
+            'official_broker_decision_response_deterministic_presentation',
+        },
+      }, 12, options),
+    ]
+    return events
+  }
+  const digest = (value: string) =>
+    createHash('sha256').update(new TextEncoder().encode(value)).digest('hex')
+  const expectedDto = (
+    response = 'safe response',
+    assistantId = assistantMessageId,
+    decisionEventId = eventId(9),
+    session = sessionId,
+    turn = turnId
+  ) => ({
+    sessionId: session,
+    turnId: turn,
+    assistantMessageId: assistantId,
+    response,
+    responseSha256: digest(response),
+    responseUtf8Bytes: new TextEncoder().encode(response).byteLength,
+    providerAttemptEvidence: {
+      evidenceClass: 'sword.thought_core.provider_authorship.v1',
+      decisionEventId,
+      assistantMessageId: assistantId,
+      upstreamAttemptCount: 1,
+      retryCount: 0,
+      fallbackCount: 0,
+      attemptTerminalClass: 'upstream_response_accepted',
+      authorshipClass:
+        'official_broker_decision_response_deterministic_presentation',
+    },
+  })
   const readerFor = (parts: string[]) => {
     const chunks = parts.map((part) => new TextEncoder().encode(part))
     let index = 0
@@ -1184,9 +1270,20 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
       } }, read, cancel, releaseLock,
     }
   }
-  const responseFor = (events: unknown[]) => readerFor([
-    events.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(''),
-  ])
+  const wireFor = (events: ReturnType<typeof canonical>) =>
+    events.map((value) =>
+      `id: ${value.event_id}\nevent: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`
+    ).join('')
+  const responseFor = (events: ReturnType<typeof canonical>) =>
+    readerFor([wireFor(events)])
+  const mutateEvent = (
+    index: number,
+    update: (eventValue: Record<string, any>) => Record<string, any>
+  ) => {
+    const events = canonical() as Array<Record<string, any>>
+    events[index] = update({ ...events[index], data: { ...events[index].data } })
+    return events as ReturnType<typeof canonical>
+  }
   const run = async (
     body: Record<string, unknown>,
     header: string | string[] | undefined,
@@ -1220,12 +1317,25 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
     jest.restoreAllMocks()
   })
 
-  it.each([true, false])('returns the exact DTO with optional delta=%s', async (delta) => {
+  it.each(['conversation', 'clarification', 'hold'] as const)(
+    'returns the exact original-byte DTO for kind=%s',
+    async (kind) => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    const stream = responseFor(canonical(delta))
+    const response = '  応答🙂\r\n'
+    const stream = responseFor(canonical({ response, kind }))
     const res = await run(body(), mode, stream.upstream)
     expect(res._status).toBe(200)
-    expect(res._json).toEqual({ sessionId, turnId, assistantMessageId, response: 'safe response' })
+    expect(res._json).toEqual(expectedDto(response))
+    expect(res._json.responseSha256).not.toBe(digest(response.trim()))
+    expect(Object.keys(res._json).sort()).toEqual([
+      'assistantMessageId',
+      'providerAttemptEvidence',
+      'response',
+      'responseSha256',
+      'responseUtf8Bytes',
+      'sessionId',
+      'turnId',
+    ])
     expect(JSON.stringify(res._json)).not.toMatch(/PRIVATE|provider_ref|raw/)
     expect(JSON.stringify(consoleSpy.mock.calls)).not.toMatch(/PRIVATE/)
     expect(stream.releaseLock).toHaveBeenCalledTimes(1)
@@ -1239,7 +1349,8 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
       text: 'operator text', session_id: sessionId, turn_id: turnId,
       locale: 'ja-JP', context_refs: { source: 'aituber-kit', route: 'projection-visual' },
     })
-  })
+    }
+  )
 
   it.each([
     ['missing mode', undefined, body()],
@@ -1264,10 +1375,10 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
 
   it('accepts a bracketed IPv6 loopback minimal route', async () => {
     process.env.THOUGHT_CORE_BASE_URL = 'http://[::1]:18888'
-    const stream = responseFor(canonical(false))
+    const stream = responseFor(canonical())
     const res = await run(body(), mode, stream.upstream)
     expect(res._status).toBe(200)
-    expect(res._json).toEqual({ sessionId, turnId, assistantMessageId, response: 'safe response' })
+    expect(res._json).toEqual(expectedDto())
     expect(global.fetch).toHaveBeenCalledTimes(1)
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://[::1]:18888/turn?stream=true')
   })
@@ -1284,18 +1395,266 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
 
   it.each([
     ['nonterminal', () => canonical().slice(0, -1)],
-    ['duplicate', () => [...canonical(), canonical()[3]]],
+    ['duplicate', () => [...canonical(), canonical()[11]]],
     ['out of order', () => canonical().slice().reverse()],
-    ['action', () => [event('action.proposed'), ...canonical()]],
+    ['context prologue', () => [event('context.loaded', {}, 1), ...canonical()]],
+    ['action', () => canonical().map((value, index) =>
+      index === 3 ? { ...value, type: 'action.proposed' } : value)],
+    ['prefix missing', () => canonical().filter((_value, index) => index !== 3)],
+    ['prefix duplicate', () => canonical().map((value, index) =>
+      index === 3 ? { ...value, type: 'tool.result' } : value)],
+    ['suffix prefix insertion', () => canonical().map((value, index) =>
+      index === 9 ? { ...value, type: 'memory.retrieved' } : value)],
+    ['duplicate output', () => canonical().map((value, index) =>
+      index === 9 ? { ...value, type: 'assistant.message' } : value)],
     ['wrong identity', () => canonical().map((value, index) =>
       index === 2 ? { ...value, turn_id: 'ait_turn_wrong' } : value)],
-    ['overflow display', () => canonical(false).map((value, index) =>
-      index === 1 ? { ...value, data: { ...value.data, display: 'x'.repeat(8001) } } : value)],
+    ['overflow display', () => canonical().map((value, index) =>
+      index === 10 ? { ...value, data: { ...value.data, display: 'x'.repeat(8001) } } : value)],
   ] as const)('fails closed on semantic %s with fetch1', async (_label, events) => {
     const res = await run(body(), mode, responseFor(events()).upstream)
     expect(res._status).toBe(502)
     expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
     expect(global.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['missing envelope key', () => mutateEvent(0, (value) => {
+      delete value.timestamp
+      return value
+    })],
+    ['extra envelope key', () => mutateEvent(0, (value) => ({ ...value, extra: true }))],
+    ['wrong schema', () => mutateEvent(0, (value) => ({
+      ...value, schema_version: 'thought-core.event.v1',
+    }))],
+    ['wrong source', () => mutateEvent(0, (value) => ({ ...value, source: 'other' }))],
+    ['wrong timestamp', () => mutateEvent(0, (value) => ({
+      ...value, timestamp: '2026-08-09T00:00:00Z',
+    }))],
+    ['noncanonical event id', () => mutateEvent(0, (value) => ({
+      ...value, event_id: 'evt_UPPERCASE',
+    }))],
+    ['duplicate event id', () => mutateEvent(1, (value) => ({
+      ...value, event_id: eventId(1),
+    }))],
+    ['seq gap', () => mutateEvent(4, (value) => ({ ...value, seq: 6 }))],
+    ['seq replay', () => mutateEvent(4, (value) => ({ ...value, seq: 4 }))],
+    ['seq bool', () => mutateEvent(4, (value) => ({ ...value, seq: true }))],
+    ['data array', () => mutateEvent(4, (value) => ({ ...value, data: [] }))],
+    ['wrong session', () => mutateEvent(4, (value) => ({
+      ...value, session_id: 'other_session',
+    }))],
+    ['wrong turn', () => mutateEvent(4, (value) => ({
+      ...value, turn_id: 'other_turn',
+    }))],
+    ['wrong environment tool', () => mutateEvent(1, (value) => ({
+      ...value, data: { ...value.data, tool: 'memory.retrieve' },
+    }))],
+    ['wrong memory tool-call join', () => mutateEvent(6, (value) => ({
+      ...value, data: { ...value.data, tool_call_id: 'tc_wrong' },
+    }))],
+  ] as const)(
+    'fails closed on envelope/prefix %s',
+    async (_label, events) => {
+      const res = await run(body(), mode, responseFor(events()).upstream)
+      expect(res._status).toBe(502)
+      expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it.each([
+    ['missing evidence', () => mutateEvent(11, (value) => {
+      delete value.data.provider_attempt_evidence
+      return value
+    })],
+    ['extra evidence key', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          extra: true,
+        },
+      },
+    }))],
+    ['wrong evidence class', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          evidence_class: 'wrong',
+        },
+      },
+    }))],
+    ['wrong decision join', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          decision_event_id: eventId(8),
+        },
+      },
+    }))],
+    ['wrong assistant join', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          assistant_message_id: 'assistant_wrong',
+        },
+      },
+    }))],
+    ['upstream attempt zero', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          upstream_attempt_count: 0,
+        },
+      },
+    }))],
+    ['upstream attempt two', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          upstream_attempt_count: 2,
+        },
+      },
+    }))],
+    ['retry one', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          retry_count: 1,
+        },
+      },
+    }))],
+    ['fallback one', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          fallback_count: 1,
+        },
+      },
+    }))],
+    ['string count', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          upstream_attempt_count: '1',
+        },
+      },
+    }))],
+    ['bool count', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          retry_count: false,
+        },
+      },
+    }))],
+    ['wrong terminal class', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          attempt_terminal_class: 'fallback',
+        },
+      },
+    }))],
+    ['wrong authorship class', () => mutateEvent(11, (value) => ({
+      ...value,
+      data: {
+        ...value.data,
+        provider_attempt_evidence: {
+          ...value.data.provider_attempt_evidence,
+          authorship_class: 'compatibility',
+        },
+      },
+    }))],
+    ['decision capability', () => mutateEvent(8, (value) => ({
+      ...value, data: { ...value.data, kind: 'capability', capability_present: true },
+    }))],
+    ['decision rejected', () => mutateEvent(8, (value) => ({
+      ...value, data: { ...value.data, status: 'rejected' },
+    }))],
+    ['extra decision metadata', () => mutateEvent(8, (value) => ({
+      ...value, data: { ...value.data, responseSha256: '0'.repeat(64) },
+    }))],
+    ['completion status mismatch', () => mutateEvent(11, (value) => ({
+      ...value, data: { ...value.data, status: 'hold' },
+    }))],
+    ['extra completion metadata', () => mutateEvent(11, (value) => ({
+      ...value, data: { ...value.data, responseSha256: '0'.repeat(64) },
+    }))],
+    ['delta assistant mismatch', () => mutateEvent(9, (value) => ({
+      ...value, data: { ...value.data, assistant_message_id: 'assistant_wrong' },
+    }))],
+  ] as const)('fails closed on receipt/join %s', async (_label, events) => {
+    const res = await run(body(), mode, responseFor(events()).upstream)
+    expect(res._status).toBe(502)
+    expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['id', 'event'] as const)(
+    'rejects an SSE %s line that disagrees with JSON',
+    async (field) => {
+      const events = canonical()
+      const good = wireFor(events)
+      const first = events[0]
+      const wire = field === 'id'
+        ? good.replace(`id: ${first.event_id}`, `id: ${eventId(12_000)}`)
+        : good.replace(`event: ${first.type}`, 'event: tool.started')
+      const res = await run(body(), mode, readerFor([wire]).upstream)
+      expect(res._status).toBe(502)
+      expect(res._json).toEqual({ error: 'minimal_text_request_failed' })
+    }
+  )
+
+  it('does not reuse response integrity or receipt identities across requests', async () => {
+    const firstEvents = canonical({ response: 'first', offset: 100 })
+    const secondEvents = canonical({
+      response: 'second🙂',
+      assistantId: 'assistant_002',
+      session: 'ait_session_002',
+      turn: 'ait_turn_002',
+      offset: 200,
+    })
+    const first = await run(body(), mode, responseFor(firstEvents).upstream)
+    const second = await run(
+      { query: 'operator text 2', sessionId: 'ait_session_002', turnId: 'ait_turn_002' },
+      mode,
+      responseFor(secondEvents).upstream
+    )
+    expect(first._status).toBe(200)
+    expect(second._status).toBe(200)
+    expect(first._json).toEqual(expectedDto(
+      'first', assistantMessageId, eventId(9, 100)
+    ))
+    expect(second._json).toEqual(expectedDto(
+      'second🙂', 'assistant_002', eventId(9, 200), 'ait_session_002', 'ait_turn_002'
+    ))
+    expect(first._json.responseSha256).not.toBe(second._json.responseSha256)
+    expect(first._json.providerAttemptEvidence.decisionEventId).not.toBe(
+      second._json.providerAttemptEvidence.decisionEventId
+    )
   })
 
   it('stops at the first raw byte above 65,536 and releases the reader', async () => {
@@ -1422,8 +1781,17 @@ describe('/api/thoughtCoreChat minimal transient text', () => {
   })
 
   it('rejects duplicate JSON keys and preserves the existing local security gate', async () => {
-    const duplicate = '{"type":"agentic.decision","type":"assistant.message","session_id":"ait_session_001","turn_id":"ait_turn_001","data":{}}'
-    const res = await run(body(), mode, readerFor([`data: ${duplicate}\n\n`]).upstream)
+    const events = canonical()
+    const firstJson = JSON.stringify(events[0])
+    const duplicate = firstJson.replace(
+      '"type":"thought.stage"',
+      '"type":"thought.stage","type":"assistant.message"'
+    )
+    const wire = wireFor(events).replace(
+      `data: ${firstJson}`,
+      `data: ${duplicate}`
+    )
+    const res = await run(body(), mode, readerFor([wire]).upstream)
     expect(res._status).toBe(502)
 
     process.env.LOCAL_API_REQUIRE_TOKEN = 'true'

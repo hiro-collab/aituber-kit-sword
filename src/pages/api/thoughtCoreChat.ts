@@ -1,6 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next'
 import { pipeResponse } from '@/utils/pipeResponse'
 import fs from 'fs'
+import { createHash } from 'crypto'
 import { isIP } from 'net'
 import path from 'path'
 import { enforceLocalApiRequest } from '@/utils/localApiSecurity'
@@ -1369,6 +1370,153 @@ export function createTracedThoughtCoreStream(
 
 const MINIMAL_TEXT_MODE = 'minimal-transient-text-v1'
 const MINIMAL_TEXT_TOKEN = /^[A-Za-z0-9_.:-]{1,180}$/
+const MINIMAL_TEXT_EVENT_ID = /^evt_[0-9a-f]{32}$/
+const MINIMAL_TEXT_EVENT_KEYS =
+  'data,event_id,schema_version,seq,session_id,source,timestamp,turn_id,type'
+const MINIMAL_TEXT_PREFIX = [
+  'thought.stage',
+  'tool.started',
+  'tool.result',
+  'observation.received',
+  'thought.stage',
+  'tool.started',
+  'tool.result',
+  'memory.retrieved',
+] as const
+const MINIMAL_TEXT_TERMINAL = [
+  'agentic.decision',
+  'assistant.speech_delta',
+  'assistant.message',
+  'turn.completed',
+] as const
+const PROVIDER_EVIDENCE_CLASS = 'sword.thought_core.provider_authorship.v1'
+const PROVIDER_ATTEMPT_TERMINAL_CLASS = 'upstream_response_accepted'
+const PROVIDER_AUTHORSHIP_CLASS =
+  'official_broker_decision_response_deterministic_presentation'
+
+type MinimalTextEvent = {
+  schema_version: string
+  event_id: string
+  turn_id: string
+  session_id: string
+  seq: number
+  timestamp: string
+  source: string
+  type: string
+  data: Record<string, unknown>
+}
+
+function readMinimalTextSseEvents(
+  wire: string,
+  sessionId: string,
+  turnId: string
+): MinimalTextEvent[] {
+  if (!wire) throw new Error()
+  const normalized = wire.replace(/\r\n/g, '\n')
+  if (normalized.includes('\r') || !normalized.endsWith('\n\n')) {
+    throw new Error()
+  }
+  const frames = normalized.split('\n\n')
+  if (frames.pop() !== '' || frames.length !== 12) throw new Error()
+
+  const seenEventIds = new Set<string>()
+  return frames.map((frame, index) => {
+    const lines = frame.split('\n')
+    if (
+      lines.length !== 3 ||
+      !lines[0].startsWith('id: ') ||
+      !lines[1].startsWith('event: ') ||
+      !lines[2].startsWith('data: ')
+    ) {
+      throw new Error()
+    }
+    const sseId = lines[0].slice(4)
+    const sseType = lines[1].slice(7)
+    const json = lines[2].slice(6)
+    if (
+      !MINIMAL_TEXT_EVENT_ID.test(sseId) ||
+      !sseType ||
+      !json ||
+      scanJsonForDuplicateObjectKeys(json) !== 'unique'
+    ) {
+      throw new Error()
+    }
+    const event = JSON.parse(json)
+    if (
+      !isRecord(event) ||
+      Object.keys(event).sort().join(',') !== MINIMAL_TEXT_EVENT_KEYS ||
+      event.schema_version !== 'thought-core.event.v0' ||
+      event.event_id !== sseId ||
+      event.type !== sseType ||
+      event.session_id !== sessionId ||
+      event.turn_id !== turnId ||
+      event.source !== 'thought-core' ||
+      !isCanonicalTimestamp(event.timestamp) ||
+      typeof event.seq !== 'number' ||
+      !Number.isInteger(event.seq) ||
+      event.seq !== index + 1 ||
+      !isRecord(event.data) ||
+      seenEventIds.has(sseId)
+    ) {
+      throw new Error()
+    }
+    seenEventIds.add(sseId)
+    return event as MinimalTextEvent
+  })
+}
+
+function hasMinimalTextPrefixSemantics(events: MinimalTextEvent[]): boolean {
+  const environmentStarted = events[1].data
+  const environmentResult = events[2].data
+  const memoryStarted = events[5].data
+  const memoryResult = events[6].data
+  return Boolean(
+    events[0].data.stage === 'environment.observe.before_decision' &&
+      environmentStarted.tool === 'environment.observe' &&
+      typeof environmentStarted.tool_call_id === 'string' &&
+      MINIMAL_TEXT_TOKEN.test(environmentStarted.tool_call_id) &&
+      environmentResult.tool === 'environment.observe' &&
+      environmentResult.tool_call_id === environmentStarted.tool_call_id &&
+      events[4].data.stage === 'memory.retrieve' &&
+      memoryStarted.tool === 'memory.retrieve' &&
+      typeof memoryStarted.tool_call_id === 'string' &&
+      MINIMAL_TEXT_TOKEN.test(memoryStarted.tool_call_id) &&
+      memoryResult.tool === 'memory.retrieve' &&
+      memoryResult.tool_call_id === memoryStarted.tool_call_id
+  )
+}
+
+function projectProviderAttemptEvidence(
+  value: unknown,
+  decisionEventId: string,
+  assistantMessageId: string
+) {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'assistant_message_id,attempt_terminal_class,authorship_class,decision_event_id,evidence_class,fallback_count,retry_count,upstream_attempt_count' ||
+    value.evidence_class !== PROVIDER_EVIDENCE_CLASS ||
+    value.decision_event_id !== decisionEventId ||
+    value.assistant_message_id !== assistantMessageId ||
+    value.upstream_attempt_count !== 1 ||
+    value.retry_count !== 0 ||
+    value.fallback_count !== 0 ||
+    value.attempt_terminal_class !== PROVIDER_ATTEMPT_TERMINAL_CLASS ||
+    value.authorship_class !== PROVIDER_AUTHORSHIP_CLASS
+  ) {
+    throw new Error()
+  }
+  return {
+    evidenceClass: PROVIDER_EVIDENCE_CLASS,
+    decisionEventId,
+    assistantMessageId,
+    upstreamAttemptCount: 1,
+    retryCount: 0,
+    fallbackCount: 0,
+    attemptTerminalClass: PROVIDER_ATTEMPT_TERMINAL_CLASS,
+    authorshipClass: PROVIDER_AUTHORSHIP_CLASS,
+  }
+}
 
 async function readMinimalTextResponse(
   body: ReadableStream<Uint8Array> | null,
@@ -1414,69 +1562,65 @@ async function readMinimalTextResponse(
     offset += chunk.byteLength
   }
   const wire = new TextDecoder('utf-8', { fatal: true }).decode(bounded)
-  if (!wire) throw new Error()
-  const events = wire
-    .split(/\r?\n/)
-    .filter((line) => line.trim())
-    .map((line) => {
-      if (!line.startsWith('data:')) throw new Error()
-      const json = line.slice(5).trim()
-      if (scanJsonForDuplicateObjectKeys(json) !== 'unique') throw new Error()
-      const event = JSON.parse(json)
-      if (
-        !isRecord(event) ||
-        !isRecord(event.data) ||
-        event.session_id !== sessionId ||
-        event.turn_id !== turnId
-      ) {
-        throw new Error()
-      }
-      return event
-    })
+  const events = readMinimalTextSseEvents(wire, sessionId, turnId)
   const types = events.map((event) => event.type)
-  const deltaIndex = types[1] === 'assistant.speech_delta' ? 1 : -1
   if (
-    types.length !== (deltaIndex === 1 ? 4 : 3) ||
-    types[0] !== 'agentic.decision' ||
-    types[deltaIndex === 1 ? 2 : 1] !== 'assistant.message' ||
-    types[deltaIndex === 1 ? 3 : 2] !== 'turn.completed'
+    types.slice(0, 8).join(',') !== MINIMAL_TEXT_PREFIX.join(',') ||
+    types.slice(8).join(',') !== MINIMAL_TEXT_TERMINAL.join(',') ||
+    !hasMinimalTextPrefixSemantics(events)
   ) {
     throw new Error()
   }
-  const decision = events[0].data as Record<string, unknown>
-  const delta =
-    deltaIndex === 1 ? (events[1].data as Record<string, unknown>) : null
-  const message = events[deltaIndex === 1 ? 2 : 1].data as Record<
-    string,
-    unknown
-  >
-  const completed = events[deltaIndex === 1 ? 3 : 2].data as Record<
-    string,
-    unknown
-  >
+  const decisionEvent = events[8]
+  const decision = decisionEvent.data
+  const delta = events[9].data
+  const message = events[10].data
+  const completed = events[11].data
   const assistantMessageId = message.assistant_message_id
   const response =
-    typeof message.display === 'string' ? message.display.trim() : ''
+    typeof message.display === 'string' ? message.display : ''
+  const kind = decision.kind
   if (
+    Object.keys(decision).sort().join(',') !==
+      'capability_present,kind,semantic_authority,status' ||
     decision.status !== 'accepted' ||
     decision.semantic_authority !== 'agentic_provider' ||
     decision.capability_present !== false ||
+    (kind !== 'conversation' && kind !== 'clarification' && kind !== 'hold') ||
     typeof assistantMessageId !== 'string' ||
     !MINIMAL_TEXT_TOKEN.test(assistantMessageId) ||
-    !response ||
+    !response.trim() ||
     response.length > 8_000 ||
     /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(response) ||
-    (delta &&
-      (delta.assistant_message_id !== assistantMessageId ||
-        typeof delta.delta !== 'string' ||
-        !delta.delta.trim())) ||
-    completed.status !== 'response' ||
+    delta.assistant_message_id !== assistantMessageId ||
+    typeof delta.delta !== 'string' ||
+    !delta.delta.trim() ||
+    Object.keys(completed).sort().join(',') !==
+      'capability_executed,provider_attempt_evidence,semantic_authority,status' ||
+    completed.status !== kind ||
     completed.semantic_authority !== 'agentic_provider' ||
     completed.capability_executed !== false
   ) {
     throw new Error()
   }
-  return { sessionId, turnId, assistantMessageId, response }
+  const providerAttemptEvidence = projectProviderAttemptEvidence(
+    completed.provider_attempt_evidence,
+    decisionEvent.event_id,
+    assistantMessageId
+  )
+  const responseBytes = new TextEncoder().encode(response)
+  const responseSha256 = createHash('sha256')
+    .update(responseBytes)
+    .digest('hex')
+  return {
+    sessionId,
+    turnId,
+    assistantMessageId,
+    response,
+    responseSha256,
+    responseUtf8Bytes: responseBytes.byteLength,
+    providerAttemptEvidence,
+  }
 }
 
 export default async function handler(

@@ -1,4 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { createHash, webcrypto } from 'crypto'
+import { TextEncoder as NodeTextEncoder } from 'util'
 import { Form } from '@/components/form'
 
 type QueryState = {
@@ -324,6 +326,12 @@ const validResponse = (
   text: string
 ) => {
   const request = JSON.parse(String(init?.body))
+  const responseBytes = new NodeTextEncoder().encode(text)
+  const responseSha256 = createHash('sha256').update(responseBytes).digest('hex')
+  const decisionEventId = `evt_${createHash('sha256')
+    .update(`${request.sessionId}:${request.turnId}`)
+    .digest('hex')
+    .slice(0, 32)}`
   return {
     ok: true,
     json: async () => ({
@@ -331,14 +339,37 @@ const validResponse = (
       turnId: request.turnId,
       assistantMessageId: id,
       response: text,
+      responseSha256,
+      responseUtf8Bytes: responseBytes.byteLength,
+      providerAttemptEvidence: {
+        evidenceClass: 'sword.thought_core.provider_authorship.v1',
+        decisionEventId,
+        assistantMessageId: id,
+        upstreamAttemptCount: 1,
+        retryCount: 0,
+        fallbackCount: 0,
+        attemptTerminalClass: 'upstream_response_accepted',
+        authorshipClass:
+          'official_broker_decision_response_deterministic_presentation',
+      },
     }),
   } as Response
 }
 
 describe('ProjectionVisual existing-avatar transient Stop integration', () => {
   const originalFetch = global.fetch
+  const originalCrypto = globalThis.crypto
+  const originalTextEncoder = globalThis.TextEncoder
 
   beforeEach(() => {
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: webcrypto,
+    })
+    Object.defineProperty(globalThis, 'TextEncoder', {
+      configurable: true,
+      value: NodeTextEncoder,
+    })
     mockQueryState = operatorState
     mockIsOwner = true
     mockCapturedInputProps = undefined
@@ -348,6 +379,14 @@ describe('ProjectionVisual existing-avatar transient Stop integration', () => {
 
   afterEach(() => {
     global.fetch = originalFetch
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: originalCrypto,
+    })
+    Object.defineProperty(globalThis, 'TextEncoder', {
+      configurable: true,
+      value: originalTextEncoder,
+    })
     jest.restoreAllMocks()
   })
 
@@ -387,6 +426,181 @@ describe('ProjectionVisual existing-avatar transient Stop integration', () => {
     expect(
       container.querySelectorAll('[data-assistant-message-id]')
     ).toHaveLength(1)
+  })
+
+  it('renders the original untrimmed response without persisting integrity or receipt data', async () => {
+    const response = '  応答🙂\r\n'
+    let dto: Record<string, unknown> | undefined
+    global.fetch = jest.fn(async (_url, init) => {
+      const result = validResponse(init, 'assistant_original_001', response)
+      dto = await result.json()
+      return { ...result, json: async () => dto } as Response
+    }) as typeof fetch
+
+    const { container } = render(<ProjectionVisual />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Mock Send' }))
+    await screen.findByLabelText('アシスタントの会話内容')
+
+    expect(
+      container.querySelector('.td-assistant-bubble-text')?.textContent
+    ).toBe(response)
+    const responseSha256 = String(dto?.responseSha256)
+    expect(container.innerHTML).not.toContain(responseSha256)
+    expect(container.innerHTML).not.toContain(
+      'sword.thought_core.provider_authorship.v1'
+    )
+    expect(container.innerHTML).not.toContain('upstream_response_accepted')
+  })
+
+  const withEvidence = async (
+    response: Response,
+    update: Record<string, unknown>
+  ) => {
+    const value = await response.json()
+    return {
+      ...value,
+      providerAttemptEvidence: {
+        ...value.providerAttemptEvidence,
+        ...update,
+      },
+    }
+  }
+
+  it.each([
+    [
+      'hash mismatch',
+      async (response: Response) => ({
+        ...(await response.json()),
+        responseSha256: '0'.repeat(64),
+      }),
+    ],
+    [
+      'UTF-8 byte mismatch',
+      async (response: Response) => ({
+        ...(await response.json()),
+        responseUtf8Bytes: 999,
+      }),
+    ],
+    [
+      'bool byte count',
+      async (response: Response) => ({
+        ...(await response.json()),
+        responseUtf8Bytes: true,
+      }),
+    ],
+    [
+      'missing receipt',
+      async (response: Response) => {
+        const value = await response.json()
+        delete value.providerAttemptEvidence
+        return value
+      },
+    ],
+    [
+      'extra receipt key',
+      async (response: Response) => {
+        const value = await response.json()
+        return {
+          ...value,
+          providerAttemptEvidence: {
+            ...value.providerAttemptEvidence,
+            extra: true,
+          },
+        }
+      },
+    ],
+    [
+      'wrong receipt join',
+      async (response: Response) =>
+        withEvidence(response, { assistantMessageId: 'assistant_wrong' }),
+    ],
+    [
+      'wrong evidence class',
+      async (response: Response) =>
+        withEvidence(response, { evidenceClass: 'wrong' }),
+    ],
+    [
+      'noncanonical decision event id',
+      async (response: Response) =>
+        withEvidence(response, { decisionEventId: 'evt_UPPERCASE' }),
+    ],
+    [
+      'upstream attempt zero',
+      async (response: Response) =>
+        withEvidence(response, { upstreamAttemptCount: 0 }),
+    ],
+    [
+      'upstream attempt two',
+      async (response: Response) =>
+        withEvidence(response, { upstreamAttemptCount: 2 }),
+    ],
+    [
+      'retry one',
+      async (response: Response) =>
+        withEvidence(response, { retryCount: 1 }),
+    ],
+    [
+      'fallback one',
+      async (response: Response) =>
+        withEvidence(response, { fallbackCount: 1 }),
+    ],
+    [
+      'wrong terminal class',
+      async (response: Response) =>
+        withEvidence(response, { attemptTerminalClass: 'fallback' }),
+    ],
+    [
+      'wrong authorship class',
+      async (response: Response) =>
+        withEvidence(response, { authorshipClass: 'compatibility' }),
+    ],
+    [
+      'bool receipt count',
+      async (response: Response) =>
+        withEvidence(response, { retryCount: false }),
+    ],
+  ] as const)('fails closed with only the fixed surface for %s', async (_label, mutate) => {
+    global.fetch = jest.fn(async (_url, init) => {
+      const response = validResponse(
+        init,
+        'assistant_integrity_invalid',
+        'invalid response'
+      )
+      return {
+        ...response,
+        json: async () => mutate(response),
+      } as Response
+    }) as typeof fetch
+    const storage = jest.spyOn(Storage.prototype, 'setItem')
+    const { container } = render(<ProjectionVisual />)
+    fireEvent.click(screen.getByRole('button', { name: 'Mock Send' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Request failed')
+    expect(screen.queryByLabelText('アシスタントの会話内容')).toBeNull()
+    expect(container.firstElementChild).toHaveAttribute(
+      'data-presentation-cleanup',
+      'presentation_cleanup_unknown'
+    )
+    expect(container.innerHTML).not.toContain('invalid response')
+    expect(container.innerHTML).not.toContain(
+      'sword.thought_core.provider_authorship.v1'
+    )
+    expect(container.innerHTML).not.toContain('upstream_response_accepted')
+    expect(storage).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when Web Crypto digest is unavailable', async () => {
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: { randomUUID: webcrypto.randomUUID.bind(webcrypto) },
+    })
+    global.fetch = jest.fn(async (_url, init) =>
+      validResponse(init, 'assistant_no_crypto', 'invalid response')
+    ) as typeof fetch
+
+    render(<ProjectionVisual />)
+    fireEvent.click(screen.getByRole('button', { name: 'Mock Send' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Request failed')
+    expect(screen.queryByLabelText('アシスタントの会話内容')).toBeNull()
   })
 
   it.each([
@@ -672,14 +886,15 @@ describe('ProjectionVisual existing-avatar transient Stop integration', () => {
     [
       'extra response key',
       (init: RequestInit | undefined) => {
-        const request = JSON.parse(String(init?.body))
+        const response = validResponse(
+          init,
+          'assistant_extra_key',
+          'invalid response'
+        )
         return {
-          ok: true,
+          ...response,
           json: async () => ({
-            sessionId: request.sessionId,
-            turnId: request.turnId,
-            assistantMessageId: 'assistant_extra_key',
-            response: 'invalid response',
+            ...(await response.json()),
             extra: true,
           }),
         } as Response

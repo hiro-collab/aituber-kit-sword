@@ -1,8 +1,12 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { createHash, webcrypto } from 'crypto'
+import { TextEncoder as NodeTextEncoder } from 'util'
 import ProjectionVisualMinimal from '@/pages/projection-visual-minimal'
 
 describe('projection-visual-minimal', () => {
   const originalFetch = global.fetch
+  const originalCrypto = globalThis.crypto
+  const originalTextEncoder = globalThis.TextEncoder
 
   const deferred = <T,>() => {
     let resolve!: (value: T) => void
@@ -14,8 +18,62 @@ describe('projection-visual-minimal', () => {
     return { promise, resolve, reject }
   }
 
+  const validResponse = (
+    init: RequestInit | undefined,
+    assistantMessageId: string,
+    response: string
+  ) => {
+    const request = JSON.parse(String(init?.body))
+    const responseBytes = new NodeTextEncoder().encode(response)
+    const responseSha256 = createHash('sha256')
+      .update(responseBytes)
+      .digest('hex')
+    const decisionEventId = `evt_${createHash('sha256')
+      .update(`${request.sessionId}:${request.turnId}`)
+      .digest('hex')
+      .slice(0, 32)}`
+    return {
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+      assistantMessageId,
+      response,
+      responseSha256,
+      responseUtf8Bytes: responseBytes.byteLength,
+      providerAttemptEvidence: {
+        evidenceClass: 'sword.thought_core.provider_authorship.v1',
+        decisionEventId,
+        assistantMessageId,
+        upstreamAttemptCount: 1,
+        retryCount: 0,
+        fallbackCount: 0,
+        attemptTerminalClass: 'upstream_response_accepted',
+        authorshipClass:
+          'official_broker_decision_response_deterministic_presentation',
+      },
+    }
+  }
+
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: webcrypto,
+    })
+    Object.defineProperty(globalThis, 'TextEncoder', {
+      configurable: true,
+      value: NodeTextEncoder,
+    })
+  })
+
   afterEach(() => {
     global.fetch = originalFetch
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: originalCrypto,
+    })
+    Object.defineProperty(globalThis, 'TextEncoder', {
+      configurable: true,
+      value: originalTextEncoder,
+    })
     delete (window as any).__projectionVisualSpeechOutputSummaryV0
     delete (window as any).__projectionVisualSpeechOutputParityV0
     jest.restoreAllMocks()
@@ -52,13 +110,14 @@ describe('projection-visual-minimal', () => {
     )
     const abort = jest.spyOn(AbortController.prototype, 'abort')
     global.fetch = jest.fn(async (_url, init) => {
-      const request = JSON.parse(String(init?.body))
-      return { ok: true, json: async () => ({
-        sessionId: request.sessionId,
-        turnId: request.turnId,
-        assistantMessageId: 'assistant_001',
-        response: 'strict response',
-      }) } as Response
+      return {
+        ok: true,
+        json: async () => validResponse(
+          init,
+          'assistant_001',
+          'strict response'
+        ),
+      } as Response
     }) as typeof fetch
 
     const { container } = render(<ProjectionVisualMinimal />)
@@ -142,10 +201,12 @@ describe('projection-visual-minimal', () => {
       'presentation_cleanup_complete'
     )
     const firstBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)
-    await act(async () => first.resolve({ ok: true, json: async () => ({
-      sessionId: firstBody.sessionId, turnId: firstBody.turnId,
-      assistantMessageId: 'late_001', response: 'late response',
-    }) } as Response))
+    await act(async () => first.resolve({ ok: true, json: async () =>
+      validResponse(
+        { body: JSON.stringify(firstBody) },
+        'late_001',
+        'late response'
+      ) } as Response))
     expect(screen.queryByText('late response')).toBeNull()
 
     fireEvent.change(input, { target: { value: 'second' } })

@@ -9,6 +9,12 @@ import type { ProjectionVisualStrictAssistantMessage } from '@/components/projec
 
 const REQUEST_MODE = 'minimal-transient-text-v1'
 const TOKEN = /^[A-Za-z0-9_.:-]{1,180}$/
+const EVENT_ID = /^evt_[0-9a-f]{32}$/
+const SHA256 = /^[0-9a-f]{64}$/
+const PROVIDER_EVIDENCE_CLASS = 'sword.thought_core.provider_authorship.v1'
+const PROVIDER_ATTEMPT_TERMINAL_CLASS = 'upstream_response_accepted'
+const PROVIDER_AUTHORSHIP_CLASS =
+  'official_broker_decision_response_deterministic_presentation'
 const createRequestId = (kind: 'session' | 'turn') =>
   `ait_${kind}_${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`
 
@@ -67,6 +73,43 @@ const abortOnce = (request: ActiveRequest) => {
   if (request.abortIssued) return
   request.abortIssued = true
   request.controller.abort()
+}
+
+const hasExactProviderAttemptEvidence = (
+  value: unknown,
+  assistantMessageId: string
+) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const evidence = value as Record<string, unknown>
+  return Boolean(
+    Object.keys(evidence).sort().join(',') ===
+      'assistantMessageId,attemptTerminalClass,authorshipClass,decisionEventId,evidenceClass,fallbackCount,retryCount,upstreamAttemptCount' &&
+      evidence.evidenceClass === PROVIDER_EVIDENCE_CLASS &&
+      typeof evidence.decisionEventId === 'string' &&
+      EVENT_ID.test(evidence.decisionEventId) &&
+      evidence.assistantMessageId === assistantMessageId &&
+      evidence.upstreamAttemptCount === 1 &&
+      evidence.retryCount === 0 &&
+      evidence.fallbackCount === 0 &&
+      evidence.attemptTerminalClass === PROVIDER_ATTEMPT_TERMINAL_CLASS &&
+      evidence.authorshipClass === PROVIDER_AUTHORSHIP_CLASS
+  )
+}
+
+const verifyResponseIntegrity = async (
+  response: string,
+  expectedSha256: string,
+  expectedUtf8Bytes: number
+) => {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle || typeof subtle.digest !== 'function') return false
+  const bytes = new TextEncoder().encode(response)
+  if (bytes.byteLength !== expectedUtf8Bytes) return false
+  const digest = new Uint8Array(await subtle.digest('SHA-256', bytes))
+  const actualSha256 = Array.from(digest, (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('')
+  return actualSha256 === expectedSha256
 }
 
 export const useProjectionVisualTransientThoughtRequest = ({
@@ -219,20 +262,36 @@ export const useProjectionVisualTransientThoughtRequest = ({
       if (!owns(activeRef.current, request, 'request_active')) return
       const keys =
         data && typeof data === 'object' ? Object.keys(data).sort() : []
-      const content =
-        data && typeof data.response === 'string' ? data.response.trim() : ''
+      const content = data && typeof data.response === 'string' ? data.response : ''
       if (
-        keys.join(',') !== 'assistantMessageId,response,sessionId,turnId' ||
+        keys.join(',') !==
+          'assistantMessageId,providerAttemptEvidence,response,responseSha256,responseUtf8Bytes,sessionId,turnId' ||
         data.sessionId !== sessionId ||
         data.turnId !== turnId ||
         typeof data.assistantMessageId !== 'string' ||
         !TOKEN.test(data.assistantMessageId) ||
-        !content ||
+        !content.trim() ||
         content.length > 8_000 ||
-        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(content)
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(content) ||
+        typeof data.responseSha256 !== 'string' ||
+        !SHA256.test(data.responseSha256) ||
+        typeof data.responseUtf8Bytes !== 'number' ||
+        !Number.isInteger(data.responseUtf8Bytes) ||
+        data.responseUtf8Bytes <= 0 ||
+        !hasExactProviderAttemptEvidence(
+          data.providerAttemptEvidence,
+          data.assistantMessageId
+        )
       ) {
         throw new Error()
       }
+      const integrityValid = await verifyResponseIntegrity(
+        content,
+        data.responseSha256,
+        data.responseUtf8Bytes
+      )
+      if (!owns(activeRef.current, request, 'request_active')) return
+      if (!integrityValid) throw new Error()
       request.assistantMessageId = data.assistantMessageId
       request.phase = 'response_visible'
       setAssistant({ id: data.assistantMessageId, content })
