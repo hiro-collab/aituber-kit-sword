@@ -10,7 +10,12 @@ import { SlideText } from './slideText'
 import { isMultiModalAvailable } from '@/features/constants/aiModels'
 import { AIService } from '@/features/constants/settings'
 
-export const Form = () => {
+type Props = {
+  onSubmitText?: (text: string) => void
+  onStopRequested?: () => void
+}
+
+export const Form = ({ onSubmitText, onStopRequested }: Props = {}) => {
   const modalImage = homeStore((s) => s.modalImage)
   const webcamStatus = homeStore((s) => s.webcamStatus)
   const captureStatus = homeStore((s) => s.captureStatus)
@@ -43,6 +48,11 @@ export const Form = () => {
 
   const hookSendChat = useCallback(
     (text: string) => {
+      if (onSubmitText) {
+        onSubmitText(text)
+        return
+      }
+
       // マルチモーダル機能が使用可能かチェック
       const isMultiModalSupported = isMultiModalAvailable(
         selectAIService as AIService,
@@ -96,6 +106,7 @@ export const Form = () => {
       selectAIModel,
       enableMultiModal,
       customModel,
+      onSubmitText,
     ]
   )
 
@@ -107,7 +118,10 @@ export const Form = () => {
   ) : (
     <>
       <PresetQuestionButtons onSelectQuestion={hookSendChat} />
-      <MessageInputContainer onChatProcessStart={hookSendChat} />
+      <MessageInputContainer
+        onChatProcessStart={hookSendChat}
+        onStopRequested={onStopRequested}
+      />
     </>
   )
 }

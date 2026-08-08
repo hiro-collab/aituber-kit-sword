@@ -15,9 +15,13 @@ const gestureVoiceInterruptsSpeech =
 // 無音検出用の状態と変数を追加
 type Props = {
   onChatProcessStart: (text: string) => void
+  onStopRequested?: () => void
 }
 
-export const MessageInputContainer = ({ onChatProcessStart }: Props) => {
+export const MessageInputContainer = ({
+  onChatProcessStart,
+  onStopRequested,
+}: Props) => {
   const isSpeaking = homeStore((s) => s.isSpeaking)
   const chatProcessing = homeStore((s) => s.chatProcessing)
   const continuousMicListeningMode = settingsStore(
@@ -363,6 +367,14 @@ export const MessageInputContainer = ({ onChatProcessStart }: Props) => {
     })
   }
 
+  const handleStopRequested = () => {
+    try {
+      onStopRequested?.()
+    } finally {
+      handleStopSpeaking()
+    }
+  }
+
   return (
     <MessageInput
       userMessage={userMessage}
@@ -370,7 +382,7 @@ export const MessageInputContainer = ({ onChatProcessStart }: Props) => {
       onChangeUserMessage={handleInputChange}
       onClickMicButton={toggleListening}
       onClickSendButton={handleSendMessage}
-      onClickStopButton={handleStopSpeaking}
+      onClickStopButton={handleStopRequested}
       isSpeaking={isSpeaking}
       silenceTimeoutRemaining={silenceTimeoutRemaining}
       continuousMicListeningMode={

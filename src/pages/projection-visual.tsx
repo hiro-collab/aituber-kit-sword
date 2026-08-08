@@ -20,6 +20,7 @@ import { YoutubeManager } from '@/components/youtubeManager'
 import { MemoryServiceInitializer } from '@/components/memoryServiceInitializer'
 import { ProjectionVisualHud } from '@/components/projectionVisualHud'
 import { ProjectionVisualAssistantBubble } from '@/components/projectionVisualAssistantBubble'
+import { ProjectionVisualStrictAssistantBubble } from '@/components/projectionVisualStrictAssistantBubble'
 import { ProjectionVisualDisplayStateBridge } from '@/components/projectionVisualDisplayStateBridge'
 import { ProjectionVisualCalibrationPanel } from '@/components/projectionVisualCalibrationPanel'
 import homeStore from '@/features/stores/home'
@@ -29,6 +30,7 @@ import toastStore from '@/features/stores/toast'
 import { usePresetLoader } from '@/features/presets/usePresetLoader'
 import { useLive2DEnabled } from '@/hooks/useLive2DEnabled'
 import { useBrowserControlOwner } from '@/features/browserControl/useBrowserControlOwner'
+import { useProjectionVisualTransientThoughtRequest } from '@/hooks/useProjectionVisualTransientThoughtRequest'
 import { BrowserControlNotice } from '@/components/browserControlNotice'
 import {
   readProjectionVisualQueryFromPath,
@@ -132,6 +134,12 @@ const ProjectionVisual = () => {
     route: '/projection-visual',
     priority: 30,
     enabled: !isDisplayOnlyMode,
+  })
+  const transientRequestEnabled =
+    projectionVisualMode === 'operator' && controlOwner.isOwner
+  const transientRequest = useProjectionVisualTransientThoughtRequest({
+    rootRef: projectionVisualRootRef,
+    enabled: transientRequestEnabled,
   })
   const characterPreset1 = settingsStore((s) => s.characterPreset1)
   const characterPreset2 = settingsStore((s) => s.characterPreset2)
@@ -305,6 +313,7 @@ const ProjectionVisual = () => {
         isDisplayOnlyMode && remoteSpeechOutputActive ? 'active' : 'idle'
       }
       data-projection-capture-handle-status="inactive"
+      data-presentation-cleanup={transientRequest.cleanupReceipt}
     >
       <Meta />
       <ProjectionVisualDisplayStateBridge mode={displayStateBridgeMode} />
@@ -346,15 +355,24 @@ const ProjectionVisual = () => {
         data-projection-presentation-layer="speech-hud"
         data-testid="projection-visual-speech-hud-layer"
       >
-        <ProjectionVisualAssistantBubble
-          variant={
-            isStageOutputMode
-              ? 'stage-output'
-              : isPassiveMode
-                ? 'passive'
-                : 'operator'
-          }
-        />
+        {transientRequestEnabled ? (
+          <ProjectionVisualStrictAssistantBubble
+            message={transientRequest.assistant}
+          />
+        ) : (
+          <ProjectionVisualAssistantBubble
+            variant={
+              isStageOutputMode
+                ? 'stage-output'
+                : isPassiveMode
+                  ? 'passive'
+                  : 'operator'
+            }
+          />
+        )}
+        {transientRequestEnabled && transientRequest.error ? (
+          <p role="alert">Request failed</p>
+        ) : null}
         {shouldRenderHud && (
           <ProjectionVisualHud
             variant={isDisplayOnlyMode ? 'passive' : 'operator'}
@@ -367,7 +385,10 @@ const ProjectionVisual = () => {
       />
       {!isDisplayOnlyMode &&
         (controlOwner.isOwner ? (
-          <Form />
+          <Form
+            onSubmitText={transientRequest.submitText}
+            onStopRequested={transientRequest.stop}
+          />
         ) : (
           <BrowserControlNotice
             owner={controlOwner.owner}
