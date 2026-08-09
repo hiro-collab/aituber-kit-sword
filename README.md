@@ -73,7 +73,7 @@ AITuberKitは、誰でも簡単にAIキャラクターとチャットできるWe
 | Route | Sword での用途 |
 | --- | --- |
 | `/` | 通常の自然会話とアバター表示。Sword の選択設定では Thought Core を AI service として使用します。 |
-| `/projection-visual/?mode=operator` | 既存アバターを載せ、投影画面自身から一つの transient turn を送ります。現在、この入力の応答は厳密な吹き出しと presentation Stop だけを更新し、アバター発話・TTS・display state には自動連結しません。 |
+| `/projection-visual/?mode=operator` | 通常の自然会話を既存の `homeStore` / SpeakQueue へ渡し、アバター、調整可能な吹き出し、TTS、display stateを同じ表現経路で駆動します。文字とpresentation Stopだけを隔離して確認する場合に限り、`requestMode=minimal-transient-text-v1`を明示します。 |
 | `/projection-visual/?mode=passive` | operator が公開した display state を受ける表示専用画面です。通常画面の任意の会話履歴は自動複製しません。stale/error 時は発話中フラグを下げますが、現在は最後の assistant text を保持します。 |
 | `/projection-visual-minimal` | session / turn / message identity、単一応答、Stop 後の late-response fence を絞って確認する最小表示面です。 |
 
@@ -84,11 +84,11 @@ Thought Core 会話境界は `src/features/chat/thoughtCoreChat.ts`、吹き出�
 測る観測層であり、意味判断、provider 成功、音声成功、Launcher cleanup、物理投影、owner U1
 を代わりに証明しません。
 
-通常の `/`、`direct_send`、accepted prepared-sample の各経路は、応答を
-`homeStore` / SpeakQueue へ渡してアバター発話と音声を駆動します。一方、operator の
-通常文字入力は transient hook-local response です。この差は意図せず混同しやすいため、
-同じ canonical response で strict bubble、既存アバター、TTS、passive display を連動させる
-場合は、既存の accepted-response / SpeakQueue / display-state 境界へ明示的に接続してください。
+通常の `/`、`/projection-visual/?mode=operator`、`direct_send`、accepted prepared-sample
+の各経路は、応答を `homeStore` / SpeakQueue へ渡してアバター発話と音声を駆動します。
+`requestMode=minimal-transient-text-v1`を明示したoperatorと
+`/projection-visual-minimal`だけが、strict bubbleとpresentation Stopに限定された
+transient hook-local responseです。検証用の最小経路を通常のowner体験へ昇格させません。
 
 ## 主な機能
 

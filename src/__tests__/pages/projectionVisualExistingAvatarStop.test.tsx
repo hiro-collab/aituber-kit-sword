@@ -45,6 +45,9 @@ const stageState: QueryState = {
 
 let mockQueryState = operatorState
 let mockIsOwner = true
+let mockRouterQuery: Record<string, string> = {
+  requestMode: 'minimal-transient-text-v1',
+}
 let mockCapturedInputProps:
   | {
       onChatProcessStart: (text: string) => void
@@ -56,7 +59,11 @@ const mockDefaultSend = jest.fn()
 const mockSpeechStop = jest.fn()
 
 jest.mock('next/router', () => ({
-  useRouter: () => ({ isReady: true, query: {}, asPath: '/projection-visual' }),
+  useRouter: () => ({
+    isReady: true,
+    query: mockRouterQuery,
+    asPath: '/projection-visual',
+  }),
 }))
 jest.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (value: string) => value }),
@@ -372,6 +379,7 @@ describe('ProjectionVisual existing-avatar transient Stop integration', () => {
     })
     mockQueryState = operatorState
     mockIsOwner = true
+    mockRouterQuery = { requestMode: 'minimal-transient-text-v1' }
     mockCapturedInputProps = undefined
     mockCapturedMessageInputProps = undefined
     jest.clearAllMocks()
@@ -426,6 +434,23 @@ describe('ProjectionVisual existing-avatar transient Stop integration', () => {
     expect(
       container.querySelectorAll('[data-assistant-message-id]')
     ).toHaveLength(1)
+  })
+
+  it('uses the existing full expression route by default', () => {
+    mockRouterQuery = {}
+    global.fetch = jest.fn() as typeof fetch
+
+    render(<ProjectionVisual />)
+    fireEvent.click(screen.getByRole('button', { name: 'Mock Send' }))
+
+    expect(screen.getByTestId('existing-avatar')).toBeInTheDocument()
+    expect(screen.getByTestId('normal-assistant-bubble')).toHaveAttribute(
+      'data-variant',
+      'operator'
+    )
+    expect(mockCapturedInputProps?.onStopRequested).toBeUndefined()
+    expect(mockDefaultSend).toHaveBeenCalledWith('owner text')
+    expect(global.fetch).not.toHaveBeenCalled()
   })
 
   it('renders the original untrimmed response without persisting integrity or receipt data', async () => {

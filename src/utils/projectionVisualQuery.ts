@@ -27,6 +27,7 @@ export function firstQueryValue(value: QueryValue): string | undefined {
 
 export function readProjectionVisualQueryFromPath(asPath: string): {
   mode?: string
+  requestMode?: string
   hud?: string
   visualTest?: string
   motionAsset?: string
@@ -37,6 +38,9 @@ export function readProjectionVisualQueryFromPath(asPath: string): {
   const params = new URLSearchParams(queryText)
   return {
     mode: params.get('mode') ?? undefined,
+    ...(params.has('requestMode')
+      ? { requestMode: params.get('requestMode') ?? undefined }
+      : {}),
     hud: params.get('hud') ?? undefined,
     visualTest: params.get('visualTest') ?? undefined,
     motionAsset: params.get('motionAsset') ?? undefined,

@@ -867,6 +867,18 @@ describe('worker-2 projection visual organ contract', () => {
 
   it.each([
     [
+      '/projection-visual/?mode=operator&requestMode=minimal-transient-text-v1',
+      {
+        mode: 'operator',
+        requestMode: 'minimal-transient-text-v1',
+        hud: undefined,
+        visualTest: undefined,
+        motionAsset: undefined,
+        stimulusRef: undefined,
+        motionStimulusRef: undefined,
+      },
+    ],
+    [
       '/projection-visual/?mode=passive',
       {
         mode: 'passive',

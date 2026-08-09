@@ -109,6 +109,11 @@ const ProjectionVisual = () => {
     shouldReceiveDisplayState,
     shouldRenderHud,
   } = resolveProjectionVisualQueryState(routeQuery)
+  const minimalTransientRequestRequested = useMemo(() => {
+    const value = routeQuery.requestMode
+    const requestMode = Array.isArray(value) ? value[0] : value
+    return requestMode === 'minimal-transient-text-v1'
+  }, [routeQuery])
   const isProductionEffectHost = isStageOutputMode
   const captureOwnerOrigin = useMemo(() => {
     const value = router.query.captureOwnerOrigin
@@ -136,7 +141,9 @@ const ProjectionVisual = () => {
     enabled: !isDisplayOnlyMode,
   })
   const transientRequestEnabled =
-    projectionVisualMode === 'operator' && controlOwner.isOwner
+    projectionVisualMode === 'operator' &&
+    controlOwner.isOwner &&
+    minimalTransientRequestRequested
   const transientRequest = useProjectionVisualTransientThoughtRequest({
     rootRef: projectionVisualRootRef,
     enabled: transientRequestEnabled,
@@ -385,10 +392,14 @@ const ProjectionVisual = () => {
       />
       {!isDisplayOnlyMode &&
         (controlOwner.isOwner ? (
-          <Form
-            onSubmitText={transientRequest.submitText}
-            onStopRequested={transientRequest.stop}
-          />
+          transientRequestEnabled ? (
+            <Form
+              onSubmitText={transientRequest.submitText}
+              onStopRequested={transientRequest.stop}
+            />
+          ) : (
+            <Form />
+          )
         ) : (
           <BrowserControlNotice
             owner={controlOwner.owner}
