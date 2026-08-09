@@ -38,6 +38,7 @@ const CORRELATED_DIRECT_SEND_BODY_KEYS = new Set([
   'messages',
   'turn_id',
   'message_id',
+  'assistant_message_id',
   'response_source',
 ])
 const ALLOW_EXTERNAL_SYSTEM_PROMPT =
@@ -84,6 +85,7 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
       image,
       turn_id: turnId,
       message_id: messageId,
+      assistant_message_id: assistantMessageId,
       response_source: responseSource,
     } = req.body
 
@@ -112,6 +114,7 @@ const handler = (req: NextApiRequest, res: NextApiResponse) => {
       messages,
       turnId,
       messageId,
+      assistantMessageId,
       responseSource,
     })
     if (correlation === false) {
@@ -238,16 +241,33 @@ function resolveThoughtCoreResponseCorrelation(args: {
   messages: unknown[]
   turnId: unknown
   messageId: unknown
+  assistantMessageId: unknown
   responseSource: unknown
 }): { turnId: string; messageId: string; dedupeKey: string } | null | false {
-  const values = [args.turnId, args.messageId, args.responseSource]
+  const values = [
+    args.turnId,
+    args.messageId,
+    args.assistantMessageId,
+    args.responseSource,
+  ]
   const anyPresent = values.some((value) => value !== undefined)
   if (!anyPresent) return null
+  const canonicalMessageId =
+    args.assistantMessageId === undefined
+      ? args.messageId
+      : args.assistantMessageId
   if (
     args.type !== 'direct_send' ||
     args.messages.length !== 1 ||
     !isSafeResponseIdentifier(args.turnId) ||
-    !isSafeResponseIdentifier(args.messageId) ||
+    !isSafeResponseIdentifier(canonicalMessageId) ||
+    (args.messageId !== undefined &&
+      !isSafeResponseIdentifier(args.messageId)) ||
+    (args.assistantMessageId !== undefined &&
+      !isCanonicalAssistantMessageIdentifier(args.assistantMessageId)) ||
+    (args.messageId !== undefined &&
+      args.assistantMessageId !== undefined &&
+      args.messageId !== args.assistantMessageId) ||
     args.responseSource !== THOUGHT_CORE_RESPONSE_SOURCE ||
     !isRecord(args.body) ||
     Object.keys(args.body).some(
@@ -258,8 +278,8 @@ function resolveThoughtCoreResponseCorrelation(args: {
   }
   return {
     turnId: args.turnId,
-    messageId: args.messageId,
-    dedupeKey: JSON.stringify([args.turnId, args.messageId]),
+    messageId: canonicalMessageId,
+    dedupeKey: JSON.stringify([args.turnId, canonicalMessageId]),
   }
 }
 
@@ -278,6 +298,16 @@ function pruneRecentResponseKeys(queue: MessageQueue, now: number) {
 
 function isSafeResponseIdentifier(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value)
+}
+
+function isCanonicalAssistantMessageIdentifier(
+  value: unknown
+): value is string {
+  return (
+    isSafeResponseIdentifier(value) &&
+    value.startsWith('msg_') &&
+    value.length > 'msg_'.length
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

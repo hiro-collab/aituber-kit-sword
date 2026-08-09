@@ -259,6 +259,108 @@ describe('/api/messages', () => {
       })
     })
 
+    it('accepts the canonical assistant identity with its matching legacy alias', () => {
+      const body = {
+        messages: ['公開応答です。'],
+        turn_id: 'turn-canonical-1',
+        message_id: 'msg_canonical_1',
+        assistant_message_id: 'msg_canonical_1',
+        response_source: 'thought_core_assistant_message',
+      }
+      const postRes = createMockRes()
+
+      handler(
+        createMockReq({
+          method: 'POST',
+          query: { clientId: 'client1', type: 'direct_send' },
+          body,
+        }),
+        postRes
+      )
+
+      expect(postRes._status).toBe(201)
+      const getRes = createMockRes()
+      handler(
+        createMockReq({ method: 'GET', query: { clientId: 'client1' } }),
+        getRes
+      )
+      expect(getRes._json).toEqual({
+        messages: [
+          expect.objectContaining({
+            turnId: body.turn_id,
+            messageId: body.assistant_message_id,
+            responseSource: body.response_source,
+          }),
+        ],
+      })
+    })
+
+    it('accepts a canonical assistant identity without the legacy alias', () => {
+      const res = createMockRes()
+
+      handler(
+        createMockReq({
+          method: 'POST',
+          query: { clientId: 'client1', type: 'direct_send' },
+          body: {
+            messages: ['公開応答です。'],
+            turn_id: 'turn-canonical-only-1',
+            assistant_message_id: 'msg_canonical_only_1',
+            response_source: 'thought_core_assistant_message',
+          },
+        }),
+        res
+      )
+
+      expect(res._status).toBe(201)
+    })
+
+    it.each(['assistant-noncanonical-1', 'msg_'])(
+      'rejects a noncanonical assistant identity in the canonical field: %s',
+      (assistantMessageId) => {
+        const res = createMockRes()
+
+        handler(
+          createMockReq({
+            method: 'POST',
+            query: { clientId: 'client1', type: 'direct_send' },
+            body: {
+              messages: ['公開応答です。'],
+              turn_id: 'turn-noncanonical-1',
+              assistant_message_id: assistantMessageId,
+              response_source: 'thought_core_assistant_message',
+            },
+          }),
+          res
+        )
+
+        expect(res._status).toBe(400)
+        expect(res._json).toEqual({ error: 'Invalid response correlation' })
+      }
+    )
+
+    it('rejects conflicting canonical and legacy assistant identities', () => {
+      const res = createMockRes()
+
+      handler(
+        createMockReq({
+          method: 'POST',
+          query: { clientId: 'client1', type: 'direct_send' },
+          body: {
+            messages: ['公開応答です。'],
+            turn_id: 'turn-mismatch-1',
+            message_id: 'assistant-legacy-1',
+            assistant_message_id: 'msg_canonical_1',
+            response_source: 'thought_core_assistant_message',
+          },
+        }),
+        res
+      )
+
+      expect(res._status).toBe(400)
+      expect(res._json).toEqual({ error: 'Invalid response correlation' })
+    })
+
     it('deduplicates the same Thought Core response identity per client', () => {
       const request = createMockReq({
         method: 'POST',
