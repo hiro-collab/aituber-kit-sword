@@ -68,6 +68,10 @@ const ACCEPTED_PRESENTATION_ASSISTANT_EVENT =
 const ACCEPTED_PRESENTATION_MOTION_EVENT = 'accepted.presentation.motion'
 const ACCEPTED_PRESENTATION_COMPLETED_EVENT = 'accepted.presentation.completed'
 const PROJECTION_EFFECT_DELIVERY_FAILED = 'projection_effect_delivery_failed'
+const PROJECTION_EFFECT_STAGE_UNAVAILABLE_MESSAGE =
+  'Errors.ProjectionEffectStageUnavailable'
+const PROJECTION_EFFECT_START_REJECTED_MESSAGE =
+  'Errors.ProjectionEffectStartRejected'
 const CLOSED_LOOP_OUTPUT_FEEDBACK_FAILED = 'closed_loop_output_feedback_failed'
 const CLOSED_LOOP_OUTPUT_TOKEN = /^[A-Za-z0-9_.:+-]{1,180}$/
 
@@ -1284,7 +1288,18 @@ export async function getThoughtCoreChatResponseStream(
                       }
                     )
                     if (!projectionEffectDeliverySucceeded(intent, delivery)) {
-                      throw new Error(PROJECTION_EFFECT_DELIVERY_FAILED)
+                      const warningKey = projectionEffectDeliveryWarningKey(
+                        intent,
+                        delivery
+                      )
+                      if (!warningKey) {
+                        throw new Error(PROJECTION_EFFECT_DELIVERY_FAILED)
+                      }
+                      toastStore.getState().addToast({
+                        message: i18next.t(warningKey),
+                        type: 'error',
+                        tag: 'projection-effect-delivery-warning',
+                      })
                     }
                   }
                 }
@@ -1301,7 +1316,9 @@ export async function getThoughtCoreChatResponseStream(
                     pendingFeedbackRequest !== null ||
                     canonicalAssistantCorrelation !== null
                   if (correlationRequired) {
-                    const sessionId = safeClosedLoopOutputToken(event.session_id)
+                    const sessionId = safeClosedLoopOutputToken(
+                      event.session_id
+                    )
                     const turnId = safeClosedLoopOutputToken(event.turn_id)
                     const assistantMessageId = safeClosedLoopOutputToken(
                       data.assistant_message_id
@@ -1365,7 +1382,9 @@ export async function getThoughtCoreChatResponseStream(
                   const feedbackSessionId = safeClosedLoopOutputToken(
                     event.session_id
                   )
-                  const feedbackTurnId = safeClosedLoopOutputToken(event.turn_id)
+                  const feedbackTurnId = safeClosedLoopOutputToken(
+                    event.turn_id
+                  )
                   if (
                     !feedbackSessionId ||
                     !feedbackTurnId ||
@@ -1476,4 +1495,32 @@ function projectionEffectDeliverySucceeded(
   if (intent.action === 'start') return result.resultClass === 'started'
   if (intent.action === 'stop') return result.resultClass === 'stopped'
   return result.resultClass === 'reset'
+}
+
+function projectionEffectDeliveryWarningKey(
+  intent: ProjectionEffectIntent,
+  result: ProjectionEffectDeliveryResult
+):
+  | typeof PROJECTION_EFFECT_STAGE_UNAVAILABLE_MESSAGE
+  | typeof PROJECTION_EFFECT_START_REJECTED_MESSAGE
+  | null {
+  if (
+    intent.action !== 'start' ||
+    result.eventId !== intent.eventId ||
+    result.status !== 'rejected'
+  ) {
+    return null
+  }
+  if (result.resultClass === 'receiver_unavailable') {
+    return PROJECTION_EFFECT_STAGE_UNAVAILABLE_MESSAGE
+  }
+  if (
+    result.resultClass === 'transport_unavailable' ||
+    result.resultClass === 'host_rejected' ||
+    result.resultClass === 'host_unavailable' ||
+    result.resultClass === 'queue_capacity_exceeded'
+  ) {
+    return PROJECTION_EFFECT_START_REJECTED_MESSAGE
+  }
+  return null
 }

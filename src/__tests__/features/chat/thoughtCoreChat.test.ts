@@ -15,6 +15,8 @@ import {
   publishProjectionEffectExecutionReceipt,
   subscribeProjectionEffectIntents,
 } from '../../../features/projectionEffects/projectionEffectIntent'
+import toastStore from '../../../features/stores/toast'
+import i18next from 'i18next'
 import { TextDecoder, TextEncoder } from 'util'
 ;(global as any).TextEncoder = TextEncoder
 ;(global as any).TextDecoder = TextDecoder
@@ -324,8 +326,13 @@ describe('submitAcceptedPreparedSampleBrowserSpeech', () => {
 describe('getThoughtCoreChatResponseStream projection effect intent bridge', () => {
   const originalFetch = global.fetch
 
+  beforeEach(() => {
+    toastStore.setState({ toasts: [] })
+  })
+
   afterEach(() => {
     global.fetch = originalFetch
+    toastStore.setState({ toasts: [] })
   })
 
   it('publishes one deduplicated fixed intent and preserves speech', async () => {
@@ -459,7 +466,7 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
     channelHarness.restore()
   })
 
-  it('errors the stream with a fixed result when no Avatar receiver is ready', async () => {
+  it('preserves speech and reports a fixed warning when no Stage receiver is ready', async () => {
     jest.useFakeTimers()
     const channelHarness = installProjectionEffectChannel()
     try {
@@ -477,6 +484,10 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
               },
             },
           },
+          {
+            type: 'assistant.speech_delta',
+            data: { delta: '炎を出そうとしました。' },
+          },
         ])
       ) as any
 
@@ -485,12 +496,19 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
         '',
         'session-projection-effect'
       )
-      const result = expect(readTextStream(stream)).rejects.toThrow(
-        'projection_effect_delivery_failed'
+      const result = expect(readTextStream(stream)).resolves.toBe(
+        '炎を出そうとしました。'
       )
       await jest.advanceTimersByTimeAsync(501)
 
       await result
+      expect(toastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          message: i18next.t('Errors.ProjectionEffectStageUnavailable'),
+          type: 'error',
+          tag: 'projection-effect-delivery-warning',
+        })
+      )
       expect(channelHarness.getChannelCount()).toBe(0)
       expect(jest.getTimerCount()).toBe(0)
     } finally {
@@ -499,7 +517,7 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
     }
   })
 
-  it('errors the stream with a fixed result when Avatar rejects execution', async () => {
+  it('preserves speech and reports a fixed warning when Stage rejects execution', async () => {
     const channelHarness = installProjectionEffectChannel()
     const receive = jest.fn((intent: { eventId: string }) => {
       publishProjectionEffectExecutionReceipt({
@@ -525,6 +543,10 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
               },
             },
           },
+          {
+            type: 'assistant.speech_delta',
+            data: { delta: '雷を出そうとしました。' },
+          },
         ])
       ) as any
 
@@ -533,13 +555,101 @@ describe('getThoughtCoreChatResponseStream projection effect intent bridge', () 
         '',
         'session-projection-effect'
       )
-      await expect(readTextStream(stream)).rejects.toThrow(
-        'projection_effect_delivery_failed'
+      await expect(readTextStream(stream)).resolves.toBe(
+        '雷を出そうとしました。'
       )
       expect(receive).toHaveBeenCalledTimes(1)
+      expect(toastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          message: i18next.t('Errors.ProjectionEffectStartRejected'),
+          type: 'error',
+          tag: 'projection-effect-delivery-warning',
+        })
+      )
     } finally {
       dispose()
       channelHarness.restore()
+    }
+  })
+
+  it('keeps an unconfirmed start delivery as a fixed hard failure', async () => {
+    jest.useFakeTimers()
+    const channelHarness = installProjectionEffectChannel()
+    const dispose = subscribeProjectionEffectIntents(() => {
+      // The receiver acknowledges ingress but deliberately publishes no receipt.
+    })
+    try {
+      global.fetch = jest.fn().mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.projection_effect_intent',
+            data: {
+              intent: {
+                schemaVersion: 1,
+                eventId: 'evt_44444444444444444444444444444444',
+                turnId: 'turn_projection_unconfirmed',
+                action: 'start',
+                effectId: 'fire',
+              },
+            },
+          },
+        ])
+      ) as any
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: '炎を出して' } as any],
+        '',
+        'session-projection-effect'
+      )
+      const result = expect(readTextStream(stream)).rejects.toThrow(
+        'projection_effect_delivery_failed'
+      )
+      await jest.advanceTimersByTimeAsync(1_501)
+
+      await result
+      expect(toastStore.getState().toasts).toEqual([])
+    } finally {
+      dispose()
+      channelHarness.restore()
+      jest.useRealTimers()
+    }
+  })
+
+  it('keeps a missing receiver for Stop as a fixed hard failure', async () => {
+    jest.useFakeTimers()
+    const channelHarness = installProjectionEffectChannel()
+    try {
+      global.fetch = jest.fn().mockResolvedValue(
+        createSseResponse([
+          {
+            type: 'accepted.presentation.projection_effect_intent',
+            data: {
+              intent: {
+                schemaVersion: 1,
+                eventId: 'evt_55555555555555555555555555555555',
+                turnId: 'turn_projection_stop_unavailable',
+                action: 'stop',
+              },
+            },
+          },
+        ])
+      ) as any
+
+      const stream = await getThoughtCoreChatResponseStream(
+        [{ content: '映像効果を止めて' } as any],
+        '',
+        'session-projection-effect'
+      )
+      const result = expect(readTextStream(stream)).rejects.toThrow(
+        'projection_effect_delivery_failed'
+      )
+      await jest.advanceTimersByTimeAsync(501)
+
+      await result
+      expect(toastStore.getState().toasts).toEqual([])
+    } finally {
+      channelHarness.restore()
+      jest.useRealTimers()
     }
   })
 

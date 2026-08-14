@@ -263,7 +263,9 @@
     "LocalLLMNotFound": "ローカルLLMのエンドポイントが見つかりません",
     "LocalLLMAPIError": "ローカルLLM APIでエラーが発生しました",
     "CustomAPIError": "カスタムAPIでエラーが発生しました",
-    "InvalidJSON": "JSON形式が正しくありません"
+    "InvalidJSON": "JSON形式が正しくありません",
+    "ProjectionEffectStageUnavailable": "Projection Stage Outputへ接続できず、映像効果を表示できませんでした。Launcherから「投影出力」を開いて、もう一度お試しください。",
+    "ProjectionEffectStartRejected": "映像効果を開始できませんでした。投影出力と映像効果診断を確認してください。"
   },
   "MessageReceiver": "外部からの指示を受け付ける",
   "MessageReceiverDescription": "ローカルAPIを利用してAIキャラの発言を外部ツールから指示できます。Client IDは必要なツールだけに共有してください。",
