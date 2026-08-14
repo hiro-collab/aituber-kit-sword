@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ChangeEvent } from 'react'
+import { useEffect, useRef } from 'react'
 import { MessageInput } from '@/components/messageInput'
 import homeStore from '@/features/stores/home'
 import settingsStore from '@/features/stores/settings'
@@ -48,6 +48,7 @@ export const MessageInputContainer = ({
     handleStopSpeaking,
     startListening,
     stopListening,
+    stopListeningAndSubmit,
     checkRecognitionActive,
   } = useVoiceRecognition({ onChatProcessStart })
 
@@ -325,34 +326,14 @@ export const MessageInputContainer = ({
         if (!latestVoiceStateRef.current.isListening) {
           return { ok: false, reason: 'not_listening' }
         }
-
-        const messageBeforeStop = latestVoiceStateRef.current.userMessage.trim()
-        await stopListening()
-
-        if (settingsStore.getState().speechRecognitionMode === 'whisper') {
-          return { ok: true, reason: 'whisper_submits_on_stop' }
-        }
-
-        const message =
-          latestVoiceStateRef.current.userMessage.trim() || messageBeforeStop
-        if (!message) {
-          return { ok: false, reason: 'empty_message' }
-        }
-
-        handleInputChange({
-          target: { value: '' },
-        } as ChangeEvent<HTMLTextAreaElement>)
-        onChatProcessStart(message)
-
-        return { ok: true }
+        return stopListeningAndSubmit('gesture_release')
       },
     })
   }, [
-    handleInputChange,
     handleStopSpeaking,
-    onChatProcessStart,
     startListening,
     stopListening,
+    stopListeningAndSubmit,
     checkRecognitionActive,
   ])
 

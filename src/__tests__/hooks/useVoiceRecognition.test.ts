@@ -82,6 +82,9 @@ const mockBrowserSpeech = {
   toggleListening: jest.fn(),
   startListening: jest.fn().mockResolvedValue(undefined),
   stopListening: jest.fn().mockResolvedValue(undefined),
+  stopListeningAndSubmit: jest
+    .fn()
+    .mockResolvedValue({ ok: true, reason: 'submitted' }),
   checkRecognitionActive: jest.fn(() => true),
 }
 
@@ -109,7 +112,7 @@ const mockRealtimeAPI = {
 }
 
 jest.mock('@/hooks/useBrowserSpeechRecognition', () => ({
-  useBrowserSpeechRecognition: jest.fn(() => mockBrowserSpeech),
+  useBrowserSpeechRecognition: jest.fn(() => ({ ...mockBrowserSpeech })),
 }))
 
 jest.mock('@/hooks/useWhisperRecognition', () => ({
@@ -135,6 +138,7 @@ describe('useVoiceRecognition', () => {
     mockBrowserSpeech.isListening = false
     mockBrowserSpeech.startListening.mockClear()
     mockBrowserSpeech.stopListening.mockClear()
+    mockBrowserSpeech.stopListeningAndSubmit.mockClear()
     mockBrowserSpeech.handleInputChange.mockClear()
     mockBrowserSpeech.checkRecognitionActive.mockReturnValue(true)
 
@@ -716,7 +720,7 @@ describe('useVoiceRecognition', () => {
       expect(mockOnChatProcessStart).toHaveBeenCalledWith('テストメッセージ')
     })
 
-    it('4.1.7: 依存配列がhandleStopSpeakingとonChatProcessStartのみであること', async () => {
+    it('4.1.7: onChatProcessStart更新後もキーボードハンドラが安定していること', async () => {
       const mockOnChatProcessStart1 = jest.fn()
       const { rerender } = renderHook(
         ({ onChatProcessStart }) => useVoiceRecognition({ onChatProcessStart }),
@@ -769,6 +773,28 @@ describe('useVoiceRecognition', () => {
   })
 
   describe('Altキー送信のタイミング修正 (Requirement 6)', () => {
+    it('delegates Alt release to the selected hook single-submit owner', async () => {
+      const mockOnChatProcessStart = jest.fn()
+      const { rerender } = renderHook(() =>
+        useVoiceRecognition({ onChatProcessStart: mockOnChatProcessStart })
+      )
+
+      mockBrowserSpeech.isListening = true
+      await act(async () => {
+        rerender()
+      })
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt' }))
+        await Promise.resolve()
+      })
+
+      expect(mockBrowserSpeech.stopListeningAndSubmit).toHaveBeenCalledTimes(1)
+      expect(mockBrowserSpeech.stopListeningAndSubmit).toHaveBeenCalledWith(
+        'alt_release'
+      )
+      expect(mockOnChatProcessStart).not.toHaveBeenCalled()
+    })
+
     // NOTE: このテストはモックのタイミング問題により不安定なためスキップ
     it.skip('6.1: handleKeyUpが非同期関数として動作する', async () => {
       const mockOnChatProcessStart = jest.fn()

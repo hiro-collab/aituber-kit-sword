@@ -3,6 +3,7 @@
  */
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useBrowserSpeechRecognition } from '@/hooks/useBrowserSpeechRecognition'
+import { useSilenceDetection } from '@/hooks/useSilenceDetection'
 import settingsStore from '@/features/stores/settings'
 import toastStore from '@/features/stores/toast'
 import homeStore from '@/features/stores/home'
@@ -184,6 +185,109 @@ describe('useBrowserSpeechRecognition', () => {
   })
 
   describe('タイムアウト処理の一元化 (Requirement 5)', () => {
+    it('submits one recognition attempt only once when silence and gesture completion race', async () => {
+      const onChatProcessStart = jest.fn()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(onChatProcessStart)
+      )
+
+      await act(async () => {
+        expect(await result.current.startListening()).toBe(true)
+      })
+      act(() => {
+        mockSpeechRecognition.onresult?.({
+          resultIndex: 0,
+          results: [
+            Object.assign([{ transcript: '同じ発話' }], { isFinal: true }),
+          ],
+        })
+      })
+
+      const silenceOptions = (useSilenceDetection as jest.Mock).mock.calls.at(
+        -1
+      )?.[0] as { onTextDetected: (text: string) => void }
+      act(() => {
+        silenceOptions.onTextDetected('同じ発話')
+      })
+      await act(async () => {
+        expect(
+          await result.current.stopListeningAndSubmit('gesture_release')
+        ).toEqual({ ok: true, reason: 'already_submitted' })
+      })
+
+      expect(onChatProcessStart).toHaveBeenCalledTimes(1)
+      expect(onChatProcessStart).toHaveBeenLastCalledWith('同じ発話')
+
+      await act(async () => {
+        expect(await result.current.startListening()).toBe(true)
+      })
+      act(() => {
+        mockSpeechRecognition.onresult?.({
+          resultIndex: 0,
+          results: [
+            Object.assign([{ transcript: '同じ発話' }], { isFinal: true }),
+          ],
+        })
+      })
+      await act(async () => {
+        expect(
+          await result.current.stopListeningAndSubmit('gesture_release')
+        ).toEqual({ ok: true, reason: 'submitted' })
+      })
+
+      expect(onChatProcessStart).toHaveBeenCalledTimes(2)
+    })
+
+    it('rejects an old completion after a newer recognition attempt starts', async () => {
+      const onChatProcessStart = jest.fn()
+      const { result } = renderHook(() =>
+        useBrowserSpeechRecognition(onChatProcessStart)
+      )
+
+      await act(async () => {
+        expect(await result.current.startListening()).toBe(true)
+      })
+      act(() => {
+        mockSpeechRecognition.onresult?.({
+          resultIndex: 0,
+          results: [
+            Object.assign([{ transcript: '古い発話' }], { isFinal: true }),
+          ],
+        })
+      })
+
+      let oldCompletion!: Promise<{ ok: boolean; reason: string }>
+      let newStart!: Promise<boolean>
+      act(() => {
+        oldCompletion = result.current.stopListeningAndSubmit('gesture_release')
+        newStart = result.current.startListening()
+      })
+      await act(async () => {
+        expect(await oldCompletion).toEqual({
+          ok: false,
+          reason: 'stale_attempt',
+        })
+        expect(await newStart).toBe(true)
+      })
+
+      act(() => {
+        mockSpeechRecognition.onresult?.({
+          resultIndex: 0,
+          results: [
+            Object.assign([{ transcript: '新しい発話' }], { isFinal: true }),
+          ],
+        })
+      })
+      await act(async () => {
+        expect(
+          await result.current.stopListeningAndSubmit('gesture_release')
+        ).toEqual({ ok: true, reason: 'submitted' })
+      })
+
+      expect(onChatProcessStart).toHaveBeenCalledTimes(1)
+      expect(onChatProcessStart).toHaveBeenCalledWith('新しい発話')
+    })
+
     it('5.1: setupInitialSpeechTimer共通関数が定義されている', async () => {
       const mockOnChatProcessStart = jest.fn()
       const { result } = renderHook(() =>

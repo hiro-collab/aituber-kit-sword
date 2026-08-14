@@ -226,6 +226,9 @@ export function useBrowserSpeechRecognition(
   const [, setRecognition] = useState<SpeechRecognition | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const transcriptRef = useRef('')
+  const utteranceAttemptCounterRef = useRef(0)
+  const activeUtteranceAttemptRef = useRef<number | null>(null)
+  const submittedUtteranceAttemptRef = useRef<number | null>(null)
   const speechDetectedRef = useRef<boolean>(false)
   const recognitionStartTimeRef = useRef<number>(0)
   const initialSpeechCheckTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -299,6 +302,42 @@ export function useBrowserSpeechRecognition(
   const keyPressStartTime = useRef<number | null>(null)
   const isKeyboardTriggered = useRef(false)
 
+  const submitTranscriptOnce = useCallback(
+    (text: string, _source: string, attemptId: number | null) => {
+      if (attemptId === null) {
+        return { ok: false, reason: 'no_active_attempt' }
+      }
+      if (attemptId !== activeUtteranceAttemptRef.current) {
+        return { ok: false, reason: 'stale_attempt' }
+      }
+      if (submittedUtteranceAttemptRef.current === attemptId) {
+        return { ok: true, reason: 'already_submitted' }
+      }
+      const trimmedText = text.trim()
+      if (!trimmedText) {
+        return { ok: false, reason: 'empty_message' }
+      }
+
+      // Claim the recognition attempt before the downstream callback. This makes
+      // silence, gesture, Alt-key and button completion re-entrant safe.
+      submittedUtteranceAttemptRef.current = attemptId
+      transcriptRef.current = ''
+      setUserMessage('')
+      onChatProcessStart(trimmedText)
+      return { ok: true, reason: 'submitted' }
+    },
+    [onChatProcessStart]
+  )
+  const handleSilenceTextDetected = useCallback(
+    (text: string) =>
+      submitTranscriptOnce(
+        text,
+        'silence_timeout',
+        activeUtteranceAttemptRef.current
+      ),
+    [submitTranscriptOnce]
+  )
+
   // ----- 無音検出フックを使用 -----
   const {
     silenceTimeoutRemaining,
@@ -307,7 +346,7 @@ export function useBrowserSpeechRecognition(
     updateSpeechTimestamp,
     isSpeechEnded,
   } = useSilenceDetection({
-    onTextDetected: onChatProcessStart,
+    onTextDetected: handleSilenceTextDetected,
     transcriptRef,
     setUserMessage,
     speechDetectedRef,
@@ -543,8 +582,11 @@ export function useBrowserSpeechRecognition(
         // 押してから1秒以上 かつ 文字が存在する場合のみ送信
         // 無音検出による自動送信が既に行われていない場合のみ送信する
         if (pressDuration >= 1000 && trimmedTranscriptRef && !isSpeechEnded()) {
-          onChatProcessStart(trimmedTranscriptRef)
-          setUserMessage('')
+          submitTranscriptOnce(
+            trimmedTranscriptRef,
+            'keyboard_release',
+            activeUtteranceAttemptRef.current
+          )
         }
         isKeyboardTriggered.current = false
       }
@@ -560,9 +602,9 @@ export function useBrowserSpeechRecognition(
       clearInitialSpeechCheckTimer,
       clearRecognitionProgressTimer,
       isSpeechEnded,
-      onChatProcessStart,
       releaseExplicitAudioTrack,
       setRecognitionPhase,
+      submitTranscriptOnce,
     ]
   )
 
@@ -627,6 +669,11 @@ export function useBrowserSpeechRecognition(
       return false
     }
     const wasListeningAtStart = isListeningRef.current
+    if (!wasListeningAtStart) {
+      utteranceAttemptCounterRef.current += 1
+      activeUtteranceAttemptRef.current = utteranceAttemptCounterRef.current
+      submittedUtteranceAttemptRef.current = null
+    }
     isStartingRef.current = true
     if (
       !isListeningRef.current &&
@@ -1054,6 +1101,7 @@ export function useBrowserSpeechRecognition(
   const handleSendMessage = useCallback(async () => {
     const trimmedMessage = userMessage.trim()
     if (trimmedMessage) {
+      const attemptId = activeUtteranceAttemptRef.current
       // AIの発話を停止
       homeStore.setState({ isSpeaking: false })
       SpeakQueue.stopAll()
@@ -1061,14 +1109,32 @@ export function useBrowserSpeechRecognition(
       // マイク入力を停止（常時音声入力モード時も自動送信と同様に停止）
       await stopListening()
 
-      onChatProcessStart(trimmedMessage)
-      setUserMessage('')
+      if (attemptId !== null) {
+        submitTranscriptOnce(trimmedMessage, 'send_button', attemptId)
+      } else {
+        onChatProcessStart(trimmedMessage)
+        setUserMessage('')
+      }
     }
-  }, [userMessage, onChatProcessStart, stopListening])
+  }, [userMessage, onChatProcessStart, stopListening, submitTranscriptOnce])
+
+  const stopListeningAndSubmit = useCallback(
+    async (source: string) => {
+      const attemptId = activeUtteranceAttemptRef.current
+      const message = transcriptRef.current.trim() || userMessage.trim()
+      await stopListening()
+      return submitTranscriptOnce(message, source, attemptId)
+    },
+    [stopListening, submitTranscriptOnce, userMessage]
+  )
 
   // ----- メッセージ入力 -----
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      if (!isListeningRef.current) {
+        activeUtteranceAttemptRef.current = null
+        submittedUtteranceAttemptRef.current = null
+      }
       setUserMessage(e.target.value)
     },
     []
@@ -1594,6 +1660,7 @@ export function useBrowserSpeechRecognition(
       startListeningWithAudioTrack,
       releaseExplicitAudioTrack,
       stopListening,
+      stopListeningAndSubmit,
       checkRecognitionActive,
     }),
     [
@@ -1607,6 +1674,7 @@ export function useBrowserSpeechRecognition(
       startListeningWithAudioTrack,
       releaseExplicitAudioTrack,
       stopListening,
+      stopListeningAndSubmit,
       checkRecognitionActive,
     ]
   )

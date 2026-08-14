@@ -47,6 +47,10 @@ export function useVoiceRecognition({
   const currentHookRef = useRef({
     startListening: currentHook.startListening,
     stopListening: currentHook.stopListening,
+    stopListeningAndSubmit:
+      'stopListeningAndSubmit' in currentHook
+        ? (currentHook as typeof browserSpeech).stopListeningAndSubmit
+        : null,
     userMessage: currentHook.userMessage,
     isListening: currentHook.isListening,
     handleInputChange: currentHook.handleInputChange,
@@ -61,6 +65,10 @@ export function useVoiceRecognition({
     currentHookRef.current = {
       startListening: currentHook.startListening,
       stopListening: currentHook.stopListening,
+      stopListeningAndSubmit:
+        'stopListeningAndSubmit' in currentHook
+          ? (currentHook as typeof browserSpeech).stopListeningAndSubmit
+          : null,
       userMessage: currentHook.userMessage,
       isListening: currentHook.isListening,
       handleInputChange: currentHook.handleInputChange,
@@ -96,6 +104,32 @@ export function useVoiceRecognition({
       ? currentHookRef.current.checkRecognitionActive()
       : currentHookRef.current.isListening
   }, [])
+
+  const stopListeningAndSubmit = useCallback(
+    async (source: string) => {
+      const browserSubmission = currentHookRef.current.stopListeningAndSubmit
+      if (browserSubmission) {
+        return browserSubmission(source)
+      }
+
+      const message = currentHookRef.current.userMessage.trim()
+      await currentHookRef.current.stopListening()
+      if (settingsStore.getState().speechRecognitionMode === 'whisper') {
+        return { ok: true, reason: 'whisper_submits_on_stop' }
+      }
+      if (!message) {
+        return { ok: false, reason: 'empty_message' }
+      }
+
+      homeStore.setState({ chatProcessing: true })
+      currentHookRef.current.handleInputChange({
+        target: { value: '' },
+      } as React.ChangeEvent<HTMLTextAreaElement>)
+      onChatProcessStart(message)
+      return { ok: true, reason: 'submitted' }
+    },
+    [onChatProcessStart]
+  )
 
   // AIの発話完了後に音声認識を自動的に再開する処理
   const handleSpeakCompletion = useCallback(() => {
@@ -240,27 +274,7 @@ export function useVoiceRecognition({
 
     const handleKeyUp = async (e: KeyboardEvent) => {
       if (e.key === 'Alt' && currentHookRef.current.isListening) {
-        // Alt キーを離した時の処理
-        // マイクボタンと同じ動作をさせるため、toggleListeningを使用せず
-        // stopListeningを直接呼び出し、テキストが存在する場合は送信する
-
-        // メッセージを先に変数に保存（stopListening後にuserMessageが変わる可能性があるため）
-        const message = currentHookRef.current.userMessage.trim()
-
-        // 先に音声認識を停止
-        await currentHookRef.current.stopListening()
-
-        // stopListening完了後にメッセージを送信
-        if (message) {
-          // chatProcessing を true に設定
-          homeStore.setState({ chatProcessing: true })
-          // メッセージを空にする
-          currentHookRef.current.handleInputChange({
-            target: { value: '' },
-          } as React.ChangeEvent<HTMLTextAreaElement>)
-          // 処理を開始
-          onChatProcessStart(message)
-        }
+        await stopListeningAndSubmit('alt_release')
       }
     }
 
@@ -271,7 +285,7 @@ export function useVoiceRecognition({
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
     }
-  }, [handleStopSpeaking, onChatProcessStart])
+  }, [handleStopSpeaking, stopListeningAndSubmit])
 
   // 現在のモードに基づいて適切なフックのAPIを返す
   return {
@@ -286,6 +300,7 @@ export function useVoiceRecognition({
     handleStopSpeaking,
     startListening: currentHook.startListening,
     stopListening: currentHook.stopListening,
+    stopListeningAndSubmit,
     checkRecognitionActive,
   }
 }
