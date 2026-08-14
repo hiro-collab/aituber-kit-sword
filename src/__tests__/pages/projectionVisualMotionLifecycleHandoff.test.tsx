@@ -19,6 +19,7 @@ const passiveProjectionVisualQueryState = {
 let mockProjectionVisualQueryState = passiveProjectionVisualQueryState
 let mockRemoteSpeechOutputActive = true
 let mockIsBrowserControlOwner = false
+let mockIsProjectionEffectHostOwner = true
 const originalBroadcastChannel = globalThis.BroadcastChannel
 const pageBroadcastChannels = new Set<PageBroadcastChannel>()
 const mockPageLabController = {
@@ -125,6 +126,15 @@ jest.mock('@/features/browserControl/useBrowserControlOwner', () => ({
     takeControl: jest.fn(),
   }),
 }))
+jest.mock(
+  '@/features/projectionEffects/browser/useProjectionEffectHostOwner',
+  () => ({
+    useProjectionEffectHostOwner: () => ({
+      state: mockIsProjectionEffectHostOwner ? 'owner' : 'waiting',
+      isOwner: mockIsProjectionEffectHostOwner,
+    }),
+  })
+)
 jest.mock('@/utils/projectionVisualQuery', () => ({
   PROJECTION_VISUAL_PRESENTATION_ORDER: [
     'background-input',
@@ -279,6 +289,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     bridgePredicate = undefined
     mockRemoteSpeechOutputActive = true
     mockIsBrowserControlOwner = false
+    mockIsProjectionEffectHostOwner = true
     mockProjectionVisualQueryState = passiveProjectionVisualQueryState
   })
 
@@ -328,7 +339,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     )
     expect(root).toHaveAttribute(
       'data-projection-effect-host-role',
-      'authoritative-stage'
+      'authoritative-host'
     )
     expect(root).toHaveAttribute(
       'data-projection-background-input',
@@ -344,7 +355,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     )
     expect(effect).toHaveAttribute(
       'data-projection-effect-host-role',
-      'authoritative-stage'
+      'authoritative-host'
     )
     expect(speechHudLayer).toHaveAttribute(
       'data-projection-presentation-layer',
@@ -416,7 +427,44 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     expect(root?.outerHTML).not.toContain('炎を')
   })
 
-  it('keeps Stage authoritative and exposes only a receipt-confirmed operator mirror', async () => {
+  it('executes one effect on the default operator page when it owns the lease', async () => {
+    mockProjectionVisualQueryState = {
+      ...passiveProjectionVisualQueryState,
+      isPassiveMode: false,
+      isDisplayOnlyMode: false,
+      projectionVisualMode: 'operator',
+    }
+    mockIsBrowserControlOwner = true
+    const { container } = render(<ProjectionVisual />)
+    const root = container.querySelector('.projection-visual')
+
+    await waitFor(() =>
+      expect(root).toHaveAttribute(
+        'data-projection-effect-receiver-state',
+        'ready'
+      )
+    )
+    act(() => {
+      publishProjectionEffectIntent({
+        schemaVersion: 1,
+        eventId: 'evt_00000000000000000000000000000042',
+        turnId: 'turn-default-operator-effect',
+        action: 'start',
+        effectId: 'fire',
+      })
+    })
+
+    await waitFor(() =>
+      expect(mockPageLabController.start).toHaveBeenCalledTimes(1)
+    )
+    expect(mockPageLabController.start).toHaveBeenCalledWith('fire')
+    expect(root).toHaveAttribute(
+      'data-projection-effect-host-role',
+      'authoritative-host'
+    )
+  })
+
+  it('lets operator or Stage own the same exclusive effect-host role', async () => {
     mockProjectionVisualQueryState = {
       ...passiveProjectionVisualQueryState,
       isPassiveMode: false,
@@ -444,6 +492,9 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     expect(
       passive.container.querySelector('.projection-visual')
     ).toHaveAttribute('data-projection-effect-mirror-state', 'inactive')
+    expect(
+      passive.container.querySelector('.projection-visual')
+    ).toHaveAttribute('data-projection-effect-host-role', 'manual')
     passive.unmount()
 
     mockProjectionVisualQueryState = {
@@ -457,11 +508,21 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     await waitFor(() =>
       expect(
         operator.container.querySelector('.projection-visual')
-      ).toHaveAttribute('data-projection-effect-receiver-state', 'inactive')
+      ).toHaveAttribute('data-projection-effect-receiver-state', 'ready')
     )
+    expect(
+      operator.container.querySelector('.projection-visual')
+    ).toHaveAttribute('data-projection-effect-host-role', 'authoritative-host')
+    expect(
+      operator.container.querySelector('.projection-visual')
+    ).toHaveAttribute('data-projection-effect-mirror-state', 'inactive')
+    operator.unmount()
+
+    mockIsProjectionEffectHostOwner = false
+    const waitingOperator = render(<ProjectionVisual />)
     await waitFor(() =>
       expect(
-        operator.container.querySelector('.projection-visual')
+        waitingOperator.container.querySelector('.projection-visual')
       ).toHaveAttribute('data-projection-effect-mirror-state', 'mirror-ready')
     )
   })

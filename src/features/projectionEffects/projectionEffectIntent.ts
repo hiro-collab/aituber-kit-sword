@@ -822,11 +822,11 @@ export function subscribeProjectionEffectIntents(
 }
 
 /**
- * Mirrors only intents that the authoritative Stage receiver has completed.
+ * Mirrors only intents that the current authoritative effect host completed.
  *
  * This observer never answers readiness probes, acknowledges ingress, or
  * publishes execution receipts. It is therefore safe to mount in the operator
- * view without creating a second production receiver.
+ * view without creating a second execution or receipt owner.
  */
 export function subscribeProjectionEffectIntentMirror(
   receive: (intent: ProjectionEffectIntent) => void,
@@ -924,7 +924,7 @@ export function subscribeProjectionEffectIntentMirror(
     try {
       receive(pendingIntent.intent)
     } catch {
-      // A preview failure cannot affect authoritative Stage execution.
+      // A mirror preview failure cannot affect authoritative host execution.
     }
   }
   const acceptIntent = (intent: ProjectionEffectIntent) => {

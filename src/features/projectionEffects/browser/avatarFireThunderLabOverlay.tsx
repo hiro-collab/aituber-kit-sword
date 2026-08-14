@@ -55,8 +55,8 @@ export type AvatarFireThunderMirrorState =
 
 export type AvatarFireThunderIntentRole =
   | 'manual'
-  | 'authoritative-stage'
-  | 'operator-mirror'
+  | 'authoritative-host'
+  | 'receipt-mirror'
 
 export type AvatarFireThunderHostState =
   | 'idle'
@@ -91,8 +91,8 @@ export const AvatarFireThunderEffectLayer = forwardRef<
   },
   forwardedRef
 ) {
-  const authoritativeReceiver = intentRole === 'authoritative-stage'
-  const mirrorEnabled = intentRole === 'operator-mirror'
+  const authoritativeReceiver = intentRole === 'authoritative-host'
+  const mirrorEnabled = intentRole === 'receipt-mirror'
   const controllerRef = useRef<FireThunderLabController | null>(null)
   const performancePlanLedgerRef = useRef(new ProjectionPerformancePlanLedger())
   const [hostState, setHostState] = useState<AvatarFireThunderHostState>('idle')

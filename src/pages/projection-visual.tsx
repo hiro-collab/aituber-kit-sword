@@ -53,6 +53,7 @@ import {
   type AvatarFireThunderReceiverState,
 } from '@/features/projectionEffects/browser/avatarFireThunderLabOverlay'
 import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
+import { useProjectionEffectHostOwner } from '@/features/projectionEffects/browser/useProjectionEffectHostOwner'
 import {
   createProjectionStageCaptureHandleSession,
   registerProjectionStageCaptureHandle,
@@ -143,11 +144,17 @@ const ProjectionVisual = () => {
     priority: 30,
     enabled: !isDisplayOnlyMode,
   })
+  const projectionEffectHostEligible =
+    projectionVisualMode === 'operator' || isStageOutputMode
+  const projectionEffectHostOwner = useProjectionEffectHostOwner({
+    enabled: projectionEffectHostEligible,
+  })
   const projectionEffectIntentRole: AvatarFireThunderIntentRole =
-    isStageOutputMode
-      ? 'authoritative-stage'
-      : projectionVisualMode === 'operator' && controlOwner.isOwner
-        ? 'operator-mirror'
+    projectionEffectHostEligible && projectionEffectHostOwner.isOwner
+      ? 'authoritative-host'
+      : projectionEffectHostEligible &&
+          projectionEffectHostOwner.state === 'waiting'
+        ? 'receipt-mirror'
         : 'manual'
   const transientRequestEnabled =
     projectionVisualMode === 'operator' &&
@@ -320,6 +327,7 @@ const ProjectionVisual = () => {
       data-projection-effect-receiver-state={projectionEffectReceiverState}
       data-projection-effect-mirror-state={projectionEffectMirrorState}
       data-projection-effect-host-role={projectionEffectIntentRole}
+      data-projection-effect-host-owner-state={projectionEffectHostOwner.state}
       data-projection-presentation-order={PROJECTION_VISUAL_PRESENTATION_ORDER.join(
         ' '
       )}

@@ -45,6 +45,7 @@ const stageState: QueryState = {
 
 let mockQueryState = operatorState
 let mockIsOwner = true
+let mockIsProjectionEffectHostOwner = true
 let mockRouterQuery: Record<string, string> = {
   requestMode: 'minimal-transient-text-v1',
 }
@@ -155,6 +156,19 @@ jest.mock('@/features/browserControl/useBrowserControlOwner', () => ({
     takeControl: jest.fn(),
   }),
 }))
+jest.mock(
+  '@/features/projectionEffects/browser/useProjectionEffectHostOwner',
+  () => ({
+    useProjectionEffectHostOwner: ({ enabled }: { enabled: boolean }) => ({
+      state: !enabled
+        ? 'disabled'
+        : mockIsProjectionEffectHostOwner
+          ? 'owner'
+          : 'waiting',
+      isOwner: enabled && mockIsProjectionEffectHostOwner,
+    }),
+  })
+)
 jest.mock('@/utils/projectionVisualQuery', () => ({
   PROJECTION_VISUAL_PRESENTATION_ORDER: [
     'background-input',

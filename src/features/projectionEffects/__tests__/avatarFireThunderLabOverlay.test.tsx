@@ -288,7 +288,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     const hostStates: string[] = []
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
         onIntentReceiverStateChange={(state) => receiverStates.push(state)}
       />
@@ -400,7 +400,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, readReceipt)
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
         onStatusChange={(result) => childStatuses.push(result)}
       />
@@ -449,7 +449,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     mockLabController.start.mockResolvedValueOnce(null)
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -485,7 +485,7 @@ describe('AvatarFireThunderLabOverlay', () => {
       .mockResolvedValueOnce(hostResult('started'))
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -546,7 +546,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     })
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -603,7 +603,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     const receiverStates: string[] = []
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onIntentReceiverStateChange={(state) => receiverStates.push(state)}
       />
     )
@@ -643,11 +643,11 @@ describe('AvatarFireThunderLabOverlay', () => {
     render(
       <>
         <AvatarFireThunderEffectLayer
-          intentRole="authoritative-stage"
+          intentRole="authoritative-host"
           onIntentReceiverStateChange={(state) => primaryStates.push(state)}
         />
         <AvatarFireThunderEffectLayer
-          intentRole="authoritative-stage"
+          intentRole="authoritative-host"
           onIntentReceiverStateChange={(state) => conflictStates.push(state)}
         />
       </>
@@ -677,7 +677,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     window.addEventListener(PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT, receiptSpy)
     const view = render(
       <AvatarFireThunderEffectLayer
-        intentRole="operator-mirror"
+        intentRole="receipt-mirror"
         onIntentMirrorStateChange={(state) => mirrorStates.push(state)}
       />
     )
@@ -736,7 +736,7 @@ describe('AvatarFireThunderLabOverlay', () => {
           resolveStart = () => resolve(hostResult('started'))
         })
     )
-    render(<AvatarFireThunderEffectLayer intentRole="authoritative-stage" />)
+    render(<AvatarFireThunderEffectLayer intentRole="authoritative-host" />)
 
     act(() => {
       publishProjectionEffectIntent({
@@ -780,7 +780,7 @@ describe('AvatarFireThunderLabOverlay', () => {
 
   it('deduplicates intents and ignores disabled or unmounted receivers', async () => {
     const enabled = render(
-      <AvatarFireThunderEffectLayer intentRole="authoritative-stage" />
+      <AvatarFireThunderEffectLayer intentRole="authoritative-host" />
     )
     const duplicate = {
       action: 'start' as const,
@@ -856,7 +856,7 @@ describe('AvatarFireThunderLabOverlay', () => {
             })
         })
     )
-    render(<AvatarFireThunderEffectLayer intentRole="authoritative-stage" />)
+    render(<AvatarFireThunderEffectLayer intentRole="authoritative-host" />)
     const acceptedPlan = performancePlan()
 
     act(() => {
@@ -914,7 +914,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     })
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -949,7 +949,7 @@ describe('AvatarFireThunderLabOverlay', () => {
   it('rejects new and replayed live IDs at cap, then accepts after expiry', async () => {
     const now = jest.spyOn(Date, 'now').mockReturnValue(1_000)
     try {
-      render(<AvatarFireThunderEffectLayer intentRole="authoritative-stage" />)
+      render(<AvatarFireThunderEffectLayer intentRole="authoritative-host" />)
       const resetIntent = (index: number) => ({
         schemaVersion: 1 as const,
         eventId: `evt_${index.toString(16).padStart(32, '0')}`,
@@ -1000,7 +1000,7 @@ describe('AvatarFireThunderLabOverlay', () => {
           resolveFirst = () => resolve(hostResult('reset'))
         })
     )
-    render(<AvatarFireThunderEffectLayer intentRole="authoritative-stage" />)
+    render(<AvatarFireThunderEffectLayer intentRole="authoritative-host" />)
 
     act(() => {
       for (
@@ -1077,7 +1077,7 @@ describe('AvatarFireThunderLabOverlay', () => {
     mockLabController.start.mockRejectedValueOnce(new Error('private failure'))
     render(
       <AvatarFireThunderEffectLayer
-        intentRole="authoritative-stage"
+        intentRole="authoritative-host"
         onHostStateChange={(state) => hostStates.push(state)}
       />
     )
@@ -1132,7 +1132,7 @@ describe('AvatarFireThunderLabOverlay', () => {
         })
     )
     const mounted = render(
-      <AvatarFireThunderEffectLayer intentRole="authoritative-stage" />
+      <AvatarFireThunderEffectLayer intentRole="authoritative-host" />
     )
     act(() => {
       publishProjectionEffectIntent({

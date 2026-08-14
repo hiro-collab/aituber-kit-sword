@@ -14,7 +14,7 @@ jest.mock(
     AvatarFireThunderLabOverlay: forwardRef(
       (
         props: {
-          intentRole?: 'manual' | 'authoritative-stage' | 'operator-mirror'
+          intentRole?: 'manual' | 'authoritative-host' | 'receipt-mirror'
           onStatusChange?: (result: { status: string }) => void
           reducedMotion?: boolean
         },
