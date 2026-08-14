@@ -92,6 +92,35 @@ export type ProjectionEffectDeliveryResult =
         | 'delivery_aborted'
     }>
 
+const completedProjectionEffectResultClass = (
+  intent: ProjectionEffectIntent
+): 'started' | 'stopped' | 'reset' => {
+  if (intent.action === 'start') return 'started'
+  if (intent.action === 'stop') return 'stopped'
+  return 'reset'
+}
+
+export function completedProjectionEffectExecutionReceipt(
+  intent: ProjectionEffectIntent
+): ProjectionEffectExecutionReceipt {
+  return Object.freeze({
+    schemaVersion: 1,
+    eventId: intent.eventId,
+    status: 'completed',
+    resultClass: completedProjectionEffectResultClass(intent),
+  })
+}
+
+export function projectionEffectDeliverySucceeded(
+  intent: ProjectionEffectIntent,
+  result: ProjectionEffectDeliveryResult
+): boolean {
+  if (result.status !== 'completed' || result.eventId !== intent.eventId) {
+    return false
+  }
+  return result.resultClass === completedProjectionEffectResultClass(intent)
+}
+
 type BroadcastChannelLike = {
   postMessage(value: unknown): void
   addEventListener(
@@ -878,7 +907,12 @@ export function subscribeProjectionEffectIntentMirror(
     if (!pendingIntent || !pendingReceipt) return
     pendingIntents.delete(eventId)
     pendingReceipts.delete(eventId)
-    if (!receiptCompletesIntent(pendingReceipt.receipt, pendingIntent.intent)) {
+    if (
+      !projectionEffectDeliverySucceeded(
+        pendingIntent.intent,
+        pendingReceipt.receipt
+      )
+    ) {
       return
     }
     const previous = mirrored.get(eventId)
@@ -1248,16 +1282,6 @@ function readDeliveryMessage(
     })
   }
   return null
-}
-
-function receiptCompletesIntent(
-  receipt: ProjectionEffectExecutionReceipt,
-  intent: ProjectionEffectIntent
-): boolean {
-  if (receipt.status !== 'completed') return false
-  if (intent.action === 'start') return receipt.resultClass === 'started'
-  if (intent.action === 'stop') return receipt.resultClass === 'stopped'
-  return receipt.resultClass === 'reset'
 }
 
 function fingerprintIntent(intent: ProjectionEffectIntent): string {

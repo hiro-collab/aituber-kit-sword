@@ -5,7 +5,9 @@
 import {
   PROJECTION_EFFECT_INTENT_CHANNEL,
   PROJECTION_EFFECT_RECEIPT_WINDOW_EVENT,
+  completedProjectionEffectExecutionReceipt,
   deliverProjectionEffectIntent,
+  projectionEffectDeliverySucceeded,
   publishProjectionEffectExecutionReceipt,
   publishProjectionEffectIntent,
   readProjectionEffectIntent,
@@ -154,6 +156,79 @@ describe('canonical projection effect intent v1', () => {
     })
   })
 
+  it.each([
+    ['start', 'started', true],
+    ['stop', 'stopped', true],
+    ['reset', 'reset', true],
+    ['start', 'stopped', false],
+    ['stop', 'reset', false],
+  ] as const)(
+    'owns the %s completed-result correlation for every consumer',
+    (action, resultClass, expected) => {
+      const intent = {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        turnId: TURN_ID,
+        action,
+        ...(action === 'start' ? { effectId: 'fire' as const } : {}),
+      } as const
+
+      expect(
+        projectionEffectDeliverySucceeded(intent, {
+          schemaVersion: 1,
+          eventId: EVENT_ID,
+          status: 'completed',
+          resultClass,
+        })
+      ).toBe(expected)
+      expect(completedProjectionEffectExecutionReceipt(intent)).toEqual({
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        status: 'completed',
+        resultClass:
+          action === 'start'
+            ? 'started'
+            : action === 'stop'
+              ? 'stopped'
+              : 'reset',
+      })
+      expect(
+        projectionEffectDeliverySucceeded(intent, {
+          schemaVersion: 1,
+          eventId: 'evt_ffffffffffffffffffffffffffffffff',
+          status: 'completed',
+          resultClass,
+        })
+      ).toBe(false)
+    }
+  )
+
+  it.each([
+    ['rejected', 'host_rejected'],
+    ['cleanup_unproved', 'cleanup_unproved'],
+  ] as const)(
+    'does not promote a %s receipt to a completed effect',
+    (status, resultClass) => {
+      expect(
+        projectionEffectDeliverySucceeded(
+          {
+            schemaVersion: 1,
+            eventId: EVENT_ID,
+            turnId: TURN_ID,
+            action: 'start',
+            effectId: 'fire',
+          },
+          {
+            schemaVersion: 1,
+            eventId: EVENT_ID,
+            status,
+            resultClass,
+          }
+        )
+      ).toBe(false)
+    }
+  )
+
   it('projects one exact text-free v2 plan from the canonical envelope', () => {
     const event = canonicalEvent({
       schemaVersion: 2,
@@ -204,6 +279,12 @@ describe('canonical projection effect intent v1', () => {
       }),
     })
     expect(readProjectionEffectIntent(projected)).toEqual(projected)
+    expect(completedProjectionEffectExecutionReceipt(projected)).toEqual({
+      schemaVersion: 1,
+      eventId: EVENT_ID,
+      status: 'completed',
+      resultClass: 'started',
+    })
     expect(JSON.stringify(projected)).not.toContain('raw')
     expect(JSON.stringify(projected)).not.toContain('PRIVATE')
   })

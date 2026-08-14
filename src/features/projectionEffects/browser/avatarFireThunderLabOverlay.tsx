@@ -9,6 +9,7 @@ import {
 import VrmViewer from '@/components/vrmViewer'
 import type { ProjectionEffectHostResult } from '../effectHost'
 import {
+  completedProjectionEffectExecutionReceipt,
   publishProjectionEffectExecutionReceipt,
   subscribeProjectionEffectIntentMirror,
   subscribeProjectionEffectIntents,
@@ -361,7 +362,7 @@ function receiptFromHostResult(
   }
   if ('hostResult' in result) {
     if (result.status === 'accepted') {
-      return executionReceipt(intent.eventId, 'completed', 'started')
+      return completedProjectionEffectExecutionReceipt(intent)
     }
     if (result.status === 'cleanup_unproved') {
       return executionReceipt(
@@ -391,19 +392,19 @@ function receiptFromHostResult(
     )
   }
   if (intent.action === 'start' && result.status === 'started') {
-    return executionReceipt(intent.eventId, 'completed', 'started')
+    return completedProjectionEffectExecutionReceipt(intent)
   }
   if (
     intent.action === 'stop' &&
     (result.status === 'stopped' || result.status === 'no-active-effect')
   ) {
-    return executionReceipt(intent.eventId, 'completed', 'stopped')
+    return completedProjectionEffectExecutionReceipt(intent)
   }
   if (
     intent.action === 'reset' &&
     (result.status === 'reset' || result.status === 'no-active-effect')
   ) {
-    return executionReceipt(intent.eventId, 'completed', 'reset')
+    return completedProjectionEffectExecutionReceipt(intent)
   }
   return executionReceipt(intent.eventId, 'rejected', 'host_rejected')
 }

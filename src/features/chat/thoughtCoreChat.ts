@@ -12,6 +12,7 @@ import type { AcceptedPreparedSampleSpeechEnvelope } from '@/utils/preparedSampl
 import {
   PROJECTION_EFFECT_INTENT_PRESENTATION_EVENT,
   deliverProjectionEffectIntent,
+  projectionEffectDeliverySucceeded,
   readProjectionEffectIntent,
   type ProjectionEffectDeliveryResult,
   type ProjectionEffectIntent,
@@ -1483,18 +1484,6 @@ export async function getThoughtCoreChatResponseStream(
     })
     throw error
   }
-}
-
-function projectionEffectDeliverySucceeded(
-  intent: ProjectionEffectIntent,
-  result: ProjectionEffectDeliveryResult
-): boolean {
-  if (result.status !== 'completed' || result.eventId !== intent.eventId) {
-    return false
-  }
-  if (intent.action === 'start') return result.resultClass === 'started'
-  if (intent.action === 'stop') return result.resultClass === 'stopped'
-  return result.resultClass === 'reset'
 }
 
 function projectionEffectDeliveryWarningKey(

@@ -1,5 +1,6 @@
 import {
   deliverProjectionEffectIntent,
+  projectionEffectDeliverySucceeded,
   type ProjectionEffectDeliveryResult,
   type ProjectionEffectIntent,
 } from '../projectionEffectIntent'
@@ -79,27 +80,19 @@ const rejectedResult = (
     result_class: resultClass,
   })
 
-const expectedCompletedResultClass = (
-  action: ProjectionEffectDiagnosticAction
-): 'started' | 'stopped' | 'reset' => {
-  if (action === 'fire_start' || action === 'thunder_start') return 'started'
-  return action === 'stop' ? 'stopped' : 'reset'
-}
-
 const projectCorrelatedResult = (
-  action: ProjectionEffectDiagnosticAction,
-  eventId: string,
+  intent: ProjectionEffectIntent,
   delivery: ProjectionEffectDeliveryResult
 ): ProjectionEffectDiagnosticResult => {
   if (
-    delivery.eventId !== eventId ||
+    delivery.eventId !== intent.eventId ||
     (delivery.status === 'completed' &&
-      delivery.resultClass !== expectedCompletedResultClass(action))
+      !projectionEffectDeliverySucceeded(intent, delivery))
   ) {
-    return rejectedResult(eventId, 'delivery_unconfirmed')
+    return rejectedResult(intent.eventId, 'delivery_unconfirmed')
   }
   return Object.freeze({
-    event_id: eventId,
+    event_id: intent.eventId,
     status: delivery.status,
     result_class: delivery.resultClass,
   })
@@ -130,7 +123,7 @@ export const createProjectionEffectDiagnosticController = (
         }
         const intent = createIntent(action, eventId)
         const delivery = await deliver(intent)
-        return projectCorrelatedResult(action, eventId, delivery)
+        return projectCorrelatedResult(intent, delivery)
       } catch {
         return rejectedResult(eventId, 'delivery_unconfirmed')
       } finally {
