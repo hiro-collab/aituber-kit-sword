@@ -70,12 +70,13 @@ AITuberKitは、誰でも簡単にAIキャラクターとチャットできるWe
 
 主な画面と用途は次のとおりです。
 
-| Route | Sword での用途 |
-| --- | --- |
-| `/` | 通常の自然会話とアバター表示。Sword の選択設定では Thought Core を AI service として使用します。 |
-| `/projection-visual/?mode=operator` | 通常の自然会話を既存の `homeStore` / SpeakQueue へ渡し、アバター、調整可能な吹き出し、TTS、display stateを同じ表現経路で駆動します。文字とpresentation Stopだけを隔離して確認する場合に限り、`requestMode=minimal-transient-text-v1`を明示します。 |
-| `/projection-visual/?mode=passive` | operator が公開した display state を受ける表示専用画面です。通常画面の任意の会話履歴は自動複製しません。stale/error 時は発話中フラグを下げますが、現在は最後の assistant text を保持します。 |
-| `/projection-visual-minimal` | session / turn / message identity、単一応答、Stop 後の late-response fence を絞って確認する最小表示面です。 |
+| Route                                         | Sword での用途                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                                           | 通常の自然会話とアバター表示。Sword の選択設定では Thought Core を AI service として使用します。                                                                                                                                                                                                                                                                       |
+| `/projection-visual/`                        | 既定のoperator画面です。通常の自然会話を既存の `homeStore` / SpeakQueue へ渡し、アバター、調整可能な吹き出し、TTS、display stateを同じ表現経路で駆動します。操作権を持つoperatorは、Stage Output が成功receiptを返した同一intentだけを手元確認用にミラー表示し、受付・完了通知は返しません。文字とpresentation Stopだけを隔離して確認する場合に限り、`requestMode=minimal-transient-text-v1`を明示します。 |
+| `/projection-visual/?mode=stage-output&hud=0` | 操作UIを持たない正式な投影・配信面です。映像効果intentを実行して相関receiptを返す唯一のproduction receiverであり、operatorのミラー表示はこの成功結果を置き換えません。                                                                                                                                                                                                 |
+| `/projection-visual/?mode=passive`            | operator が公開した display state を受ける表示専用画面です。通常画面の任意の会話履歴は自動複製しません。stale/error 時は発話中フラグを下げますが、現在は最後の assistant text を保持します。                                                                                                                                                                           |
+| `/projection-visual-minimal`                  | session / turn / message identity、単一応答、Stop 後の late-response fence を絞って確認する最小表示面です。                                                                                                                                                                                                                                                            |
 
 Projection Visual のアバター・HUD・表示状態は `src/pages/projection-visual.tsx`、
 Thought Core 会話境界は `src/features/chat/thoughtCoreChat.ts`、吹き出しの提示ライフサイクルは

@@ -10,6 +10,7 @@ import {
   publishProjectionEffectIntent,
   readProjectionEffectIntent,
   readProjectionEffectRequestedEvent,
+  subscribeProjectionEffectIntentMirror,
   subscribeProjectionEffectIntents,
 } from '../projectionEffectIntent'
 import { CONTROL_PROJECTION_PERFORMANCE_PLAN_SCHEMA_SHA256 } from '../projectionPerformancePlan'
@@ -364,6 +365,178 @@ describe('canonical projection effect intent v1', () => {
     expect(subscription.getState()).toBe('disposed')
     expect(states).toEqual(['ready', 'disposed'])
     expect(harness.channels.size).toBe(0)
+  })
+
+  it('keeps a mirror silent when no authoritative receiver is ready', async () => {
+    const harness = createChannelHarness()
+    const receive = jest.fn()
+    const states: string[] = []
+    const mirror = subscribeProjectionEffectIntentMirror(receive, {
+      createBroadcastChannel: harness.createBroadcastChannel,
+      onMirrorStateChange: (state) => states.push(state),
+    })
+
+    const result = await deliverProjectionEffectIntent(
+      {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        turnId: TURN_ID,
+        action: 'start',
+        effectId: 'fire',
+      },
+      { createBroadcastChannel: harness.createBroadcastChannel }
+    )
+
+    expect(result).toEqual({
+      schemaVersion: 1,
+      eventId: EVENT_ID,
+      status: 'rejected',
+      resultClass: 'receiver_unavailable',
+    })
+    expect(receive).not.toHaveBeenCalled()
+    expect(states).toEqual(['mirror-ready'])
+    mirror()
+    expect(states).toEqual(['mirror-ready', 'disposed'])
+  })
+
+  it.each([
+    [
+      'start',
+      { action: 'start', effectId: 'fire' },
+      { status: 'completed', resultClass: 'started' },
+    ],
+    [
+      'stop',
+      { action: 'stop' },
+      { status: 'completed', resultClass: 'stopped' },
+    ],
+    [
+      'reset',
+      { action: 'reset' },
+      { status: 'completed', resultClass: 'reset' },
+    ],
+  ])(
+    'mirrors one correlated completed %s without becoming a receipt owner',
+    async (_label, intentFields, receiptFields) => {
+      const harness = createChannelHarness()
+      const receive = jest.fn()
+      const mirror = subscribeProjectionEffectIntentMirror(receive, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      const receiver = subscribeProjectionEffectIntents(
+        (intent) => {
+          publishProjectionEffectExecutionReceipt({
+            schemaVersion: 1,
+            eventId: intent.eventId,
+            status: receiptFields.status as 'completed',
+            resultClass: receiptFields.resultClass as
+              | 'started'
+              | 'stopped'
+              | 'reset',
+          })
+        },
+        { createBroadcastChannel: harness.createBroadcastChannel }
+      )
+      const intent = {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        turnId: TURN_ID,
+        ...intentFields,
+      }
+
+      const result = await deliverProjectionEffectIntent(intent, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+
+      expect(result).toEqual({
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        ...receiptFields,
+      })
+      expect(receive).toHaveBeenCalledTimes(1)
+      expect(receive).toHaveBeenCalledWith(intent)
+      receiver()
+      mirror()
+    }
+  )
+
+  it.each([
+    ['rejected', { status: 'rejected', resultClass: 'host_rejected' }],
+    ['action-mismatched', { status: 'completed', resultClass: 'stopped' }],
+  ] as const)(
+    'does not mirror a %s authoritative receipt',
+    async (_label, receiptFields) => {
+      const harness = createChannelHarness()
+      const receive = jest.fn()
+      const mirror = subscribeProjectionEffectIntentMirror(receive, {
+        createBroadcastChannel: harness.createBroadcastChannel,
+      })
+      const receiver = subscribeProjectionEffectIntents(
+        (intent) => {
+          publishProjectionEffectExecutionReceipt({
+            schemaVersion: 1,
+            eventId: intent.eventId,
+            ...receiptFields,
+          })
+        },
+        { createBroadcastChannel: harness.createBroadcastChannel }
+      )
+
+      const result = await deliverProjectionEffectIntent(
+        {
+          schemaVersion: 1,
+          eventId: EVENT_ID,
+          turnId: TURN_ID,
+          action: 'start',
+          effectId: 'fire',
+        },
+        { createBroadcastChannel: harness.createBroadcastChannel }
+      )
+
+      expect(result).toMatchObject({ eventId: EVENT_ID, ...receiptFields })
+      expect(receive).not.toHaveBeenCalled()
+      receiver()
+      mirror()
+    }
+  )
+
+  it('pairs a completed receipt that arrives before its correlated intent', () => {
+    const harness = createChannelHarness()
+    const receive = jest.fn()
+    const mirror = subscribeProjectionEffectIntentMirror(receive, {
+      createBroadcastChannel: harness.createBroadcastChannel,
+    })
+    const peer = harness.createBroadcastChannel(
+      PROJECTION_EFFECT_INTENT_CHANNEL
+    )
+    const intent = {
+      schemaVersion: 1,
+      eventId: EVENT_ID,
+      turnId: TURN_ID,
+      action: 'start',
+      effectId: 'fire',
+    } as const
+
+    peer.postMessage({
+      schemaVersion: 1,
+      kind: 'receipt',
+      origin: window.location.origin,
+      receipt: {
+        schemaVersion: 1,
+        eventId: EVENT_ID,
+        status: 'completed',
+        resultClass: 'started',
+      },
+    })
+    expect(receive).not.toHaveBeenCalled()
+    window.dispatchEvent(
+      new CustomEvent('sword:projection-effect-intent-v1', { detail: intent })
+    )
+
+    expect(receive).toHaveBeenCalledTimes(1)
+    expect(receive).toHaveBeenCalledWith(intent)
+    peer.close()
+    mirror()
   })
 
   it.each([

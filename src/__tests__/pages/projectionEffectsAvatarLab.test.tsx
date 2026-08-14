@@ -14,7 +14,7 @@ jest.mock(
     AvatarFireThunderLabOverlay: forwardRef(
       (
         props: {
-          intentReceiverEnabled?: boolean
+          intentRole?: 'manual' | 'authoritative-stage' | 'operator-mirror'
           onStatusChange?: (result: { status: string }) => void
           reducedMotion?: boolean
         },
@@ -28,7 +28,7 @@ jest.mock(
         }))
         return (
           <div
-            data-intent-receiver-enabled={String(props.intentReceiverEnabled)}
+            data-intent-role={props.intentRole}
             data-reduced-motion={String(props.reducedMotion)}
             data-testid="mock-avatar-fire-thunder-overlay"
           >
@@ -66,7 +66,7 @@ describe('Avatar Fire Thunder lab page', () => {
     )
     expect(
       screen.getByTestId('mock-avatar-fire-thunder-overlay')
-    ).toHaveAttribute('data-intent-receiver-enabled', 'false')
+    ).toHaveAttribute('data-intent-role', 'manual')
 
     fireEvent.click(screen.getByTestId('avatar-fire-button'))
     fireEvent.click(screen.getByTestId('avatar-thunder-button'))

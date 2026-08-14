@@ -33,7 +33,7 @@ const AvatarFireThunderLabPage = () => {
       >
         <AvatarFireThunderLabOverlay
           ref={controllerRef}
-          intentReceiverEnabled={false}
+          intentRole="manual"
           onStatusChange={updateStatus}
           reducedMotion={reducedMotion}
         />

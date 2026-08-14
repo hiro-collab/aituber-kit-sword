@@ -48,6 +48,8 @@ import { resolveProjectionEffectSelection } from '@/features/projectionEffects/b
 import {
   AvatarFireThunderEffectLayer,
   type AvatarFireThunderHostState,
+  type AvatarFireThunderIntentRole,
+  type AvatarFireThunderMirrorState,
   type AvatarFireThunderReceiverState,
 } from '@/features/projectionEffects/browser/avatarFireThunderLabOverlay'
 import { resolveProjectionEffectsSettings } from '@/features/projectionEffects/settings'
@@ -75,6 +77,8 @@ const ProjectionVisual = () => {
     useState<AvatarFireThunderHostState>('idle')
   const [projectionEffectReceiverState, setProjectionEffectReceiverState] =
     useState<AvatarFireThunderReceiverState>('inactive')
+  const [projectionEffectMirrorState, setProjectionEffectMirrorState] =
+    useState<AvatarFireThunderMirrorState>('inactive')
   const [
     danceLifecycleAcceptancePredicate,
     setDanceLifecycleAcceptancePredicate,
@@ -114,7 +118,6 @@ const ProjectionVisual = () => {
     const requestMode = Array.isArray(value) ? value[0] : value
     return requestMode === 'minimal-transient-text-v1'
   }, [routeQuery])
-  const isProductionEffectHost = isStageOutputMode
   const captureOwnerOrigin = useMemo(() => {
     const value = router.query.captureOwnerOrigin
     return Array.isArray(value) ? value[0] : value
@@ -140,6 +143,12 @@ const ProjectionVisual = () => {
     priority: 30,
     enabled: !isDisplayOnlyMode,
   })
+  const projectionEffectIntentRole: AvatarFireThunderIntentRole =
+    isStageOutputMode
+      ? 'authoritative-stage'
+      : projectionVisualMode === 'operator' && controlOwner.isOwner
+        ? 'operator-mirror'
+        : 'manual'
   const transientRequestEnabled =
     projectionVisualMode === 'operator' &&
     controlOwner.isOwner &&
@@ -309,9 +318,8 @@ const ProjectionVisual = () => {
       data-projection-effect-id={projectionEffectId ?? 'none'}
       data-projection-effect-host-state={projectionEffectHostState}
       data-projection-effect-receiver-state={projectionEffectReceiverState}
-      data-projection-effect-host-role={
-        isProductionEffectHost ? 'production-stage' : 'non-production'
-      }
+      data-projection-effect-mirror-state={projectionEffectMirrorState}
+      data-projection-effect-host-role={projectionEffectIntentRole}
       data-projection-presentation-order={PROJECTION_VISUAL_PRESENTATION_ORDER.join(
         ' '
       )}
@@ -347,10 +355,10 @@ const ProjectionVisual = () => {
         )}
       </div>
       <AvatarFireThunderEffectLayer
-        intentReceiverEnabled={isProductionEffectHost}
-        productionEffectHost={isProductionEffectHost}
+        intentRole={projectionEffectIntentRole}
         onHostStateChange={setProjectionEffectHostState}
         onIntentReceiverStateChange={setProjectionEffectReceiverState}
+        onIntentMirrorStateChange={setProjectionEffectMirrorState}
       />
       <ProjectionVisualStimulusRefBridge
         enabled={modelType === 'vrm'}

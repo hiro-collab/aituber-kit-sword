@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -9,9 +10,11 @@ import VrmViewer from '@/components/vrmViewer'
 import type { ProjectionEffectHostResult } from '../effectHost'
 import {
   publishProjectionEffectExecutionReceipt,
+  subscribeProjectionEffectIntentMirror,
   subscribeProjectionEffectIntents,
   type ProjectionEffectExecutionReceipt,
   type ProjectionEffectIntent,
+  type ProjectionEffectIntentMirrorLifecycleState,
   type ProjectionEffectReceiverLifecycleState,
 } from '../projectionEffectIntent'
 import {
@@ -45,6 +48,15 @@ export type AvatarFireThunderReceiverState =
   | 'inactive'
   | ProjectionEffectReceiverLifecycleState
 
+export type AvatarFireThunderMirrorState =
+  | 'inactive'
+  | ProjectionEffectIntentMirrorLifecycleState
+
+export type AvatarFireThunderIntentRole =
+  | 'manual'
+  | 'authoritative-stage'
+  | 'operator-mirror'
+
 export type AvatarFireThunderHostState =
   | 'idle'
   | 'started'
@@ -58,10 +70,10 @@ export type AvatarFireThunderEffectLayerProps = Pick<
   FireThunderLabCanvasLayerProps,
   'onStatusChange' | 'reducedMotion'
 > & {
-  intentReceiverEnabled?: boolean
-  productionEffectHost?: boolean
+  intentRole?: AvatarFireThunderIntentRole
   onHostStateChange?: (state: AvatarFireThunderHostState) => void
   onIntentReceiverStateChange?: (state: AvatarFireThunderReceiverState) => void
+  onIntentMirrorStateChange?: (state: AvatarFireThunderMirrorState) => void
 }
 
 export const AvatarFireThunderEffectLayer = forwardRef<
@@ -69,31 +81,38 @@ export const AvatarFireThunderEffectLayer = forwardRef<
   AvatarFireThunderEffectLayerProps
 >(function AvatarFireThunderEffectLayer(
   {
-    intentReceiverEnabled = false,
-    productionEffectHost = false,
+    intentRole = 'manual',
     onHostStateChange,
     onIntentReceiverStateChange,
+    onIntentMirrorStateChange,
     onStatusChange,
     reducedMotion = false,
   },
   forwardedRef
 ) {
-  const receiverEnabled = intentReceiverEnabled && productionEffectHost
+  const authoritativeReceiver = intentRole === 'authoritative-stage'
+  const mirrorEnabled = intentRole === 'operator-mirror'
   const controllerRef = useRef<FireThunderLabController | null>(null)
   const performancePlanLedgerRef = useRef(new ProjectionPerformancePlanLedger())
   const [hostState, setHostState] = useState<AvatarFireThunderHostState>('idle')
   const hostStateRef = useRef<AvatarFireThunderHostState>('idle')
   const [receiverState, setReceiverState] =
     useState<AvatarFireThunderReceiverState>(
-      receiverEnabled ? 'cross-tab-unavailable' : 'inactive'
+      authoritativeReceiver ? 'cross-tab-unavailable' : 'inactive'
     )
-  const reportHostState = (state: AvatarFireThunderHostState) => {
-    const duplicateStarted =
-      state === 'started' && hostStateRef.current === 'started'
-    hostStateRef.current = state
-    setHostState(state)
-    if (!duplicateStarted) onHostStateChange?.(state)
-  }
+  const [mirrorState, setMirrorState] = useState<AvatarFireThunderMirrorState>(
+    mirrorEnabled ? 'cross-tab-unavailable' : 'inactive'
+  )
+  const reportHostState = useCallback(
+    (state: AvatarFireThunderHostState) => {
+      const duplicateStarted =
+        state === 'started' && hostStateRef.current === 'started'
+      hostStateRef.current = state
+      setHostState(state)
+      if (!duplicateStarted) onHostStateChange?.(state)
+    },
+    [onHostStateChange]
+  )
   const reportLayerStatus = (result: Readonly<ProjectionEffectHostResult>) => {
     reportHostState(hostStateFromLayerResult(result))
     onStatusChange?.(result)
@@ -129,19 +148,30 @@ export const AvatarFireThunderEffectLayer = forwardRef<
   )
 
   useEffect(() => {
-    if (!receiverEnabled) {
+    if (!authoritativeReceiver && !mirrorEnabled) {
       setReceiverState('inactive')
+      setMirrorState('inactive')
       hostStateRef.current = 'idle'
       setHostState('idle')
       onIntentReceiverStateChange?.('inactive')
+      onIntentMirrorStateChange?.('inactive')
       onHostStateChange?.('idle')
       return
+    }
+
+    if (authoritativeReceiver) {
+      setMirrorState('inactive')
+      onIntentMirrorStateChange?.('inactive')
+    } else {
+      setReceiverState('inactive')
+      onIntentReceiverStateChange?.('inactive')
     }
 
     let active = true
     let cleanupUnproved = false
     let pendingIntentCount = 0
     let queue: Promise<void> = Promise.resolve()
+    const performancePlanLedger = performancePlanLedgerRef.current
     const reportReceiverState = (
       state: ProjectionEffectReceiverLifecycleState
     ) => {
@@ -149,112 +179,128 @@ export const AvatarFireThunderEffectLayer = forwardRef<
       setReceiverState(state)
       onIntentReceiverStateChange?.(state)
     }
+    const reportMirrorState = (
+      state: ProjectionEffectIntentMirrorLifecycleState
+    ) => {
+      if (!active) return
+      setMirrorState(state)
+      onIntentMirrorStateChange?.(state)
+    }
     const reportHostReceipt = (receipt: ProjectionEffectExecutionReceipt) => {
       if (!active) return
       reportHostState(hostStateFromReceipt(receipt))
-      publishProjectionEffectExecutionReceipt(receipt)
+      if (authoritativeReceiver) {
+        publishProjectionEffectExecutionReceipt(receipt)
+      }
     }
-    const dispose = subscribeProjectionEffectIntents(
-      (intent) => {
-        // The subscriber reserves each event ID synchronously in its bounded
-        // TTL/cap map before invoking this callback, so duplicate transports
-        // cannot race into the Host lifecycle queue.
-        if (intent.schemaVersion === 2) {
-          const reservation = performancePlanLedgerRef.current.reserve(
-            intent.plan
-          )
-          if (reservation.status !== 'reserved') {
-            reportHostReceipt(
-              executionReceipt(intent.eventId, 'rejected', 'host_rejected')
-            )
-            return
-          }
-        }
-        if (pendingIntentCount >= MAX_PENDING_PROJECTION_EFFECT_INTENTS) {
+    const acceptIntent = (intent: ProjectionEffectIntent) => {
+      // The subscriber reserves each event ID synchronously in its bounded
+      // TTL/cap map before invoking this callback, so duplicate transports
+      // cannot race into the Host lifecycle queue.
+      if (intent.schemaVersion === 2) {
+        const reservation = performancePlanLedger.reserve(intent.plan)
+        if (reservation.status !== 'reserved') {
           reportHostReceipt(
-            executionReceipt(
-              intent.eventId,
-              'rejected',
-              'queue_capacity_exceeded'
-            )
+            executionReceipt(intent.eventId, 'rejected', 'host_rejected')
           )
           return
         }
-        pendingIntentCount += 1
-        queue = queue
-          .then(async () => {
-            try {
-              if (!active) return
-              if (cleanupUnproved) {
-                reportHostReceipt(
-                  executionReceipt(
-                    intent.eventId,
-                    'cleanup_unproved',
-                    'cleanup_unproved_sticky'
-                  )
+      }
+      if (pendingIntentCount >= MAX_PENDING_PROJECTION_EFFECT_INTENTS) {
+        reportHostReceipt(
+          executionReceipt(
+            intent.eventId,
+            'rejected',
+            'queue_capacity_exceeded'
+          )
+        )
+        return
+      }
+      pendingIntentCount += 1
+      queue = queue
+        .then(async () => {
+          try {
+            if (!active) return
+            if (cleanupUnproved) {
+              reportHostReceipt(
+                executionReceipt(
+                  intent.eventId,
+                  'cleanup_unproved',
+                  'cleanup_unproved_sticky'
                 )
-                return
-              }
-              const controller = controllerRef.current
-              if (!controller) {
-                reportHostReceipt(
-                  executionReceipt(
-                    intent.eventId,
-                    'rejected',
-                    'host_unavailable'
-                  )
-                )
-                return
-              }
-
-              try {
-                const result = await dispatchIntent(controller, intent)
-                if (!active) return
-                const receipt = receiptFromHostResult(intent, result)
-                if (receipt.status === 'cleanup_unproved')
-                  cleanupUnproved = true
-                reportHostReceipt(receipt)
-              } catch {
-                if (!active) return
-                cleanupUnproved = true
-                reportHostReceipt(
-                  executionReceipt(
-                    intent.eventId,
-                    'cleanup_unproved',
-                    'cleanup_unproved'
-                  )
-                )
-              }
-            } finally {
-              pendingIntentCount -= 1
+              )
+              return
             }
-          })
-          .catch(() => {
-            // The command body converts every owned failure to a fixed receipt.
-            // Keep the queue alive without retrying an already reserved command.
-          })
-      },
-      { onReceiverStateChange: reportReceiverState }
-    )
+            const controller = controllerRef.current
+            if (!controller) {
+              reportHostReceipt(
+                executionReceipt(intent.eventId, 'rejected', 'host_unavailable')
+              )
+              return
+            }
+
+            try {
+              const result = await dispatchIntent(controller, intent)
+              if (!active) return
+              const receipt = receiptFromHostResult(intent, result)
+              if (receipt.status === 'cleanup_unproved') cleanupUnproved = true
+              reportHostReceipt(receipt)
+            } catch {
+              if (!active) return
+              cleanupUnproved = true
+              reportHostReceipt(
+                executionReceipt(
+                  intent.eventId,
+                  'cleanup_unproved',
+                  'cleanup_unproved'
+                )
+              )
+            }
+          } finally {
+            pendingIntentCount -= 1
+          }
+        })
+        .catch(() => {
+          // The command body converts every owned failure to a fixed receipt.
+          // Keep the queue alive without retrying an already reserved command.
+        })
+    }
+    const dispose = authoritativeReceiver
+      ? subscribeProjectionEffectIntents(acceptIntent, {
+          onReceiverStateChange: reportReceiverState,
+        })
+      : subscribeProjectionEffectIntentMirror(acceptIntent, {
+          onMirrorStateChange: reportMirrorState,
+        })
 
     return () => {
       active = false
       dispose()
-      performancePlanLedgerRef.current.clear()
-      onIntentReceiverStateChange?.('disposed')
+      performancePlanLedger.clear()
+      if (authoritativeReceiver) {
+        onIntentReceiverStateChange?.('disposed')
+      } else {
+        onIntentMirrorStateChange?.('disposed')
+      }
     }
-  }, [receiverEnabled, onHostStateChange, onIntentReceiverStateChange])
+  }, [
+    authoritativeReceiver,
+    mirrorEnabled,
+    onHostStateChange,
+    onIntentMirrorStateChange,
+    onIntentReceiverStateChange,
+    reportHostState,
+  ])
 
   return (
     <div
       className="pointer-events-none absolute inset-0 z-10"
       data-testid="avatar-fire-thunder-effect-layer"
       data-projection-anchor-contract="fixed-stage-relative"
-      data-projection-effect-host-role={
-        productionEffectHost ? 'production-stage' : 'manual'
-      }
+      data-projection-effect-host-role={intentRole}
       data-projection-effect-host-state={hostState}
       data-projection-effect-receiver-state={receiverState}
+      data-projection-effect-mirror-state={mirrorState}
     >
       <FireThunderLabCanvasLayer
         ref={controllerRef}

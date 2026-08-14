@@ -114,6 +114,14 @@ export type ProjectionEffectIntentTransportOptions = Readonly<{
   signal?: AbortSignal
 }>
 
+export type ProjectionEffectIntentMirrorOptions = Readonly<{
+  now?: () => number
+  createBroadcastChannel?: (name: string) => BroadcastChannelLike
+  onMirrorStateChange?: (
+    state: ProjectionEffectIntentMirrorLifecycleState
+  ) => void
+}>
+
 export type ProjectionEffectReceiverLifecycleState =
   | 'ready'
   | 'cross-tab-unavailable'
@@ -123,6 +131,16 @@ export type ProjectionEffectReceiverLifecycleState =
 export type ProjectionEffectIntentReceiverSubscription = (() => void) &
   Readonly<{
     getState: () => ProjectionEffectReceiverLifecycleState
+  }>
+
+export type ProjectionEffectIntentMirrorLifecycleState =
+  | 'mirror-ready'
+  | 'cross-tab-unavailable'
+  | 'disposed'
+
+export type ProjectionEffectIntentMirrorSubscription = (() => void) &
+  Readonly<{
+    getState: () => ProjectionEffectIntentMirrorLifecycleState
   }>
 
 export type ProjectionEffectRequestedEventContext = Readonly<{
@@ -774,6 +792,212 @@ export function subscribeProjectionEffectIntents(
   return subscription
 }
 
+/**
+ * Mirrors only intents that the authoritative Stage receiver has completed.
+ *
+ * This observer never answers readiness probes, acknowledges ingress, or
+ * publishes execution receipts. It is therefore safe to mount in the operator
+ * view without creating a second production receiver.
+ */
+export function subscribeProjectionEffectIntentMirror(
+  receive: (intent: ProjectionEffectIntent) => void,
+  options: ProjectionEffectIntentMirrorOptions = {}
+): ProjectionEffectIntentMirrorSubscription {
+  const pageWindow = currentWindow()
+  if (!pageWindow) {
+    return fixedMirrorSubscription(
+      'cross-tab-unavailable',
+      options.onMirrorStateChange
+    )
+  }
+  let channel: BroadcastChannelLike | null = null
+  try {
+    channel = createChannel(options)
+  } catch {
+    return fixedMirrorSubscription(
+      'cross-tab-unavailable',
+      options.onMirrorStateChange
+    )
+  }
+  if (!channel) {
+    return fixedMirrorSubscription(
+      'cross-tab-unavailable',
+      options.onMirrorStateChange
+    )
+  }
+
+  const now = options.now ?? Date.now
+  const origin = pageWindow.location.origin
+  const pendingIntents = new Map<
+    string,
+    { intent: ProjectionEffectIntent; fingerprint: string; seenAt: number }
+  >()
+  const pendingReceipts = new Map<
+    string,
+    { receipt: ProjectionEffectExecutionReceipt; seenAt: number }
+  >()
+  const mirrored = new Map<string, { fingerprint: string; seenAt: number }>()
+  let disposed = false
+  let cleanupAttempted = false
+  let windowListenerRegistrationAttempted = false
+  let channelListenerRegistrationAttempted = false
+  let lifecycleState: ProjectionEffectIntentMirrorLifecycleState =
+    'cross-tab-unavailable'
+
+  const reportLifecycleState = (
+    nextState: ProjectionEffectIntentMirrorLifecycleState
+  ) => {
+    lifecycleState = nextState
+    try {
+      options.onMirrorStateChange?.(nextState)
+    } catch {
+      // Presentation-only lifecycle reporting cannot break the observer.
+    }
+  }
+  const prune = (timestamp: number) => {
+    for (const [eventId, entry] of pendingIntents) {
+      if (timestamp - entry.seenAt > SEEN_INTENT_TTL_MS) {
+        pendingIntents.delete(eventId)
+      }
+    }
+    for (const [eventId, entry] of pendingReceipts) {
+      if (timestamp - entry.seenAt > SEEN_INTENT_TTL_MS) {
+        pendingReceipts.delete(eventId)
+      }
+    }
+    for (const [eventId, entry] of mirrored) {
+      if (timestamp - entry.seenAt > SEEN_INTENT_TTL_MS) {
+        mirrored.delete(eventId)
+      }
+    }
+  }
+  const tryMirror = (eventId: string) => {
+    if (disposed) return
+    const pendingIntent = pendingIntents.get(eventId)
+    const pendingReceipt = pendingReceipts.get(eventId)
+    if (!pendingIntent || !pendingReceipt) return
+    pendingIntents.delete(eventId)
+    pendingReceipts.delete(eventId)
+    if (!receiptCompletesIntent(pendingReceipt.receipt, pendingIntent.intent)) {
+      return
+    }
+    const previous = mirrored.get(eventId)
+    if (previous) return
+    mirrored.set(eventId, {
+      fingerprint: pendingIntent.fingerprint,
+      seenAt: now(),
+    })
+    try {
+      receive(pendingIntent.intent)
+    } catch {
+      // A preview failure cannot affect authoritative Stage execution.
+    }
+  }
+  const acceptIntent = (intent: ProjectionEffectIntent) => {
+    if (disposed) return
+    const timestamp = now()
+    prune(timestamp)
+    const fingerprint = fingerprintIntent(intent)
+    const alreadyMirrored = mirrored.get(intent.eventId)
+    if (alreadyMirrored) return
+    const existing = pendingIntents.get(intent.eventId)
+    if (existing) return
+    if (
+      pendingIntents.size >= MAX_SEEN_INTENTS ||
+      mirrored.size >= MAX_SEEN_INTENTS
+    ) {
+      return
+    }
+    pendingIntents.set(intent.eventId, {
+      intent,
+      fingerprint,
+      seenAt: timestamp,
+    })
+    tryMirror(intent.eventId)
+  }
+  const acceptReceipt = (receipt: ProjectionEffectExecutionReceipt) => {
+    if (disposed) return
+    const timestamp = now()
+    prune(timestamp)
+    if (mirrored.has(receipt.eventId) || pendingReceipts.has(receipt.eventId)) {
+      return
+    }
+    if (pendingReceipts.size >= MAX_SEEN_INTENTS) return
+    pendingReceipts.set(receipt.eventId, { receipt, seenAt: timestamp })
+    tryMirror(receipt.eventId)
+  }
+  const receiveWindow = (event: Event) => {
+    if (disposed) return
+    if (event instanceof CustomEvent) {
+      const intent = readProjectionEffectIntent(event.detail)
+      if (intent) acceptIntent(intent)
+    }
+  }
+  const receiveChannel = (event: MessageEvent) => {
+    if (disposed) return
+    const intentEnvelope = readIntentEnvelope(event.data, origin)
+    if (intentEnvelope) {
+      acceptIntent(intentEnvelope.intent)
+      return
+    }
+    const receiptEnvelope = readReceiptEnvelope(event.data, origin)
+    if (receiptEnvelope) acceptReceipt(receiptEnvelope.receipt)
+  }
+  const cleanup = (reportDisposed = true) => {
+    if (cleanupAttempted) return
+    cleanupAttempted = true
+    disposed = true
+    if (windowListenerRegistrationAttempted) {
+      try {
+        pageWindow.removeEventListener(
+          PROJECTION_EFFECT_INTENT_WINDOW_EVENT,
+          receiveWindow
+        )
+      } catch {
+        // Disposed handlers remain inert even if removal fails.
+      }
+    }
+    if (channelListenerRegistrationAttempted && channel) {
+      try {
+        channel.removeEventListener('message', receiveChannel)
+      } catch {
+        // Disposed handlers remain inert even if removal fails.
+      }
+    }
+    try {
+      channel?.close()
+    } catch {
+      // Closing a presentation-only observer cannot affect Stage authority.
+    }
+    channel = null
+    pendingIntents.clear()
+    pendingReceipts.clear()
+    mirrored.clear()
+    if (reportDisposed) reportLifecycleState('disposed')
+  }
+
+  try {
+    channelListenerRegistrationAttempted = true
+    channel.addEventListener('message', receiveChannel)
+    windowListenerRegistrationAttempted = true
+    pageWindow.addEventListener(
+      PROJECTION_EFFECT_INTENT_WINDOW_EVENT,
+      receiveWindow
+    )
+    reportLifecycleState('mirror-ready')
+  } catch {
+    cleanup(false)
+    return fixedMirrorSubscription(
+      'cross-tab-unavailable',
+      options.onMirrorStateChange
+    )
+  }
+
+  return Object.assign(cleanup, {
+    getState: () => lifecycleState,
+  }) as ProjectionEffectIntentMirrorSubscription
+}
+
 function fixedReceiverSubscription(
   initialState: ProjectionEffectReceiverLifecycleState,
   report?: (state: ProjectionEffectReceiverLifecycleState) => void
@@ -922,6 +1146,30 @@ function readIntentEnvelope(
     : null
 }
 
+function readReceiptEnvelope(
+  value: unknown,
+  expectedOrigin: string
+): ProjectionEffectReceiptEnvelope | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['schemaVersion', 'kind', 'origin', 'receipt']) ||
+    value.schemaVersion !== 1 ||
+    value.kind !== 'receipt' ||
+    value.origin !== expectedOrigin
+  ) {
+    return null
+  }
+  const receipt = readProjectionEffectExecutionReceipt(value.receipt)
+  return receipt
+    ? Object.freeze({
+        schemaVersion: 1,
+        kind: 'receipt',
+        origin: expectedOrigin,
+        receipt,
+      })
+    : null
+}
+
 function readProbeEnvelope(
   value: unknown,
   expectedOrigin: string
@@ -1002,6 +1250,16 @@ function readDeliveryMessage(
   return null
 }
 
+function receiptCompletesIntent(
+  receipt: ProjectionEffectExecutionReceipt,
+  intent: ProjectionEffectIntent
+): boolean {
+  if (receipt.status !== 'completed') return false
+  if (intent.action === 'start') return receipt.resultClass === 'started'
+  if (intent.action === 'stop') return receipt.resultClass === 'stopped'
+  return receipt.resultClass === 'reset'
+}
+
 function fingerprintIntent(intent: ProjectionEffectIntent): string {
   if (intent.schemaVersion === 2) {
     return `${intent.turnId}\u0000${intent.action}\u0000${JSON.stringify(
@@ -1031,13 +1289,40 @@ function deliveryFailure(
 }
 
 function createChannel(
-  options: ProjectionEffectIntentTransportOptions
+  options: Pick<
+    ProjectionEffectIntentTransportOptions,
+    'createBroadcastChannel'
+  >
 ): BroadcastChannelLike | null {
   if (options.createBroadcastChannel) {
     return options.createBroadcastChannel(PROJECTION_EFFECT_INTENT_CHANNEL)
   }
   if (typeof globalThis.BroadcastChannel === 'undefined') return null
   return new globalThis.BroadcastChannel(PROJECTION_EFFECT_INTENT_CHANNEL)
+}
+
+function fixedMirrorSubscription(
+  initialState: ProjectionEffectIntentMirrorLifecycleState,
+  report?: (state: ProjectionEffectIntentMirrorLifecycleState) => void
+): ProjectionEffectIntentMirrorSubscription {
+  let state = initialState
+  try {
+    report?.(state)
+  } catch {
+    // Public mirror lifecycle reporting cannot expose setup failures.
+  }
+  return Object.assign(
+    () => {
+      if (state === 'disposed') return
+      state = 'disposed'
+      try {
+        report?.(state)
+      } catch {
+        // Disposal remains complete even if a consumer cannot observe it.
+      }
+    },
+    Object.freeze({ getState: () => state })
+  ) as ProjectionEffectIntentMirrorSubscription
 }
 
 function currentWindow(): Window | null {

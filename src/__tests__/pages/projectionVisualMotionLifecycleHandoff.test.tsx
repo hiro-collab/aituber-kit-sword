@@ -18,6 +18,7 @@ const passiveProjectionVisualQueryState = {
 }
 let mockProjectionVisualQueryState = passiveProjectionVisualQueryState
 let mockRemoteSpeechOutputActive = true
+let mockIsBrowserControlOwner = false
 const originalBroadcastChannel = globalThis.BroadcastChannel
 const pageBroadcastChannels = new Set<PageBroadcastChannel>()
 const mockPageLabController = {
@@ -119,7 +120,7 @@ jest.mock('@/hooks/useLive2DEnabled', () => ({
 }))
 jest.mock('@/features/browserControl/useBrowserControlOwner', () => ({
   useBrowserControlOwner: () => ({
-    isOwner: false,
+    isOwner: mockIsBrowserControlOwner,
     owner: null,
     takeControl: jest.fn(),
   }),
@@ -225,7 +226,8 @@ jest.mock('@/components/presenceManager', () => ({
   default: () => null,
 }))
 jest.mock('@/components/gestureVoiceBridge', () => ({
-  GestureVoiceBridge: () => null,
+  __esModule: true,
+  default: () => null,
 }))
 jest.mock('@/features/kiosk/kioskOverlay', () => ({
   KioskOverlay: () => null,
@@ -276,6 +278,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     jest.clearAllMocks()
     bridgePredicate = undefined
     mockRemoteSpeechOutputActive = true
+    mockIsBrowserControlOwner = false
     mockProjectionVisualQueryState = passiveProjectionVisualQueryState
   })
 
@@ -325,7 +328,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     )
     expect(root).toHaveAttribute(
       'data-projection-effect-host-role',
-      'production-stage'
+      'authoritative-stage'
     )
     expect(root).toHaveAttribute(
       'data-projection-background-input',
@@ -341,7 +344,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     )
     expect(effect).toHaveAttribute(
       'data-projection-effect-host-role',
-      'production-stage'
+      'authoritative-stage'
     )
     expect(speechHudLayer).toHaveAttribute(
       'data-projection-presentation-layer',
@@ -413,7 +416,7 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
     expect(root?.outerHTML).not.toContain('炎を')
   })
 
-  it('enables the effect receiver only for stage-output mode', async () => {
+  it('keeps Stage authoritative and exposes only a receipt-confirmed operator mirror', async () => {
     mockProjectionVisualQueryState = {
       ...passiveProjectionVisualQueryState,
       isPassiveMode: false,
@@ -426,6 +429,9 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
         stageOutput.container.querySelector('.projection-visual')
       ).toHaveAttribute('data-projection-effect-receiver-state', 'ready')
     )
+    expect(
+      stageOutput.container.querySelector('.projection-visual')
+    ).toHaveAttribute('data-projection-effect-mirror-state', 'inactive')
     stageOutput.unmount()
 
     mockProjectionVisualQueryState = passiveProjectionVisualQueryState
@@ -435,6 +441,9 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
         passive.container.querySelector('.projection-visual')
       ).toHaveAttribute('data-projection-effect-receiver-state', 'inactive')
     )
+    expect(
+      passive.container.querySelector('.projection-visual')
+    ).toHaveAttribute('data-projection-effect-mirror-state', 'inactive')
     passive.unmount()
 
     mockProjectionVisualQueryState = {
@@ -443,11 +452,17 @@ describe('ProjectionVisual dance lifecycle handoff', () => {
       isDisplayOnlyMode: false,
       projectionVisualMode: 'operator',
     }
+    mockIsBrowserControlOwner = true
     const operator = render(<ProjectionVisual />)
     await waitFor(() =>
       expect(
         operator.container.querySelector('.projection-visual')
       ).toHaveAttribute('data-projection-effect-receiver-state', 'inactive')
+    )
+    await waitFor(() =>
+      expect(
+        operator.container.querySelector('.projection-visual')
+      ).toHaveAttribute('data-projection-effect-mirror-state', 'mirror-ready')
     )
   })
 })
